@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     s3_secret_access_key: str = ""
     signed_url_ttl_seconds: int = 7 * 24 * 60 * 60
 
+    public_base_url: str = ""
+    public_results_dir: Path = Path("/var/www/splatbot/results")
+
     min_images: int = 100
     max_images: int = 300
     max_video_seconds: int = 90
@@ -102,3 +105,6 @@ class Settings(BaseSettings):
 
     def job_dir(self, job_id: str) -> Path:
         return self.data_dir / "jobs" / job_id
+
+    def public_job_url(self, job_id: str) -> str:
+        return f"{self.public_base_url.rstrip('/')}/results/{job_id}/" if self.public_base_url else ""

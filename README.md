@@ -13,6 +13,7 @@ Private Telegram bot and worker for turning a photo set or short video into a Ga
 - Artifact persistence for the cleaned `.ply` and preview `.mp4`.
 - Optional S3-compatible artifact upload with signed result URLs.
 - Telegram completion/failure notifications when the dispatcher has a bot token.
+- Browser result pages with orbit/pan/zoom point-cloud viewing.
 
 ## Setup
 
@@ -75,6 +76,23 @@ $SPLATBOT_DATA_DIR/jobs/<job_id>/
 ```
 
 With S3-compatible settings present, the dispatcher uploads the cleaned `.ply` and preview `.mp4`, persists object keys, and sends signed URLs.
+
+## Result Viewer
+
+Set:
+
+```bash
+SPLATBOT_PUBLIC_BASE_URL=http://your-vps-or-domain
+SPLATBOT_PUBLIC_RESULTS_DIR=/var/www/splatbot/results
+```
+
+Completed jobs publish:
+
+- `index.html`
+- `cleaned_splat.ply`
+- `turntable.mp4`
+
+The viewer loads the PLY in a Three.js point-cloud scene with orbit, pan, and zoom controls. Telegram sends the viewer URL when available.
 
 Required S3 settings:
 

@@ -12,11 +12,19 @@ class TelegramNotifier:
         self.bot = Bot(token)
 
     async def job_done(self, job: ScanJob, artifacts: list[JobArtifact]) -> None:
-        await self.bot.send_message(
-            chat_id=job.telegram_user_id,
-            text=f"Job {job.id} finished. Sending results now.",
-        )
-        for artifact in artifacts:
+        viewer = next((artifact for artifact in artifacts if artifact.kind == ArtifactKind.VIEWER and artifact.url), None)
+        if viewer:
+            await self.bot.send_message(
+                chat_id=job.telegram_user_id,
+                text=f"Job {job.id} finished.\nOpen 3D viewer: {viewer.url}",
+            )
+        else:
+            await self.bot.send_message(
+                chat_id=job.telegram_user_id,
+                text=f"Job {job.id} finished. Sending results now.",
+            )
+        downloadable = [artifact for artifact in artifacts if artifact.kind != ArtifactKind.VIEWER]
+        for artifact in downloadable:
             if artifact.url:
                 await self.bot.send_message(
                     chat_id=job.telegram_user_id,

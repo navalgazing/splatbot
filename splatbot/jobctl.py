@@ -6,7 +6,9 @@ import asyncio
 from .config import Settings
 from .models import ArtifactKind, JobStatus
 from .notifications import TelegramNotifier
+from .pipeline import PipelineOutputs
 from .storage import Store
+from .viewer import publish_viewer
 
 
 async def set_status(job_id: str, status: JobStatus, error: str | None) -> None:
@@ -25,9 +27,16 @@ async def complete(job_id: str, notify: bool) -> None:
         raise SystemExit(f"job not found: {job_id}")
     ply = settings.job_dir(job_id) / "export" / "cleaned_splat.ply"
     preview = settings.job_dir(job_id) / "renders" / "turntable.mp4"
+    viewer_path = publish_viewer(settings, job_id, PipelineOutputs(ply, preview))
     artifacts = [
         await store.add_artifact(job_id, ArtifactKind.PLY, ply),
         await store.add_artifact(job_id, ArtifactKind.PREVIEW, preview),
+        await store.add_artifact(
+            job_id,
+            ArtifactKind.VIEWER,
+            viewer_path,
+            url=settings.public_job_url(job_id) or None,
+        ),
     ]
     await store.set_job_status(job_id, JobStatus.DONE)
     updated = await store.get_job(job_id)

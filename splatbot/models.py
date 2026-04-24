@@ -28,6 +28,7 @@ class MediaKind(StrEnum):
 class ArtifactKind(StrEnum):
     PLY = "ply"
     PREVIEW = "preview"
+    VIEWER = "viewer"
 
 
 @dataclass(frozen=True)

@@ -20,7 +20,27 @@ class FakePipeline:
     async def run(self, job_id: str, mode: ScanMode, media: list[MediaItem], on_status=None) -> PipelineOutputs:
         if on_status:
             await on_status(job_id, JobStatus.TRAINING)
-        return PipelineOutputs(cleaned_ply=Path("/tmp/clean.ply"), preview_mp4=Path("/tmp/preview.mp4"))
+        root = Path(media[0].local_path).parent
+        ply = root / "clean.ply"
+        preview = root / "preview.mp4"
+        ply.write_text(
+            "\n".join(
+                [
+                    "ply",
+                    "format ascii 1.0",
+                    "element vertex 1",
+                    "property float x",
+                    "property float y",
+                    "property float z",
+                    "end_header",
+                    "0 0 0",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        preview.write_bytes(b"fake")
+        return PipelineOutputs(cleaned_ply=ply, preview_mp4=preview)
 
 
 class FakeArtifactStore:
@@ -51,7 +71,12 @@ async def test_dispatcher_runs_next_job(tmp_path) -> None:
 
     notifier = FakeNotifier()
     dispatcher = Dispatcher(
-        Settings(data_dir=tmp_path, database_path=tmp_path / "splatbot.sqlite3"),
+        Settings(
+            data_dir=tmp_path,
+            database_path=tmp_path / "splatbot.sqlite3",
+            public_results_dir=tmp_path / "public",
+            public_base_url="https://example.test",
+        ),
         store,
         FakePipeline(),
         FakeArtifactStore(),
@@ -61,6 +86,11 @@ async def test_dispatcher_runs_next_job(tmp_path) -> None:
     assert await dispatcher.run_once() is True
     assert (await store.get_job(job.id)).status.value == "done"
     artifacts = await store.list_artifacts(job.id)
-    assert [artifact.kind for artifact in artifacts] == [ArtifactKind.PLY, ArtifactKind.PREVIEW]
+    assert [artifact.kind for artifact in artifacts] == [
+        ArtifactKind.PLY,
+        ArtifactKind.PREVIEW,
+        ArtifactKind.VIEWER,
+    ]
     assert artifacts[0].url == f"https://example.test/jobs/{job.id}/ply.ply"
+    assert artifacts[2].url == f"https://example.test/results/{job.id}/"
     assert len(notifier.done) == 1

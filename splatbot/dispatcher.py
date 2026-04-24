@@ -11,6 +11,7 @@ from .notifications import TelegramNotifier
 from .pipeline import PipelineOutputs, ScanPipeline
 from .runpod_backend import RunPodLauncher
 from .storage import Store
+from .viewer import publish_viewer
 
 LOGGER = logging.getLogger(__name__)
 
@@ -40,6 +41,8 @@ class Dispatcher:
 
     async def _publish_artifacts(self, job: ScanJob, outputs: PipelineOutputs) -> list[JobArtifact]:
         published: list[JobArtifact] = []
+        viewer_path = publish_viewer(self.settings, job.id, outputs)
+        viewer_url = self.settings.public_job_url(job.id)
         for kind, path in (
             (ArtifactKind.PLY, outputs.cleaned_ply),
             (ArtifactKind.PREVIEW, outputs.preview_mp4),
@@ -54,6 +57,14 @@ class Dispatcher:
                     url=ref.url if ref else None,
                 )
             )
+        published.append(
+            await self.store.add_artifact(
+                job.id,
+                ArtifactKind.VIEWER,
+                viewer_path,
+                url=viewer_url or None,
+            )
+        )
         return published
 
     async def run_once(self) -> bool:
