@@ -65,14 +65,15 @@ class RunPodClient:
             "minRAMPerGPU": settings.runpod_min_memory_gb,
             "allowedCudaVersions": ["12.8", "12.9", "13.0"],
             "ports": [settings.runpod_ports],
+            "supportPublicIp": True,
             "env": {
                 "SPLATBOT_JOB_ID": job.id,
                 "SPLATBOT_SESSION_ID": job.session_id,
                 "SPLATBOT_SCAN_MODE": job.mode.value,
                 "SPLATBOT_RUNPOD_API_KEY": self.api_key,
             },
-            "dockerEntrypoint": [],
-            "dockerStartCmd": ["bash", "-lc", docker_args],
+            "dockerEntrypoint": ["bash", "-lc"],
+            "dockerStartCmd": [docker_args],
         }
         request = urllib.request.Request(
             "https://rest.runpod.io/v1/pods",
