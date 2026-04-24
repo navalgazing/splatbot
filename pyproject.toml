@@ -26,6 +26,8 @@ dev = [
 splatbot-api = "splatbot.telegram_app:main"
 splatbot-worker = "splatbot.worker:main"
 splatbot-dispatcher = "splatbot.dispatcher:main"
+splatbot-jobctl = "splatbot.jobctl:main"
+splatbot-run-job-dir = "splatbot.run_job_dir:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -34,4 +36,3 @@ include = ["splatbot*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-

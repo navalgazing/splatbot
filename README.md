@@ -8,6 +8,7 @@ Private Telegram bot and worker for turning a photo set or short video into a Ga
 - `/new`, `/mode scene|object`, media upload, `/submit`, `/status`, `/cancel`.
 - SQLite queue shared by the bot and worker.
 - Local worker/dispatcher that runs one GPU job at a time.
+- RunPod backend for launching ephemeral GPU pods from the VPS.
 - Nerfstudio `splatfacto` pipeline with optional object-background removal through `rembg`.
 - Artifact persistence for the cleaned `.ply` and preview `.mp4`.
 - Optional S3-compatible artifact upload with signed result URLs.
@@ -93,4 +94,6 @@ pytest -q
 
 ## Deployment Notes
 
-The current implementation assumes the bot and dispatcher can access the same SQLite database and uploaded media paths. That is the simplest useful MVP. A later SSH/cloud GPU backend should add file synchronization or shared object storage before job execution.
+For a simple local deployment, the bot and dispatcher can access the same SQLite database and uploaded media paths.
+
+For RunPod, set `SPLATBOT_WORKER_BACKEND=runpod`. The dispatcher launches a GPU pod, the pod SSHes back to the VPS to pull session media, runs `splatbot-run-job-dir`, rsyncs artifacts back under `/var/lib/splatbot/jobs/<job_id>`, and calls `splatbot-jobctl` on the VPS to mark the job complete or failed.

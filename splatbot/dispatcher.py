@@ -5,10 +5,11 @@ import logging
 from pathlib import Path
 
 from .artifacts import ArtifactRef, ArtifactStore
-from .config import Settings
+from .config import Settings, WorkerBackend
 from .models import ArtifactKind, JobArtifact, JobStatus, ScanJob
 from .notifications import TelegramNotifier
 from .pipeline import PipelineOutputs, ScanPipeline
+from .runpod_backend import RunPodLauncher
 from .storage import Store
 
 LOGGER = logging.getLogger(__name__)
@@ -22,12 +23,14 @@ class Dispatcher:
         pipeline: ScanPipeline | None = None,
         artifact_store: ArtifactStore | None = None,
         notifier: TelegramNotifier | None = None,
+        runpod_launcher: RunPodLauncher | None = None,
     ) -> None:
         self.settings = settings
         self.store = store
         self.pipeline = pipeline or ScanPipeline(settings)
         self.artifact_store = artifact_store or ArtifactStore(settings)
         self.notifier = notifier
+        self.runpod_launcher = runpod_launcher or RunPodLauncher(settings)
 
     def _upload_artifact(self, job: ScanJob, kind: ArtifactKind, path: Path) -> ArtifactRef | None:
         if not self.artifact_store.enabled:
@@ -57,6 +60,11 @@ class Dispatcher:
         job = await self.store.next_queued_job()
         if job is None:
             return False
+        if self.settings.worker_backend == WorkerBackend.RUNPOD:
+            await self.store.set_job_status(job.id, JobStatus.PREPARING)
+            pod = self.runpod_launcher.launch(job)
+            LOGGER.info("launched RunPod pod %s for job %s", pod.id, job.id)
+            return True
         media = await self.store.list_media(job.session_id)
         try:
             await self.store.set_job_status(job.id, JobStatus.PREPARING)

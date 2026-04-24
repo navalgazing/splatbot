@@ -20,6 +20,7 @@ class TelegramMode(StrEnum):
 class WorkerBackend(StrEnum):
     LOCAL = "local"
     SSH = "ssh"
+    RUNPOD = "runpod"
 
 
 class Settings(BaseSettings):
@@ -62,6 +63,23 @@ class Settings(BaseSettings):
     gpu_ssh_host: str = ""
     gpu_ssh_key: Path | None = None
     gpu_workdir: Path = Path("/srv/splatbot")
+
+    runpod_api_key: str = ""
+    runpod_gpu_type_id: str = "NVIDIA GeForce RTX 4090"
+    runpod_cloud_type: str = "ALL"
+    runpod_image_name: str = "runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04"
+    runpod_container_disk_gb: int = 80
+    runpod_volume_gb: int = 80
+    runpod_min_vcpu_count: int = 8
+    runpod_min_memory_gb: int = 30
+    runpod_ports: str = "22/tcp"
+    runpod_volume_mount_path: str = "/workspace"
+    runpod_ssh_user: str = "root"
+    runpod_vps_host: str = ""
+    runpod_vps_user: str = "root"
+    runpod_vps_ssh_key: Path | None = None
+    runpod_repo_url: str = "https://github.com/navalgazing/splatbot.git"
+    runpod_setup_command: str = "/workspace/venv/bin/pip install nerfstudio rembg"
 
     @field_validator("allowed_telegram_ids", mode="before")
     @classmethod
