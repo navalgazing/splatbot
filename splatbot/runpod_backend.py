@@ -30,7 +30,11 @@ class RunPodClient:
         request = urllib.request.Request(
             url,
             data=json.dumps({"query": query}).encode(),
-            headers={"content-type": "application/json"},
+            headers={
+                "accept": "application/json",
+                "content-type": "application/json",
+                "user-agent": "splatbot/0.1 (+https://github.com/navalgazing/splatbot)",
+            },
             method="POST",
         )
         try:
