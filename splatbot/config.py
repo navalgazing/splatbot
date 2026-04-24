@@ -68,6 +68,8 @@ class Settings(BaseSettings):
     def parse_allowed_ids(cls, value: object) -> set[int]:
         if value is None or value == "":
             return set()
+        if isinstance(value, int):
+            return {value}
         if isinstance(value, set):
             return {int(item) for item in value}
         if isinstance(value, (list, tuple)):
