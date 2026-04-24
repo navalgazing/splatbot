@@ -1,0 +1,2 @@
+"""Splatbot package."""
+

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "splatbot"
+version = "0.1.0"
+description = "Telegram bot and GPU worker for turning media into Gaussian splats"
+requires-python = ">=3.10"
+dependencies = [
+  "aiosqlite>=0.19",
+  "boto3>=1.34",
+  "pydantic>=2.6",
+  "pydantic-settings>=2.2",
+  "python-dotenv>=1.0",
+  "python-telegram-bot>=21.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+splatbot-api = "splatbot.telegram_app:main"
+splatbot-worker = "splatbot.worker:main"
+splatbot-dispatcher = "splatbot.dispatcher:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["splatbot*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
