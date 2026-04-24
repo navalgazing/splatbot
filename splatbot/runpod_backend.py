@@ -48,40 +48,49 @@ class RunPodClient:
         return payload["data"]
 
     def create_pod(self, settings: Settings, job: ScanJob, docker_args: str) -> RunPodPod:
-        env = [
-            {"key": "SPLATBOT_JOB_ID", "value": job.id},
-            {"key": "SPLATBOT_SESSION_ID", "value": job.session_id},
-            {"key": "SPLATBOT_SCAN_MODE", "value": job.mode.value},
-        ]
-        env_text = ", ".join(
-            f'{{ key: {json.dumps(item["key"])}, value: {json.dumps(item["value"])} }}'
-            for item in env
+        cloud_type = settings.runpod_cloud_type
+        if cloud_type == "ALL":
+            cloud_type = "SECURE"
+        payload = {
+            "name": "splatbot-" + job.id[:12],
+            "imageName": settings.runpod_image_name,
+            "gpuTypeIds": [settings.runpod_gpu_type_id],
+            "gpuCount": 1,
+            "cloudType": cloud_type,
+            "computeType": "GPU",
+            "containerDiskInGb": settings.runpod_container_disk_gb,
+            "volumeInGb": settings.runpod_volume_gb,
+            "volumeMountPath": settings.runpod_volume_mount_path,
+            "vcpuCount": settings.runpod_min_vcpu_count,
+            "minRAMPerGPU": settings.runpod_min_memory_gb,
+            "allowedCudaVersions": ["12.8", "12.9", "13.0"],
+            "ports": [settings.runpod_ports],
+            "env": {
+                "SPLATBOT_JOB_ID": job.id,
+                "SPLATBOT_SESSION_ID": job.session_id,
+                "SPLATBOT_SCAN_MODE": job.mode.value,
+                "SPLATBOT_RUNPOD_API_KEY": self.api_key,
+            },
+            "dockerEntrypoint": [],
+            "dockerStartCmd": ["bash", "-lc", docker_args],
+        }
+        request = urllib.request.Request(
+            "https://rest.runpod.io/v1/pods",
+            data=json.dumps(payload).encode(),
+            headers={
+                "accept": "application/json",
+                "authorization": f"Bearer {self.api_key}",
+                "content-type": "application/json",
+                "user-agent": "splatbot/0.1 (+https://github.com/navalgazing/splatbot)",
+            },
+            method="POST",
         )
-        query = f"""
-        mutation {{
-          podFindAndDeployOnDemand(
-            input: {{
-              cloudType: {settings.runpod_cloud_type}
-              gpuCount: 1
-              volumeInGb: {settings.runpod_volume_gb}
-              containerDiskInGb: {settings.runpod_container_disk_gb}
-              minVcpuCount: {settings.runpod_min_vcpu_count}
-              minMemoryInGb: {settings.runpod_min_memory_gb}
-              gpuTypeId: {json.dumps(settings.runpod_gpu_type_id)}
-              name: {json.dumps("splatbot-" + job.id[:12])}
-              imageName: {json.dumps(settings.runpod_image_name)}
-              dockerArgs: {json.dumps(docker_args)}
-              ports: {json.dumps(settings.runpod_ports)}
-              volumeMountPath: {json.dumps(settings.runpod_volume_mount_path)}
-              env: [{env_text}]
-            }}
-          ) {{
-            id
-            imageName
-          }}
-        }}
-        """
-        pod = self.graphql(query)["podFindAndDeployOnDemand"]
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                pod = json.loads(response.read().decode())
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode(errors="replace")
+            raise RunPodError(f"RunPod REST API failed: {exc.code} {body}") from exc
         return RunPodPod(id=pod["id"], image_name=pod["imageName"])
 
 
@@ -99,7 +108,7 @@ class RunPodLauncher:
             raise RunPodError("SPLATBOT_RUNPOD_VPS_SSH_KEY is required for RunPod backend")
         key_b64 = base64.b64encode(self.settings.runpod_vps_ssh_key.read_bytes()).decode()
         command = render_start_command(self.settings, key_b64)
-        return self.client.create_pod(self.settings, job, f"bash -lc {shlex.quote(command)}")
+        return self.client.create_pod(self.settings, job, command)
 
 
 def render_start_command(settings: Settings, key_b64: str) -> str:
@@ -137,5 +146,8 @@ if [ "$rc" -eq 0 ]; then
 else
   ssh -i /root/.ssh/id_ed25519 {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl fail $SPLATBOT_JOB_ID --error 'RunPod worker failed with exit code $rc' --notify"
   exit "$rc"
+fi
+if [ -n "${{RUNPOD_POD_ID:-}}" ]; then
+  curl -fsS --request DELETE --header "Authorization: Bearer $SPLATBOT_RUNPOD_API_KEY" "https://rest.runpod.io/v1/pods/$RUNPOD_POD_ID" || true
 fi
 """
