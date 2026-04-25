@@ -33,4 +33,19 @@ RUN python3 -m venv --system-site-packages /opt/splatbot/venv \
     && command -v ns-train \
     && command -v ns-export \
     && command -v ns-render \
-    && command -v rembg
+    && command -v rembg \
+    && /opt/splatbot/venv/bin/python - <<'PY'
+from rembg import new_session
+
+new_session("u2net")
+print("rembg u2net model cached")
+PY
+
+RUN /opt/splatbot/venv/bin/python - <<'PY'
+try:
+    from gsplat.cuda import _backend
+except Exception as exc:
+    print(f"gsplat CUDA warmup skipped: {exc}")
+else:
+    print(f"gsplat CUDA backend loaded: {_backend._C is not None}")
+PY
