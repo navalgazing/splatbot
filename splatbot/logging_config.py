@@ -1,0 +1,9 @@
+from __future__ import annotations
+
+import logging
+
+
+def configure_logging() -> None:
+    logging.basicConfig(level=logging.INFO)
+    for logger_name in ("httpx", "httpcore"):
+        logging.getLogger(logger_name).setLevel(logging.WARNING)

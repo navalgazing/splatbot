@@ -15,6 +15,7 @@ from telegram.ext import (
 )
 
 from .config import ScanMode, Settings
+from .logging_config import configure_logging
 from .media import MediaValidationError, validate_submission
 from .models import JobArtifact, JobStatus, MediaKind, ScanJob
 from .storage import Store
@@ -193,7 +194,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def amain() -> None:
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     settings = Settings()
     settings.require_telegram()
     settings.data_dir.mkdir(parents=True, exist_ok=True)

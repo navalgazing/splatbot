@@ -5,6 +5,7 @@ import asyncio
 import logging
 
 from .config import Settings
+from .logging_config import configure_logging
 from .models import ArtifactKind, JobStatus
 from .pipeline import ScanPipeline
 from .storage import Store
@@ -38,5 +39,5 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run a single Splatbot GPU job.")
     parser.add_argument("job_id")
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     asyncio.run(run_job(args.job_id))

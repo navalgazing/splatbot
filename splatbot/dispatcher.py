@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .artifacts import ArtifactRef, ArtifactStore
 from .config import Settings, WorkerBackend
+from .logging_config import configure_logging
 from .models import ArtifactKind, JobArtifact, JobStatus, ScanJob
 from .notifications import TelegramNotifier
 from .pipeline import PipelineOutputs, ScanPipeline
@@ -106,7 +107,7 @@ class Dispatcher:
 
 
 async def amain() -> None:
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     settings = Settings()
     store = Store(settings.database_path)
     await store.init()
