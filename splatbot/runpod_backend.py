@@ -126,14 +126,14 @@ rm -rf /workspace/splatbot-app /workspace/input-media /workspace/results
 mkdir -p /workspace/input-media /workspace/results
 printf %s {shlex.quote(key_b64)} | base64 -d > /root/.ssh/id_ed25519
 chmod 600 /root/.ssh/id_ed25519
-ssh-keyscan -H {host} >> /root/.ssh/known_hosts
+SSH_OPTS="-i /root/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20"
 fail_job() {{
   rc="$?"
-  ssh -i /root/.ssh/id_ed25519 {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl fail $SPLATBOT_JOB_ID --error 'RunPod worker failed before completion with exit code $rc' --notify" || true
+  ssh $SSH_OPTS {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl fail $SPLATBOT_JOB_ID --error 'RunPod worker failed before completion with exit code $rc' --notify" || true
   exit "$rc"
 }}
 trap fail_job ERR
-ssh -i /root/.ssh/id_ed25519 {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl set-status $SPLATBOT_JOB_ID preparing"
+ssh $SSH_OPTS {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl set-status $SPLATBOT_JOB_ID preparing"
 apt-get update
 apt-get install -y git openssh-client rsync curl ffmpeg colmap python3 python3-venv python3-pip build-essential
 git clone --depth=1 {repo} /workspace/splatbot-app
@@ -142,20 +142,20 @@ python3 -m venv /workspace/venv
 /workspace/venv/bin/pip install -e /workspace/splatbot-app
 /workspace/venv/bin/pip install boto3
 {quoted_setup}
-rsync -az -e "ssh -i /root/.ssh/id_ed25519" {user}@{host}:/var/lib/splatbot/sessions/$SPLATBOT_SESSION_ID/ /workspace/input-media/
-ssh -i /root/.ssh/id_ed25519 {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl set-status $SPLATBOT_JOB_ID colmap"
+rsync -az -e "ssh $SSH_OPTS" {user}@{host}:/var/lib/splatbot/sessions/$SPLATBOT_SESSION_ID/ /workspace/input-media/
+ssh $SSH_OPTS {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl set-status $SPLATBOT_JOB_ID colmap"
 set +e
 /workspace/venv/bin/splatbot-run-job-dir "$SPLATBOT_JOB_ID" "$SPLATBOT_SCAN_MODE" /workspace/input-media /workspace/results
 rc=$?
 set -e
 trap - ERR
 if [ "$rc" -eq 0 ]; then
-  ssh -i /root/.ssh/id_ed25519 {user}@{host} "mkdir -p /var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/export /var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/renders"
-  rsync -az -e "ssh -i /root/.ssh/id_ed25519" /workspace/results/cleaned_splat.ply {user}@{host}:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/export/cleaned_splat.ply
-  rsync -az -e "ssh -i /root/.ssh/id_ed25519" /workspace/results/turntable.mp4 {user}@{host}:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/renders/turntable.mp4
-  ssh -i /root/.ssh/id_ed25519 {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl complete $SPLATBOT_JOB_ID --notify"
+  ssh $SSH_OPTS {user}@{host} "mkdir -p /var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/export /var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/renders"
+  rsync -az -e "ssh $SSH_OPTS" /workspace/results/cleaned_splat.ply {user}@{host}:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/export/cleaned_splat.ply
+  rsync -az -e "ssh $SSH_OPTS" /workspace/results/turntable.mp4 {user}@{host}:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/renders/turntable.mp4
+  ssh $SSH_OPTS {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl complete $SPLATBOT_JOB_ID --notify"
 else
-  ssh -i /root/.ssh/id_ed25519 {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl fail $SPLATBOT_JOB_ID --error 'RunPod worker failed with exit code $rc' --notify"
+  ssh $SSH_OPTS {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl fail $SPLATBOT_JOB_ID --error 'RunPod worker failed with exit code $rc' --notify"
   exit "$rc"
 fi
 if [ -n "${{RUNPOD_POD_ID:-}}" ]; then
