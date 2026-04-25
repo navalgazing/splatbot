@@ -4,6 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV SPLATBOT_RUNPOD_VENV=/opt/splatbot/venv
 ENV PATH=/opt/splatbot/venv/bin:$PATH
 ENV PIP_NO_CACHE_DIR=1
+ENV QT_QPA_PLATFORM=offscreen
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

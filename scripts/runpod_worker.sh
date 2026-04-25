@@ -8,6 +8,7 @@ set -euo pipefail
 : "${SPLATBOT_VPS_USER:=root}"
 
 export DEBIAN_FRONTEND=noninteractive
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
 SSH_OPTS="-i /root/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20"
 VENV_DIR="${SPLATBOT_RUNPOD_VENV:-/workspace/venv}"
 
