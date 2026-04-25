@@ -62,6 +62,8 @@ class Settings(BaseSettings):
     ns_render_bin: str = "ns-render"
     rembg_bin: str = "rembg"
     colmap_use_gpu: bool = False
+    train_max_iterations: int = 10000
+    train_steps_per_save: int = 10000
 
     worker_backend: WorkerBackend = WorkerBackend.SSH
     gpu_ssh_host: str = ""

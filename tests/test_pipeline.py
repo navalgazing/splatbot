@@ -1,10 +1,11 @@
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
 from splatbot.commands import CommandResult
 from splatbot.config import ScanMode, Settings
 from splatbot.models import JobStatus, MediaItem, MediaKind
-from splatbot.pipeline import ScanPipeline, clean_ply
+from splatbot.pipeline import ScanPipeline, clean_ply, latest_nerfstudio_config
 
 
 class FakeRunner:
@@ -13,8 +14,13 @@ class FakeRunner:
 
     async def run(self, argv: list[str], cwd: Path | None = None) -> CommandResult:
         self.calls.append(argv)
+        if argv[0] == "ns-train":
+            output_dir = Path(argv[argv.index("--output-dir") + 1])
+            config_dir = output_dir / "processed" / "splatfacto" / "2026-04-25_120000"
+            config_dir.mkdir(parents=True, exist_ok=True)
+            (config_dir / "config.yml").write_text("fake: true\n", encoding="utf-8")
         if argv[0] == "ns-export":
-            output_dir = Path(argv[-1])
+            output_dir = Path(argv[argv.index("--output-dir") + 1])
             output_dir.mkdir(parents=True, exist_ok=True)
             (output_dir / "raw_splat.ply").write_text(
                 "\n".join(
@@ -107,5 +113,54 @@ async def test_pipeline_builds_expected_commands(tmp_path) -> None:
         str(tmp_path / "jobs" / "job1" / "processed"),
         "--no-gpu",
     ]
+    assert runner.calls[1] == [
+        "ns-train",
+        "splatfacto",
+        "--data",
+        str(tmp_path / "jobs" / "job1" / "processed"),
+        "--output-dir",
+        str(tmp_path / "jobs" / "job1" / "nerfstudio"),
+        "--max-num-iterations",
+        "10000",
+        "--steps-per-save",
+        "10000",
+        "--viewer.quit-on-train-completion",
+        "True",
+    ]
+    assert runner.calls[2] == [
+        "ns-export",
+        "gaussian-splat",
+        "--load-config",
+        str(tmp_path / "jobs" / "job1" / "nerfstudio" / "processed" / "splatfacto" / "2026-04-25_120000" / "config.yml"),
+        "--output-dir",
+        str(tmp_path / "jobs" / "job1" / "export"),
+        "--output-filename",
+        "raw_splat.ply",
+    ]
+    assert runner.calls[3] == [
+        "ns-render",
+        "spiral",
+        "--load-config",
+        str(tmp_path / "jobs" / "job1" / "nerfstudio" / "processed" / "splatfacto" / "2026-04-25_120000" / "config.yml"),
+        "--output-path",
+        str(tmp_path / "jobs" / "job1" / "renders" / "turntable.mp4"),
+        "--seconds",
+        "3",
+        "--frame-rate",
+        "24",
+    ]
     assert [call[0] for call in runner.calls] == ["ns-process-data", "ns-train", "ns-export", "ns-render"]
     assert statuses == [JobStatus.COLMAP, JobStatus.TRAINING, JobStatus.EXPORTING, JobStatus.RENDERING]
+
+
+def test_latest_nerfstudio_config_selects_newest(tmp_path) -> None:
+    old = tmp_path / "old" / "config.yml"
+    new = tmp_path / "new" / "config.yml"
+    old.parent.mkdir(parents=True)
+    new.parent.mkdir(parents=True)
+    old.write_text("old\n", encoding="utf-8")
+    new.write_text("new\n", encoding="utf-8")
+    os.utime(old, (1, 1))
+    os.utime(new, (2, 2))
+
+    assert latest_nerfstudio_config(tmp_path) == new

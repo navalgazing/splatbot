@@ -114,6 +114,12 @@ class ScanPipeline:
                 str(processed_dir),
                 "--output-dir",
                 str(ns_dir),
+                "--max-num-iterations",
+                str(self.settings.train_max_iterations),
+                "--steps-per-save",
+                str(self.settings.train_steps_per_save),
+                "--viewer.quit-on-train-completion",
+                "True",
             ]
         )
 
@@ -124,9 +130,11 @@ class ScanPipeline:
                 self.settings.ns_export_bin,
                 "gaussian-splat",
                 "--load-config",
-                str(ns_dir / "config.yml"),
+                str(latest_nerfstudio_config(ns_dir)),
                 "--output-dir",
                 str(export_dir),
+                "--output-filename",
+                raw_ply.name,
             ]
         )
         return raw_ply
@@ -136,14 +144,25 @@ class ScanPipeline:
         await self.runner.run(
             [
                 self.settings.ns_render_bin,
-                "camera-path",
+                "spiral",
                 "--load-config",
-                str(ns_dir / "config.yml"),
+                str(latest_nerfstudio_config(ns_dir)),
                 "--output-path",
                 str(preview),
+                "--seconds",
+                "3",
+                "--frame-rate",
+                "24",
             ]
         )
         return preview
+
+
+def latest_nerfstudio_config(ns_dir: Path) -> Path:
+    configs = sorted(ns_dir.glob("**/config.yml"), key=lambda path: path.stat().st_mtime)
+    if not configs:
+        raise FileNotFoundError(f"no Nerfstudio config.yml found under {ns_dir}")
+    return configs[-1]
 
 
 def clean_ply(src: Path, dest: Path) -> None:
