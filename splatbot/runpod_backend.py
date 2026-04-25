@@ -138,7 +138,8 @@ ssh $SSH_OPTS {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl set-status $
 apt-get update
 apt-get install -y openssh-client rsync curl ffmpeg colmap python3 python3-venv python3-pip build-essential
 mkdir -p /workspace/splatbot-app
-ssh $SSH_OPTS {user}@{host} "cd /opt/splatbot/app && tar -czf - pyproject.toml splatbot" | tar -xzf - -C /workspace/splatbot-app
+rsync -r --delete --no-perms --no-owner --no-group --omit-dir-times --exclude "__pycache__" --exclude "*.egg-info" -e "ssh $SSH_OPTS" {user}@{host}:/opt/splatbot/app/pyproject.toml /workspace/splatbot-app/
+rsync -r --delete --no-perms --no-owner --no-group --omit-dir-times --exclude "__pycache__" --exclude "*.egg-info" -e "ssh $SSH_OPTS" {user}@{host}:/opt/splatbot/app/splatbot/ /workspace/splatbot-app/splatbot/
 python3 -m venv /workspace/venv
 /workspace/venv/bin/pip install --upgrade pip
 /workspace/venv/bin/pip install -e /workspace/splatbot-app
