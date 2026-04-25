@@ -122,6 +122,8 @@ def render_start_command(settings: Settings, key_b64: str) -> str:
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 mkdir -p /root/.ssh /workspace/input-media /workspace/results
+rm -rf /workspace/splatbot-app /workspace/input-media /workspace/results
+mkdir -p /workspace/input-media /workspace/results
 printf %s {shlex.quote(key_b64)} | base64 -d > /root/.ssh/id_ed25519
 chmod 600 /root/.ssh/id_ed25519
 ssh-keyscan -H {host} >> /root/.ssh/known_hosts
