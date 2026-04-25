@@ -40,7 +40,8 @@ class ScanPipeline:
         for path in (images_dir, processed_dir, ns_dir, export_dir, render_dir):
             path.mkdir(parents=True, exist_ok=True)
 
-        if len(media) == 1 and media[0].kind == MediaKind.VIDEO:
+        is_video = len(media) == 1 and media[0].kind == MediaKind.VIDEO
+        if is_video:
             await self.extract_video_frames(Path(media[0].local_path), images_dir)
         else:
             await self.copy_or_link_images(media, images_dir)
@@ -54,7 +55,12 @@ class ScanPipeline:
 
         if on_status:
             await on_status(job_id, JobStatus.COLMAP)
-        await self.process_data(input_images_dir, processed_dir)
+        await self.process_data(
+            input_images_dir,
+            processed_dir,
+            matching_method="sequential" if is_video else None,
+            max_dataset_size=self.settings.max_video_frames if is_video else self.settings.max_images,
+        )
         if on_status:
             await on_status(job_id, JobStatus.TRAINING)
         await self.train_splatfacto(processed_dir, ns_dir)
@@ -76,8 +82,12 @@ class ScanPipeline:
                 self.settings.ffmpeg_bin,
                 "-i",
                 str(video),
+                "-t",
+                str(self.settings.max_video_seconds),
                 "-vf",
-                f"fps={self.settings.max_images}/{self.settings.max_video_seconds}",
+                f"fps={self.settings.max_video_frames}/{self.settings.max_video_seconds}",
+                "-q:v",
+                "2",
                 str(images_dir / "frame_%05d.jpg"),
             ]
         )
@@ -95,7 +105,13 @@ class ScanPipeline:
             [self.settings.rembg_bin, "p", str(images_dir), str(object_dir)]
         )
 
-    async def process_data(self, images_dir: Path, processed_dir: Path) -> None:
+    async def process_data(
+        self,
+        images_dir: Path,
+        processed_dir: Path,
+        matching_method: str | None = None,
+        max_dataset_size: int | None = None,
+    ) -> None:
         argv = [
             self.settings.ns_process_data_bin,
             "images",
@@ -104,6 +120,10 @@ class ScanPipeline:
             "--output-dir",
             str(processed_dir),
         ]
+        if matching_method:
+            argv.extend(["--matching-method", matching_method])
+        if max_dataset_size:
+            argv.extend(["--max-dataset-size", str(max_dataset_size)])
         if not self.settings.colmap_use_gpu:
             argv.append("--no-gpu")
         await self.runner.run(argv)

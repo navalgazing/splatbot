@@ -42,11 +42,11 @@ class FakeRunner:
         return CommandResult(argv=argv, returncode=0, stdout="", stderr="")
 
 
-def media(path: Path) -> MediaItem:
+def media(path: Path, kind: MediaKind = MediaKind.PHOTO) -> MediaItem:
     return MediaItem(
         id=path.name,
         session_id="s",
-        kind=MediaKind.PHOTO,
+        kind=kind,
         local_path=str(path),
         remote_key=None,
         created_at=datetime.now(UTC),
@@ -122,6 +122,8 @@ async def test_pipeline_builds_expected_commands(tmp_path) -> None:
         str(tmp_path / "jobs" / "job1" / "images"),
         "--output-dir",
         str(tmp_path / "jobs" / "job1" / "processed"),
+        "--max-dataset-size",
+        "300",
         "--no-gpu",
     ]
     assert runner.calls[1] == [
@@ -150,6 +152,45 @@ async def test_pipeline_builds_expected_commands(tmp_path) -> None:
     ]
     assert [call[0] for call in runner.calls] == ["ns-process-data", "ns-train", "ns-export"]
     assert statuses == [JobStatus.COLMAP, JobStatus.TRAINING, JobStatus.EXPORTING]
+
+
+async def test_pipeline_uses_video_speedups(tmp_path) -> None:
+    video = tmp_path / "scan.mov"
+    video.write_text("fake", encoding="utf-8")
+    settings = Settings(data_dir=tmp_path)
+    runner = FakeRunner()
+
+    await ScanPipeline(settings, runner=runner).run(
+        "job1",
+        ScanMode.SCENE,
+        [media(video, MediaKind.VIDEO)],
+    )
+
+    assert runner.calls[0] == [
+        "ffmpeg",
+        "-i",
+        str(video),
+        "-t",
+        "60",
+        "-vf",
+        "fps=140/60",
+        "-q:v",
+        "2",
+        str(tmp_path / "jobs" / "job1" / "images" / "frame_%05d.jpg"),
+    ]
+    assert runner.calls[1] == [
+        "ns-process-data",
+        "images",
+        "--data",
+        str(tmp_path / "jobs" / "job1" / "images"),
+        "--output-dir",
+        str(tmp_path / "jobs" / "job1" / "processed"),
+        "--matching-method",
+        "sequential",
+        "--max-dataset-size",
+        "140",
+        "--no-gpu",
+    ]
 
 
 async def test_pipeline_can_render_preview_when_enabled(tmp_path) -> None:

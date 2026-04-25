@@ -50,7 +50,8 @@ class Settings(BaseSettings):
 
     min_images: int = 100
     max_images: int = 300
-    max_video_seconds: int = 90
+    max_video_frames: int = 140
+    max_video_seconds: int = 60
     default_scan_mode: ScanMode = ScanMode.SCENE
     job_retention_days: int = 14
 
