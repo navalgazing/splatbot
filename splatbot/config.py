@@ -81,7 +81,6 @@ class Settings(BaseSettings):
     runpod_vps_host: str = ""
     runpod_vps_user: str = "root"
     runpod_vps_ssh_key: Path | None = None
-    runpod_repo_url: str = "https://github.com/navalgazing/splatbot.git"
     runpod_setup_command: str = "/workspace/venv/bin/pip install nerfstudio rembg"
 
     @field_validator("allowed_telegram_ids", mode="before")

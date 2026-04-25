@@ -115,7 +115,6 @@ class RunPodLauncher:
 def render_start_command(settings: Settings, key_b64: str) -> str:
     host = shlex.quote(settings.runpod_vps_host)
     user = shlex.quote(settings.runpod_vps_user)
-    repo = shlex.quote(settings.runpod_repo_url)
     setup_command = settings.runpod_setup_command.strip()
     quoted_setup = setup_command if setup_command else "true"
     return f"""
@@ -135,8 +134,8 @@ fail_job() {{
 trap fail_job ERR
 ssh $SSH_OPTS {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl set-status $SPLATBOT_JOB_ID preparing"
 apt-get update
-apt-get install -y git openssh-client rsync curl ffmpeg colmap python3 python3-venv python3-pip build-essential
-git clone --depth=1 {repo} /workspace/splatbot-app
+apt-get install -y openssh-client rsync curl ffmpeg colmap python3 python3-venv python3-pip build-essential
+rsync -az --delete -e "ssh $SSH_OPTS" {user}@{host}:/opt/splatbot/app/ /workspace/splatbot-app/
 python3 -m venv /workspace/venv
 /workspace/venv/bin/pip install --upgrade pip
 /workspace/venv/bin/pip install -e /workspace/splatbot-app
