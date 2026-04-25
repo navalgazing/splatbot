@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     runpod_vps_ssh_key: Path | None = None
     runpod_venv: str = ""
     runpod_bootstrap_command: str = "apt-get update && apt-get install -y openssh-client rsync curl ffmpeg colmap python3 python3-venv python3-pip build-essential"
-    runpod_setup_command: str = "/workspace/venv/bin/pip install nerfstudio 'rembg[cpu]' filetype"
+    runpod_setup_command: str = "/workspace/venv/bin/pip install nerfstudio 'rembg[cpu,cli]'"
 
     @field_validator("allowed_telegram_ids", mode="before")
     @classmethod
