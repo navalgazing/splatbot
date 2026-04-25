@@ -173,10 +173,16 @@ class RunPodLauncher:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         key_b64 = base64.b64encode(self.settings.runpod_vps_ssh_key.read_bytes()).decode()
         command = render_remote_worker_command(self.settings, job, pod_id, key_b64)
-        ssh_command = ["ssh", *self._pod_ssh_args(target), "bash", "-lc", shlex.quote(command)]
+        ssh_command = ["ssh", *self._pod_ssh_args(target), "bash", "-s"]
         with log_path.open("ab") as log:
             log.write(f"\n--- RunPod worker {pod_id} on {target.host}:{target.port} ---\n".encode())
-            result = subprocess.run(ssh_command, stdout=log, stderr=subprocess.STDOUT, check=False)
+            result = subprocess.run(
+                ssh_command,
+                input=command.encode(),
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
         if result.returncode != 0:
             raise RunPodError(f"RunPod worker exited with {result.returncode}; see {log_path}")
 
@@ -184,7 +190,13 @@ class RunPodLauncher:
 def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str, key_b64: str) -> str:
     host = shlex.quote(settings.runpod_vps_host)
     user = shlex.quote(settings.runpod_vps_user)
+    bootstrap_command = shlex.quote(settings.runpod_bootstrap_command.strip())
     setup_command = shlex.quote(settings.runpod_setup_command.strip())
+    venv_export = (
+        f"export SPLATBOT_RUNPOD_VENV={shlex.quote(settings.runpod_venv.strip())}"
+        if settings.runpod_venv.strip()
+        else ""
+    )
     return f"""
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -205,6 +217,8 @@ export SPLATBOT_RUNPOD_API_KEY={shlex.quote(settings.runpod_api_key)}
 export RUNPOD_POD_ID={shlex.quote(pod_id)}
 export SPLATBOT_VPS_HOST={host}
 export SPLATBOT_VPS_USER={user}
+{venv_export}
+export SPLATBOT_RUNPOD_BOOTSTRAP_COMMAND={bootstrap_command}
 export SPLATBOT_RUNPOD_SETUP_COMMAND={setup_command}
 exec /workspace/splatbot-app/scripts/runpod_worker.sh
 """

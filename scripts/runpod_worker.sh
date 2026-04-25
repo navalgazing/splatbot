@@ -9,6 +9,7 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 SSH_OPTS="-i /root/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20"
+VENV_DIR="${SPLATBOT_RUNPOD_VENV:-/workspace/venv}"
 
 fail_job() {
   rc="$?"
@@ -24,15 +25,21 @@ trap fail_job ERR
 ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
   "/opt/splatbot/venv/bin/splatbot-jobctl set-status $SPLATBOT_JOB_ID preparing"
 
-apt-get update
-apt-get install -y openssh-client rsync curl ffmpeg colmap python3 python3-venv python3-pip build-essential
+if [ -n "${SPLATBOT_RUNPOD_BOOTSTRAP_COMMAND:-}" ]; then
+  bash -lc "$SPLATBOT_RUNPOD_BOOTSTRAP_COMMAND"
+fi
 
-python3 -m venv /workspace/venv
-/workspace/venv/bin/pip install --upgrade pip
-/workspace/venv/bin/pip install -e /workspace/splatbot-app
-/workspace/venv/bin/pip install boto3
-${SPLATBOT_RUNPOD_SETUP_COMMAND:-/workspace/venv/bin/pip install nerfstudio rembg}
-export PATH="/workspace/venv/bin:$PATH"
+if [ ! -x "$VENV_DIR/bin/python" ]; then
+  python3 -m venv "$VENV_DIR"
+  "$VENV_DIR/bin/pip" install --upgrade pip
+fi
+
+"$VENV_DIR/bin/pip" install -e /workspace/splatbot-app
+"$VENV_DIR/bin/pip" install boto3
+if [ -n "${SPLATBOT_RUNPOD_SETUP_COMMAND:-}" ]; then
+  bash -lc "$SPLATBOT_RUNPOD_SETUP_COMMAND"
+fi
+export PATH="$VENV_DIR/bin:$PATH"
 
 command -v ns-process-data >/dev/null
 command -v ns-train >/dev/null
@@ -49,7 +56,7 @@ ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
   "/opt/splatbot/venv/bin/splatbot-jobctl set-status $SPLATBOT_JOB_ID colmap"
 
 set +e
-/workspace/venv/bin/splatbot-run-job-dir "$SPLATBOT_JOB_ID" "$SPLATBOT_SCAN_MODE" /workspace/input-media /workspace/results
+"$VENV_DIR/bin/splatbot-run-job-dir" "$SPLATBOT_JOB_ID" "$SPLATBOT_SCAN_MODE" /workspace/input-media /workspace/results
 rc="$?"
 set -e
 trap - ERR

@@ -16,7 +16,12 @@ class CommandResult:
 class CommandError(RuntimeError):
     def __init__(self, result: CommandResult) -> None:
         self.result = result
-        super().__init__(f"command failed ({result.returncode}): {' '.join(result.argv)}")
+        detail = f"command failed ({result.returncode}): {' '.join(result.argv)}"
+        if result.stdout:
+            detail += f"\nstdout:\n{result.stdout[-4000:]}"
+        if result.stderr:
+            detail += f"\nstderr:\n{result.stderr[-4000:]}"
+        super().__init__(detail)
 
 
 class CommandRunner:
@@ -37,4 +42,3 @@ class CommandRunner:
         if result.returncode != 0:
             raise CommandError(result)
         return result
-

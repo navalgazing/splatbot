@@ -115,3 +115,29 @@ pytest -q
 For a simple local deployment, the bot and dispatcher can access the same SQLite database and uploaded media paths.
 
 For RunPod, set `SPLATBOT_WORKER_BACKEND=runpod`. The dispatcher launches a GPU pod, the pod SSHes back to the VPS to pull session media, runs `splatbot-run-job-dir`, rsyncs artifacts back under `/var/lib/splatbot/jobs/<job_id>`, and calls `splatbot-jobctl` on the VPS to mark the job complete or failed.
+
+### Prebuilt RunPod Image
+
+The generic RunPod image works, but every job has to install COLMAP, ffmpeg,
+Nerfstudio, PyTorch/CUDA wheels, gsplat, and rembg before it can start GPU work.
+Build `Dockerfile.runpod` and use that image to make job pods start directly from
+the media sync/pipeline step.
+
+Example:
+
+```bash
+docker build -f Dockerfile.runpod -t ghcr.io/navalgazing/splatbot-runpod:latest .
+docker push ghcr.io/navalgazing/splatbot-runpod:latest
+```
+
+Then set:
+
+```bash
+SPLATBOT_RUNPOD_IMAGE_NAME=ghcr.io/navalgazing/splatbot-runpod:latest
+SPLATBOT_RUNPOD_VENV=/opt/splatbot/venv
+SPLATBOT_RUNPOD_BOOTSTRAP_COMMAND=
+SPLATBOT_RUNPOD_SETUP_COMMAND=
+```
+
+Keep the bootstrap/setup commands populated only when using a generic base image
+or debugging dependency changes.
