@@ -21,7 +21,7 @@ RUN apt-get update \
 
 RUN python3 -m venv --system-site-packages /opt/splatbot/venv \
     && /opt/splatbot/venv/bin/pip install --upgrade pip \
-    && /opt/splatbot/venv/bin/pip install boto3 nerfstudio rembg \
+    && /opt/splatbot/venv/bin/pip install boto3 nerfstudio 'rembg[cpu]' \
     && command -v ffmpeg \
     && command -v colmap \
     && command -v ns-process-data \
