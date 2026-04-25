@@ -135,7 +135,8 @@ trap fail_job ERR
 ssh $SSH_OPTS {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl set-status $SPLATBOT_JOB_ID preparing"
 apt-get update
 apt-get install -y openssh-client rsync curl ffmpeg colmap python3 python3-venv python3-pip build-essential
-rsync -az --delete -e "ssh $SSH_OPTS" {user}@{host}:/opt/splatbot/app/ /workspace/splatbot-app/
+mkdir -p /workspace/splatbot-app
+ssh $SSH_OPTS {user}@{host} "cd /opt/splatbot/app && tar -czf - pyproject.toml splatbot" | tar -xzf - -C /workspace/splatbot-app
 python3 -m venv /workspace/venv
 /workspace/venv/bin/pip install --upgrade pip
 /workspace/venv/bin/pip install -e /workspace/splatbot-app
