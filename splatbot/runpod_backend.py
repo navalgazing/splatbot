@@ -115,53 +115,22 @@ class RunPodLauncher:
 def render_start_command(settings: Settings, key_b64: str) -> str:
     host = shlex.quote(settings.runpod_vps_host)
     user = shlex.quote(settings.runpod_vps_user)
-    setup_command = settings.runpod_setup_command.strip()
-    quoted_setup = setup_command if setup_command else "true"
+    setup_command = shlex.quote(settings.runpod_setup_command.strip())
     return f"""
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
-mkdir -p /root/.ssh /workspace/input-media /workspace/results
-rm -rf /workspace/splatbot-app /workspace/input-media /workspace/results
-mkdir -p /workspace/input-media /workspace/results
+mkdir -p /root/.ssh /workspace/splatbot-app
+apt-get update
+apt-get install -y openssh-client rsync python3
 printf %s {shlex.quote(key_b64)} | base64 -d > /root/.ssh/id_ed25519
 chmod 600 /root/.ssh/id_ed25519
 SSH_OPTS="-i /root/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20"
-fail_job() {{
-  rc="$?"
-  failed_command="${{BASH_COMMAND:-unknown}}"
-  error="RunPod worker failed before completion with exit code $rc while running: $failed_command"
-  ssh $SSH_OPTS {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl fail $SPLATBOT_JOB_ID --error $(printf %q "$error") --notify" || true
-  exit "$rc"
-}}
-trap fail_job ERR
-ssh $SSH_OPTS {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl set-status $SPLATBOT_JOB_ID preparing"
-apt-get update
-apt-get install -y openssh-client rsync curl ffmpeg colmap python3 python3-venv python3-pip build-essential
-mkdir -p /workspace/splatbot-app
 rsync -r --delete --no-perms --no-owner --no-group --omit-dir-times --exclude "__pycache__" --exclude "*.egg-info" -e "ssh $SSH_OPTS" {user}@{host}:/opt/splatbot/app/pyproject.toml /workspace/splatbot-app/
 rsync -r --delete --no-perms --no-owner --no-group --omit-dir-times --exclude "__pycache__" --exclude "*.egg-info" -e "ssh $SSH_OPTS" {user}@{host}:/opt/splatbot/app/splatbot/ /workspace/splatbot-app/splatbot/
-python3 -m venv /workspace/venv
-/workspace/venv/bin/pip install --upgrade pip
-/workspace/venv/bin/pip install -e /workspace/splatbot-app
-/workspace/venv/bin/pip install boto3
-{quoted_setup}
-rsync -az -e "ssh $SSH_OPTS" {user}@{host}:/var/lib/splatbot/sessions/$SPLATBOT_SESSION_ID/ /workspace/input-media/
-ssh $SSH_OPTS {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl set-status $SPLATBOT_JOB_ID colmap"
-set +e
-/workspace/venv/bin/splatbot-run-job-dir "$SPLATBOT_JOB_ID" "$SPLATBOT_SCAN_MODE" /workspace/input-media /workspace/results
-rc=$?
-set -e
-trap - ERR
-if [ "$rc" -eq 0 ]; then
-  ssh $SSH_OPTS {user}@{host} "mkdir -p /var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/export /var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/renders"
-  rsync -az -e "ssh $SSH_OPTS" /workspace/results/cleaned_splat.ply {user}@{host}:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/export/cleaned_splat.ply
-  rsync -az -e "ssh $SSH_OPTS" /workspace/results/turntable.mp4 {user}@{host}:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/renders/turntable.mp4
-  ssh $SSH_OPTS {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl complete $SPLATBOT_JOB_ID --notify"
-else
-  ssh $SSH_OPTS {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl fail $SPLATBOT_JOB_ID --error 'RunPod worker failed with exit code $rc' --notify"
-  exit "$rc"
-fi
-if [ -n "${{RUNPOD_POD_ID:-}}" ]; then
-  curl -fsS --request DELETE --header "Authorization: Bearer $SPLATBOT_RUNPOD_API_KEY" "https://rest.runpod.io/v1/pods/$RUNPOD_POD_ID" || true
-fi
+rsync -r --delete --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" {user}@{host}:/opt/splatbot/app/scripts/ /workspace/splatbot-app/scripts/
+chmod +x /workspace/splatbot-app/scripts/runpod_worker.sh
+export SPLATBOT_VPS_HOST={host}
+export SPLATBOT_VPS_USER={user}
+export SPLATBOT_RUNPOD_SETUP_COMMAND={setup_command}
+exec /workspace/splatbot-app/scripts/runpod_worker.sh
 """
