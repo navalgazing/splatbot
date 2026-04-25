@@ -72,9 +72,15 @@ class Dispatcher:
         if job is None:
             return False
         if self.settings.worker_backend == WorkerBackend.RUNPOD:
-            await self.store.set_job_status(job.id, JobStatus.PREPARING)
-            pod = self.runpod_launcher.launch(job)
-            LOGGER.info("launched RunPod pod %s for job %s", pod.id, job.id)
+            try:
+                await self.store.set_job_status(job.id, JobStatus.PREPARING)
+                pod = await asyncio.to_thread(self.runpod_launcher.launch, job)
+                LOGGER.info("finished RunPod pod %s for job %s", pod.id, job.id)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("RunPod job %s failed", job.id)
+                await self.store.set_job_status(job.id, JobStatus.FAILED, str(exc))
+                if self.notifier:
+                    await self.notifier.job_failed(job, str(exc))
             return True
         media = await self.store.list_media(job.session_id)
         try:

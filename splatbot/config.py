@@ -78,6 +78,8 @@ class Settings(BaseSettings):
     runpod_ports: str = "22/tcp"
     runpod_volume_mount_path: str = "/workspace"
     runpod_ssh_user: str = "root"
+    runpod_pod_ssh_key: Path | None = None
+    runpod_ssh_ready_timeout_seconds: int = 900
     runpod_vps_host: str = ""
     runpod_vps_user: str = "root"
     runpod_vps_ssh_key: Path | None = None
