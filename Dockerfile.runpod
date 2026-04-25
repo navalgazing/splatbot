@@ -2,7 +2,10 @@ FROM runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV SPLATBOT_RUNPOD_VENV=/opt/splatbot/venv
-ENV PATH=/opt/splatbot/venv/bin:$PATH
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=/opt/splatbot/venv/bin:/usr/local/cuda/bin:$PATH
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+ENV TORCH_CUDA_ARCH_LIST=8.9
 ENV PIP_NO_CACHE_DIR=1
 ENV QT_QPA_PLATFORM=offscreen
 
@@ -24,6 +27,7 @@ RUN python3 -m venv --system-site-packages /opt/splatbot/venv \
     && /opt/splatbot/venv/bin/pip install boto3 nerfstudio 'rembg[cpu,cli]' \
     && command -v ffmpeg \
     && command -v colmap \
+    && command -v nvcc \
     && command -v ns-process-data \
     && command -v ns-train \
     && command -v ns-export \

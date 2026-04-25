@@ -9,6 +9,10 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
+export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
+export PATH="$CUDA_HOME/bin:/usr/local/cuda/bin:$PATH"
+export LD_LIBRARY_PATH="$CUDA_HOME/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
+export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.9}"
 SSH_OPTS="-i /root/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20"
 VENV_DIR="${SPLATBOT_RUNPOD_VENV:-/workspace/venv}"
 
@@ -46,6 +50,17 @@ command -v ns-process-data >/dev/null
 command -v ns-train >/dev/null
 command -v ns-export >/dev/null
 command -v ns-render >/dev/null
+command -v nvcc >/dev/null
+"$VENV_DIR/bin/python" - <<'PY'
+import torch
+
+if not torch.cuda.is_available():
+    raise SystemExit("torch CUDA is not available")
+from gsplat.cuda import _backend
+
+if _backend._C is None:
+    raise SystemExit("gsplat CUDA extension is not available")
+PY
 
 rm -rf /workspace/input-media /workspace/results
 mkdir -p /workspace/input-media /workspace/results
