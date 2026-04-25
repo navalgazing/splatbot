@@ -31,7 +31,7 @@ if [ -n "${SPLATBOT_RUNPOD_BOOTSTRAP_COMMAND:-}" ]; then
 fi
 
 if [ ! -x "$VENV_DIR/bin/python" ]; then
-  python3 -m venv "$VENV_DIR"
+  python3 -m venv --system-site-packages "$VENV_DIR"
   "$VENV_DIR/bin/pip" install --upgrade pip
 fi
 
