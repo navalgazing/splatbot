@@ -128,7 +128,9 @@ chmod 600 /root/.ssh/id_ed25519
 SSH_OPTS="-i /root/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20"
 fail_job() {{
   rc="$?"
-  ssh $SSH_OPTS {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl fail $SPLATBOT_JOB_ID --error 'RunPod worker failed before completion with exit code $rc' --notify" || true
+  failed_command="${{BASH_COMMAND:-unknown}}"
+  error="RunPod worker failed before completion with exit code $rc while running: $failed_command"
+  ssh $SSH_OPTS {user}@{host} "/opt/splatbot/venv/bin/splatbot-jobctl fail $SPLATBOT_JOB_ID --error $(printf %q "$error") --notify" || true
   exit "$rc"
 }}
 trap fail_job ERR
