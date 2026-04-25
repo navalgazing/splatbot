@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     colmap_use_gpu: bool = False
     train_max_iterations: int = 10000
     train_steps_per_save: int = 10000
+    render_preview: bool = False
 
     worker_backend: WorkerBackend = WorkerBackend.SSH
     gpu_ssh_host: str = ""

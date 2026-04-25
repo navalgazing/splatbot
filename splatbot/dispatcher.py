@@ -44,10 +44,10 @@ class Dispatcher:
         published: list[JobArtifact] = []
         viewer_path = publish_viewer(self.settings, job.id, outputs)
         viewer_url = self.settings.public_job_url(job.id)
-        for kind, path in (
-            (ArtifactKind.PLY, outputs.cleaned_ply),
-            (ArtifactKind.PREVIEW, outputs.preview_mp4),
-        ):
+        artifacts_to_publish = [(ArtifactKind.PLY, outputs.cleaned_ply)]
+        if outputs.preview_mp4 is not None and outputs.preview_mp4.exists():
+            artifacts_to_publish.append((ArtifactKind.PREVIEW, outputs.preview_mp4))
+        for kind, path in artifacts_to_publish:
             ref = self._upload_artifact(job, kind, path)
             published.append(
                 await self.store.add_artifact(

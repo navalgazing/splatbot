@@ -36,7 +36,8 @@ async def run(job_id: str, mode: ScanMode, media_dir: Path, output_dir: Path) ->
     settings = Settings(data_dir=Path("/workspace/splatbot-data"))
     outputs = await ScanPipeline(settings).run(job_id, mode, media_items(media_dir))
     shutil.copy2(outputs.cleaned_ply, output_dir / "cleaned_splat.ply")
-    shutil.copy2(outputs.preview_mp4, output_dir / "turntable.mp4")
+    if outputs.preview_mp4 is not None and outputs.preview_mp4.exists():
+        shutil.copy2(outputs.preview_mp4, output_dir / "turntable.mp4")
 
 
 def main() -> None:

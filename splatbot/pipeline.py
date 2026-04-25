@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -15,7 +16,7 @@ StatusCallback = Callable[[str, JobStatus], Awaitable[None]]
 @dataclass(frozen=True)
 class PipelineOutputs:
     cleaned_ply: Path
-    preview_mp4: Path
+    preview_mp4: Path | None
 
 
 class ScanPipeline:
@@ -62,9 +63,11 @@ class ScanPipeline:
         raw_ply = await self.export_ply(ns_dir, export_dir)
         cleaned_ply = export_dir / "cleaned_splat.ply"
         clean_ply(raw_ply, cleaned_ply)
-        if on_status:
-            await on_status(job_id, JobStatus.RENDERING)
-        preview_mp4 = await self.render_turntable(ns_dir, render_dir)
+        preview_mp4 = None
+        if self.settings.render_preview:
+            if on_status:
+                await on_status(job_id, JobStatus.RENDERING)
+            preview_mp4 = await self.render_turntable(ns_dir, render_dir)
         return PipelineOutputs(cleaned_ply=cleaned_ply, preview_mp4=preview_mp4)
 
     async def extract_video_frames(self, video: Path, images_dir: Path) -> None:
@@ -167,6 +170,10 @@ def latest_nerfstudio_config(ns_dir: Path) -> Path:
 
 def clean_ply(src: Path, dest: Path) -> None:
     """Conservatively remove invalid ASCII vertex rows while preserving properties."""
+    header_bytes = src.read_bytes()[:512]
+    if b"format binary_" in header_bytes:
+        shutil.copy2(src, dest)
+        return
     raw = src.read_text(encoding="utf-8", errors="replace").splitlines()
     try:
         end_header_idx = raw.index("end_header")

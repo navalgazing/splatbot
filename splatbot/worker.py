@@ -27,7 +27,8 @@ async def run_job(job_id: str) -> None:
         outputs = await pipeline.run(job.id, job.mode, media, store.set_job_status)
         LOGGER.info("job %s complete: %s %s", job.id, outputs.cleaned_ply, outputs.preview_mp4)
         await store.add_artifact(job.id, ArtifactKind.PLY, outputs.cleaned_ply)
-        await store.add_artifact(job.id, ArtifactKind.PREVIEW, outputs.preview_mp4)
+        if outputs.preview_mp4 is not None and outputs.preview_mp4.exists():
+            await store.add_artifact(job.id, ArtifactKind.PREVIEW, outputs.preview_mp4)
         await store.set_job_status(job.id, JobStatus.DONE)
     except Exception as exc:  # noqa: BLE001
         LOGGER.exception("job failed")

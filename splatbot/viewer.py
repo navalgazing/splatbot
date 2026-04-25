@@ -13,13 +13,21 @@ def publish_viewer(settings: Settings, job_id: str, outputs: PipelineOutputs) ->
     target = settings.public_results_dir / job_id
     target.mkdir(parents=True, exist_ok=True)
     shutil.copy2(outputs.cleaned_ply, target / "cleaned_splat.ply")
-    shutil.copy2(outputs.preview_mp4, target / "turntable.mp4")
-    (target / "index.html").write_text(render_viewer_html(job_id), encoding="utf-8")
+    has_preview = outputs.preview_mp4 is not None and outputs.preview_mp4.exists()
+    if has_preview and outputs.preview_mp4 is not None:
+        shutil.copy2(outputs.preview_mp4, target / "turntable.mp4")
+    (target / "index.html").write_text(render_viewer_html(job_id, has_preview=has_preview), encoding="utf-8")
     return target / "index.html"
 
 
-def render_viewer_html(job_id: str) -> str:
+def render_viewer_html(job_id: str, has_preview: bool = True) -> str:
     title = f"Splatbot Job {job_id}"
+    preview_html = (
+        '<video controls playsinline src="turntable.mp4"></video>\n'
+        '      <a href="turntable.mp4" download>Download preview video</a>'
+        if has_preview
+        else ""
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -94,9 +102,8 @@ def render_viewer_html(job_id: str) -> str:
     </section>
     <aside>
       <h1>{html.escape(title)}</h1>
-      <video controls playsinline src="turntable.mp4"></video>
+      {preview_html}
       <a href="cleaned_splat.ply" download>Download PLY</a>
-      <a href="turntable.mp4" download>Download preview video</a>
     </aside>
   </main>
   <script type="module">

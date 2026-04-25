@@ -87,6 +87,17 @@ def test_clean_ply_preserves_header_and_removes_invalid_rows(tmp_path) -> None:
     ]
 
 
+def test_clean_ply_leaves_binary_ply_unchanged(tmp_path) -> None:
+    src = tmp_path / "raw.ply"
+    dest = tmp_path / "clean.ply"
+    data = b"ply\nformat binary_little_endian 1.0\nend_header\n\x00\x01\x02"
+    src.write_bytes(data)
+
+    clean_ply(src, dest)
+
+    assert dest.read_bytes() == data
+
+
 async def test_pipeline_builds_expected_commands(tmp_path) -> None:
     image = tmp_path / "input.jpg"
     image.write_text("fake", encoding="utf-8")
@@ -103,7 +114,7 @@ async def test_pipeline_builds_expected_commands(tmp_path) -> None:
     outputs = await pipeline.run("job1", ScanMode.SCENE, [media(image)], record_status)
 
     assert outputs.cleaned_ply == tmp_path / "jobs" / "job1" / "export" / "cleaned_splat.ply"
-    assert outputs.preview_mp4 == tmp_path / "jobs" / "job1" / "renders" / "turntable.mp4"
+    assert outputs.preview_mp4 is None
     assert runner.calls[0] == [
         "ns-process-data",
         "images",
@@ -137,20 +148,20 @@ async def test_pipeline_builds_expected_commands(tmp_path) -> None:
         "--output-filename",
         "raw_splat.ply",
     ]
-    assert runner.calls[3] == [
-        "ns-render",
-        "spiral",
-        "--load-config",
-        str(tmp_path / "jobs" / "job1" / "nerfstudio" / "processed" / "splatfacto" / "2026-04-25_120000" / "config.yml"),
-        "--output-path",
-        str(tmp_path / "jobs" / "job1" / "renders" / "turntable.mp4"),
-        "--seconds",
-        "3",
-        "--frame-rate",
-        "24",
-    ]
-    assert [call[0] for call in runner.calls] == ["ns-process-data", "ns-train", "ns-export", "ns-render"]
-    assert statuses == [JobStatus.COLMAP, JobStatus.TRAINING, JobStatus.EXPORTING, JobStatus.RENDERING]
+    assert [call[0] for call in runner.calls] == ["ns-process-data", "ns-train", "ns-export"]
+    assert statuses == [JobStatus.COLMAP, JobStatus.TRAINING, JobStatus.EXPORTING]
+
+
+async def test_pipeline_can_render_preview_when_enabled(tmp_path) -> None:
+    image = tmp_path / "input.jpg"
+    image.write_text("fake", encoding="utf-8")
+    settings = Settings(data_dir=tmp_path, render_preview=True)
+    runner = FakeRunner()
+
+    outputs = await ScanPipeline(settings, runner=runner).run("job1", ScanMode.SCENE, [media(image)])
+
+    assert outputs.preview_mp4 == tmp_path / "jobs" / "job1" / "renders" / "turntable.mp4"
+    assert runner.calls[-1][0:2] == ["ns-render", "spiral"]
 
 
 def test_latest_nerfstudio_config_selects_newest(tmp_path) -> None:

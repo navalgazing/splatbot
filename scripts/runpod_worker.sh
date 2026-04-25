@@ -84,9 +84,11 @@ if [ "$rc" -eq 0 ]; then
   rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
     /workspace/results/cleaned_splat.ply \
     "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/export/cleaned_splat.ply"
-  rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
-    /workspace/results/turntable.mp4 \
-    "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/renders/turntable.mp4"
+  if [ -f /workspace/results/turntable.mp4 ]; then
+    rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
+      /workspace/results/turntable.mp4 \
+      "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/renders/turntable.mp4"
+  fi
   ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
     "/opt/splatbot/venv/bin/splatbot-jobctl complete $SPLATBOT_JOB_ID --notify"
 else
