@@ -98,5 +98,14 @@ async def test_pipeline_builds_expected_commands(tmp_path) -> None:
 
     assert outputs.cleaned_ply == tmp_path / "jobs" / "job1" / "export" / "cleaned_splat.ply"
     assert outputs.preview_mp4 == tmp_path / "jobs" / "job1" / "renders" / "turntable.mp4"
+    assert runner.calls[0] == [
+        "ns-process-data",
+        "images",
+        "--data",
+        str(tmp_path / "jobs" / "job1" / "images"),
+        "--output-dir",
+        str(tmp_path / "jobs" / "job1" / "processed"),
+        "--no-gpu",
+    ]
     assert [call[0] for call in runner.calls] == ["ns-process-data", "ns-train", "ns-export", "ns-render"]
     assert statuses == [JobStatus.COLMAP, JobStatus.TRAINING, JobStatus.EXPORTING, JobStatus.RENDERING]

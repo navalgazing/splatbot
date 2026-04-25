@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     ns_export_bin: str = "ns-export"
     ns_render_bin: str = "ns-render"
     rembg_bin: str = "rembg"
+    colmap_use_gpu: bool = False
 
     worker_backend: WorkerBackend = WorkerBackend.SSH
     gpu_ssh_host: str = ""

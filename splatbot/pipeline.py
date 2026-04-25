@@ -93,16 +93,17 @@ class ScanPipeline:
         )
 
     async def process_data(self, images_dir: Path, processed_dir: Path) -> None:
-        await self.runner.run(
-            [
-                self.settings.ns_process_data_bin,
-                "images",
-                "--data",
-                str(images_dir),
-                "--output-dir",
-                str(processed_dir),
-            ]
-        )
+        argv = [
+            self.settings.ns_process_data_bin,
+            "images",
+            "--data",
+            str(images_dir),
+            "--output-dir",
+            str(processed_dir),
+        ]
+        if not self.settings.colmap_use_gpu:
+            argv.append("--no-gpu")
+        await self.runner.run(argv)
 
     async def train_splatfacto(self, processed_dir: Path, ns_dir: Path) -> None:
         await self.runner.run(
