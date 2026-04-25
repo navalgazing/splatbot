@@ -32,6 +32,12 @@ python3 -m venv /workspace/venv
 /workspace/venv/bin/pip install -e /workspace/splatbot-app
 /workspace/venv/bin/pip install boto3
 ${SPLATBOT_RUNPOD_SETUP_COMMAND:-/workspace/venv/bin/pip install nerfstudio rembg}
+export PATH="/workspace/venv/bin:$PATH"
+
+command -v ns-process-data >/dev/null
+command -v ns-train >/dev/null
+command -v ns-export >/dev/null
+command -v ns-render >/dev/null
 
 rm -rf /workspace/input-media /workspace/results
 mkdir -p /workspace/input-media /workspace/results
