@@ -121,6 +121,11 @@ The RunPod SSH keys configured with `SPLATBOT_RUNPOD_POD_SSH_KEY` and
 and should not be group/world-readable. On the VPS, use ownership like
 `splatbot:splatbot` with mode `0600` for both private keys.
 
+Remote RunPod workers call `splatbot-jobctl` over SSH from `/opt/splatbot/app`.
+Keep `/opt/splatbot/app/.env` linked to `/etc/splatbot/splatbot.env` so those
+commands load the same public URL, Telegram token, database path, and retention
+settings as the systemd services.
+
 ### Prebuilt RunPod Image
 
 The generic RunPod image works, but every job has to install COLMAP, ffmpeg,

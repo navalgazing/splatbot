@@ -16,13 +16,14 @@ export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.9}"
 export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD="${TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD:-1}"
 SSH_OPTS="-i /root/.ssh/id_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=20"
 VENV_DIR="${SPLATBOT_RUNPOD_VENV:-/workspace/venv}"
+VPS_JOBCTL="cd /opt/splatbot/app && /opt/splatbot/venv/bin/splatbot-jobctl"
 
 fail_job() {
   rc="$?"
   failed_command="${BASH_COMMAND:-unknown}"
   error="RunPod worker failed before completion with exit code $rc while running: $failed_command"
   ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
-    "/opt/splatbot/venv/bin/splatbot-jobctl fail $SPLATBOT_JOB_ID --error $(printf %q "$error") --notify" || true
+    "$VPS_JOBCTL fail $SPLATBOT_JOB_ID --error $(printf %q "$error") --notify" || true
   exit "$rc"
 }
 
@@ -31,7 +32,7 @@ trap fail_job ERR
 heartbeat_loop() {
   while true; do
     ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
-      "/opt/splatbot/venv/bin/splatbot-jobctl heartbeat $SPLATBOT_JOB_ID" || true
+      "$VPS_JOBCTL heartbeat $SPLATBOT_JOB_ID" || true
     sleep 60
   done
 }
@@ -41,7 +42,7 @@ HEARTBEAT_PID="$!"
 trap 'kill "$HEARTBEAT_PID" 2>/dev/null || true' EXIT
 
 ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
-  "/opt/splatbot/venv/bin/splatbot-jobctl set-status $SPLATBOT_JOB_ID preparing"
+  "$VPS_JOBCTL set-status $SPLATBOT_JOB_ID preparing"
 
 if [ -n "${SPLATBOT_RUNPOD_BOOTSTRAP_COMMAND:-}" ]; then
   bash -lc "$SPLATBOT_RUNPOD_BOOTSTRAP_COMMAND"
@@ -96,7 +97,7 @@ ssh -i /root/.ssh/id_ed25519 \
   -o LogLevel=ERROR \
   -o ConnectTimeout=20 \
   "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
-  "/opt/splatbot/venv/bin/splatbot-jobctl set-status $job_id $status"
+  "cd /opt/splatbot/app && /opt/splatbot/venv/bin/splatbot-jobctl set-status $job_id $status"
 SH
 chmod +x /workspace/splatbot-set-status
 export SPLATBOT_STATUS_COMMAND=/workspace/splatbot-set-status
@@ -117,11 +118,11 @@ if "$VENV_DIR/bin/splatbot-run-job-dir" "$SPLATBOT_JOB_ID" "$SPLATBOT_SCAN_MODE"
       "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/renders/turntable.mp4"
   fi
   ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
-    "/opt/splatbot/venv/bin/splatbot-jobctl complete $SPLATBOT_JOB_ID --notify"
+    "$VPS_JOBCTL complete $SPLATBOT_JOB_ID --notify"
 else
   rc="$?"
   ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
-    "/opt/splatbot/venv/bin/splatbot-jobctl fail $SPLATBOT_JOB_ID --error 'RunPod worker failed with exit code $rc' --notify"
+    "$VPS_JOBCTL fail $SPLATBOT_JOB_ID --error 'RunPod worker failed with exit code $rc' --notify"
   exit "$rc"
 fi
 
