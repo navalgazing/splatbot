@@ -102,6 +102,15 @@ async def _guard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _guard(update, context):
         return
+    await update.effective_message.reply_text(
+        "What are you scanning?",
+        reply_markup=_main_keyboard(),
+    )
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _guard(update, context):
+        return
     await update.effective_message.reply_text(_help_text(_settings(context)), reply_markup=_main_keyboard())
 
 
@@ -307,6 +316,7 @@ async def amain() -> None:
     await app.bot.set_my_commands(
         [
             BotCommand("start", "Open guided menu"),
+            BotCommand("help", "Show commands and capture tips"),
             BotCommand("new", "Start a new scan"),
             BotCommand("mode", "Set scan type: scene or object"),
             BotCommand("submit", "Submit uploaded media"),
@@ -315,6 +325,7 @@ async def amain() -> None:
         ]
     )
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("new", new_session))
     app.add_handler(CommandHandler("mode", set_mode))
     app.add_handler(CommandHandler("submit", submit))

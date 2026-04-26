@@ -1,5 +1,5 @@
 from splatbot.config import ScanMode, Settings
-from splatbot.telegram_app import _help_text, _upload_hint
+from splatbot.telegram_app import _help_text, _main_keyboard, _upload_hint
 
 
 def test_help_text_lists_flow_and_commands() -> None:
@@ -18,3 +18,12 @@ def test_upload_hint_makes_submit_action_explicit() -> None:
     assert "Received 1 file(s)" in text
     assert "object scan" in text
     assert "press Submit scan" in text
+
+
+def test_main_keyboard_starts_with_scan_mode_choices() -> None:
+    keyboard = _main_keyboard()
+
+    assert keyboard.inline_keyboard[0][0].text == "New object scan"
+    assert keyboard.inline_keyboard[0][0].callback_data == "new:object"
+    assert keyboard.inline_keyboard[1][0].text == "New scene scan"
+    assert keyboard.inline_keyboard[1][0].callback_data == "new:scene"
