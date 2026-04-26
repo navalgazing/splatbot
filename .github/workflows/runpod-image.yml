@@ -31,6 +31,7 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - name: Build and push image
         run: |
+          set +e
           set -o pipefail
           docker buildx build \
             --progress=plain \
@@ -39,6 +40,15 @@ jobs:
             --file Dockerfile.runpod \
             --tag ghcr.io/navalgazing/splatbot-runpod:latest \
             . 2>&1 | tee /tmp/runpod-image-build.log
+          rc="${PIPESTATUS[0]}"
+          if [ "$rc" -ne 0 ]; then
+            tail="$(tail -n 120 /tmp/runpod-image-build.log)"
+            tail="${tail//'%'/'%25'}"
+            tail="${tail//$'\n'/'%0A'}"
+            tail="${tail//$'\r'/'%0D'}"
+            echo "::error title=Docker build failed::$tail"
+            exit "$rc"
+          fi
       - name: Summarize Docker build failure
         if: failure()
         run: |
