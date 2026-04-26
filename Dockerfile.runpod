@@ -8,6 +8,11 @@ ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 ENV TORCH_CUDA_ARCH_LIST=8.9
 ENV TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 ENV TORCH_EXTENSIONS_DIR=/workspace/torch_extensions
+ENV TORCHINDUCTOR_CACHE_DIR=/workspace/torch_inductor
+ENV TRITON_CACHE_DIR=/workspace/triton_cache
+ENV CUDA_CACHE_PATH=/workspace/cuda_cache
+ENV XDG_CACHE_HOME=/workspace/.cache
+ENV TORCH_HOME=/workspace/.cache/torch
 ENV U2NET_HOME=/workspace/.u2net
 ENV QT_QPA_PLATFORM=offscreen
 

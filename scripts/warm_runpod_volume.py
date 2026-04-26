@@ -40,6 +40,11 @@ export LD_LIBRARY_PATH="$CUDA_HOME/lib64:/usr/local/cuda/lib64:${{LD_LIBRARY_PAT
 export TORCH_CUDA_ARCH_LIST="${{TORCH_CUDA_ARCH_LIST:-8.9}}"
 export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD="${{TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD:-1}}"
 export TORCH_EXTENSIONS_DIR="${{TORCH_EXTENSIONS_DIR:-/workspace/torch_extensions}}"
+export TORCHINDUCTOR_CACHE_DIR="${{TORCHINDUCTOR_CACHE_DIR:-/workspace/torch_inductor}}"
+export TRITON_CACHE_DIR="${{TRITON_CACHE_DIR:-/workspace/triton_cache}}"
+export CUDA_CACHE_PATH="${{CUDA_CACHE_PATH:-/workspace/cuda_cache}}"
+export XDG_CACHE_HOME="${{XDG_CACHE_HOME:-/workspace/.cache}}"
+export TORCH_HOME="${{TORCH_HOME:-$XDG_CACHE_HOME/torch}}"
 export U2NET_HOME="${{U2NET_HOME:-/workspace/.u2net}}"
 {shell_export("VENV_DIR", venv_dir)}
 {shell_export("CACHE_MARKER", cache_marker)}

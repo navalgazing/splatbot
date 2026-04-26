@@ -15,6 +15,11 @@ export LD_LIBRARY_PATH="$CUDA_HOME/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH
 export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.9}"
 export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD="${TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD:-1}"
 export TORCH_EXTENSIONS_DIR="${TORCH_EXTENSIONS_DIR:-/workspace/torch_extensions}"
+export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-/workspace/torch_inductor}"
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/workspace/triton_cache}"
+export CUDA_CACHE_PATH="${CUDA_CACHE_PATH:-/workspace/cuda_cache}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/workspace/.cache}"
+export TORCH_HOME="${TORCH_HOME:-$XDG_CACHE_HOME/torch}"
 export U2NET_HOME="${U2NET_HOME:-/workspace/.u2net}"
 SSH_OPTS="-i /root/.ssh/id_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=6"
 VENV_DIR="${SPLATBOT_RUNPOD_VENV:-/workspace/venv}"
@@ -73,7 +78,7 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
   RUNTIME_CACHE_READY=false
 fi
 
-"$VENV_DIR/bin/pip" install --no-deps -e /workspace/splatbot-app
+"$VENV_DIR/bin/pip" install --no-build-isolation --no-deps -e /workspace/splatbot-app
 "$VENV_DIR/bin/python" - <<'PY' || "$VENV_DIR/bin/pip" install boto3
 import boto3  # noqa: F401
 PY
