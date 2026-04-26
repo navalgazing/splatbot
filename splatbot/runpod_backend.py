@@ -201,8 +201,10 @@ def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str, 
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 mkdir -p /root/.ssh /workspace/splatbot-app
-apt-get update
-apt-get install -y openssh-client rsync python3
+if ! command -v ssh >/dev/null || ! command -v rsync >/dev/null || ! command -v python3 >/dev/null; then
+  apt-get update
+  apt-get install -y openssh-client rsync python3
+fi
 printf %s {shlex.quote(key_b64)} | base64 -d > /root/.ssh/id_ed25519
 chmod 600 /root/.ssh/id_ed25519
 SSH_OPTS="-i /root/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20"
