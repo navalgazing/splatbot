@@ -330,6 +330,28 @@ class Store:
             await db.commit()
         return await self.get_job(job_id)
 
+    async def fail_interrupted_jobs(self, error: str) -> int:
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """
+                UPDATE jobs
+                SET status = ?, error = ?, updated_at = ?
+                WHERE status IN (?, ?, ?, ?, ?)
+                """,
+                (
+                    JobStatus.FAILED.value,
+                    error,
+                    utcnow().isoformat(),
+                    JobStatus.PREPARING.value,
+                    JobStatus.COLMAP.value,
+                    JobStatus.TRAINING.value,
+                    JobStatus.EXPORTING.value,
+                    JobStatus.RENDERING.value,
+                ),
+            )
+            await db.commit()
+            return cursor.rowcount
+
     async def add_artifact(
         self,
         job_id: str,

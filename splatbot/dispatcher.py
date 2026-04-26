@@ -110,6 +110,9 @@ async def amain() -> None:
     store = Store(settings.database_path)
     await store.init()
     notifier = TelegramNotifier(settings.telegram_token) if settings.telegram_token else None
+    interrupted = await store.fail_interrupted_jobs("Job interrupted by bot restart; please resubmit.")
+    if interrupted:
+        LOGGER.warning("marked %s interrupted job(s) failed on dispatcher startup", interrupted)
     await Dispatcher(settings, store, notifier=notifier).run_forever()
 
 
