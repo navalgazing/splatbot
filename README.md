@@ -116,6 +116,11 @@ For a simple local deployment, the bot and dispatcher can access the same SQLite
 
 For RunPod, set `SPLATBOT_WORKER_BACKEND=runpod`. The dispatcher launches a GPU pod, the pod SSHes back to the VPS to pull session media, runs `splatbot-run-job-dir`, rsyncs artifacts back under `/var/lib/splatbot/jobs/<job_id>`, and calls `splatbot-jobctl` on the VPS to mark the job complete or failed.
 
+The RunPod SSH keys configured with `SPLATBOT_RUNPOD_POD_SSH_KEY` and
+`SPLATBOT_RUNPOD_VPS_SSH_KEY` must be readable by the `splatbot` service user
+and should not be group/world-readable. On the VPS, use ownership like
+`splatbot:splatbot` with mode `0600` for both private keys.
+
 ### Prebuilt RunPod Image
 
 The generic RunPod image works, but every job has to install COLMAP, ffmpeg,
