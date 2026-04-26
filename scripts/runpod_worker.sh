@@ -61,8 +61,14 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
   "$VENV_DIR/bin/pip" install --upgrade pip
 fi
 
-"$VENV_DIR/bin/pip" install -e /workspace/splatbot-app
-"$VENV_DIR/bin/pip" install boto3
+APP_INSTALL_ARGS=(-e /workspace/splatbot-app)
+if [ -z "${SPLATBOT_RUNPOD_SETUP_COMMAND:-}" ]; then
+  APP_INSTALL_ARGS=(--no-deps -e /workspace/splatbot-app)
+fi
+"$VENV_DIR/bin/pip" install "${APP_INSTALL_ARGS[@]}"
+"$VENV_DIR/bin/python" - <<'PY' || "$VENV_DIR/bin/pip" install boto3
+import boto3  # noqa: F401
+PY
 if [ -n "${SPLATBOT_RUNPOD_SETUP_COMMAND:-}" ]; then
   bash -lc "$SPLATBOT_RUNPOD_SETUP_COMMAND"
 fi
