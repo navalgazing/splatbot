@@ -4,7 +4,7 @@ import sqlite3
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import aiosqlite
@@ -68,11 +68,16 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user_status ON sessions(telegram_user_id
 CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs(telegram_user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_artifacts_job ON job_artifacts(job_id, kind);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_job_kind_unique ON job_artifacts(job_id, kind);
 """
 
 
 def _dt(value: str) -> datetime:
     return datetime.fromisoformat(value)
+
+
+def _dt_optional(value: str | None) -> datetime | None:
+    return datetime.fromisoformat(value) if value else None
 
 
 def _session(row: sqlite3.Row) -> UploadSession:
@@ -107,6 +112,9 @@ def _job(row: sqlite3.Row) -> ScanJob:
         error=row["error"],
         created_at=_dt(row["created_at"]),
         updated_at=_dt(row["updated_at"]),
+        runpod_pod_id=row["runpod_pod_id"] if "runpod_pod_id" in row.keys() else None,
+        claimed_at=_dt_optional(row["claimed_at"] if "claimed_at" in row.keys() else None),
+        heartbeat_at=_dt_optional(row["heartbeat_at"] if "heartbeat_at" in row.keys() else None),
     )
 
 
@@ -130,7 +138,16 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(self.path) as db:
             await db.executescript(SCHEMA)
+            await self._migrate(db)
             await db.commit()
+
+    async def _migrate(self, db: aiosqlite.Connection) -> None:
+        cursor = await db.execute("PRAGMA table_info(jobs)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        for name in ("runpod_pod_id", "claimed_at", "heartbeat_at"):
+            if name not in columns:
+                await db.execute(f"ALTER TABLE jobs ADD COLUMN {name} TEXT")
+        await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_session_unique ON jobs(session_id)")
 
     @asynccontextmanager
     async def _connect(self) -> AsyncIterator[aiosqlite.Connection]:
@@ -227,6 +244,17 @@ class Store:
         job_id = uuid.uuid4().hex
         now = utcnow().isoformat()
         async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                "UPDATE sessions SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
+                (JobStatus.QUEUED.value, now, session.id, JobStatus.COLLECTING.value),
+            )
+            if cursor.rowcount != 1:
+                await db.rollback()
+                existing = await self.get_job_for_session(session.id)
+                if existing is not None:
+                    return existing
+                raise RuntimeError("session is not collecting")
             await db.execute(
                 """
                 INSERT INTO jobs (id, session_id, telegram_user_id, mode, status, error, created_at, updated_at)
@@ -242,14 +270,16 @@ class Store:
                     now,
                 ),
             )
-            await db.execute(
-                "UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?",
-                (JobStatus.QUEUED.value, now, session.id),
-            )
             await db.commit()
         job = await self.get_job(job_id)
         assert job is not None
         return job
+
+    async def get_job_for_session(self, session_id: str) -> ScanJob | None:
+        async with self._connect() as db:
+            cursor = await db.execute("SELECT * FROM jobs WHERE session_id = ?", (session_id,))
+            row = await cursor.fetchone()
+        return _job(row) if row else None
 
     async def get_job(self, job_id: str) -> ScanJob | None:
         async with self._connect() as db:
@@ -286,7 +316,7 @@ class Store:
             cursor = await db.execute(
                 """
                 UPDATE jobs
-                SET status = ?, error = NULL, updated_at = ?
+                SET status = ?, error = NULL, updated_at = ?, claimed_at = ?, heartbeat_at = ?
                 WHERE id = (
                     SELECT id FROM jobs
                     WHERE status = ?
@@ -295,11 +325,27 @@ class Store:
                 )
                 RETURNING *
                 """,
-                (JobStatus.PREPARING.value, now, JobStatus.QUEUED.value),
+                (JobStatus.PREPARING.value, now, now, now, JobStatus.QUEUED.value),
             )
             row = await cursor.fetchone()
             await db.commit()
         return _job(row) if row else None
+
+    async def set_job_runpod_pod_id(self, job_id: str, pod_id: str | None) -> None:
+        async with self._connect() as db:
+            await db.execute(
+                "UPDATE jobs SET runpod_pod_id = ?, heartbeat_at = ?, updated_at = ? WHERE id = ?",
+                (pod_id, utcnow().isoformat(), utcnow().isoformat(), job_id),
+            )
+            await db.commit()
+
+    async def heartbeat_job(self, job_id: str) -> None:
+        async with self._connect() as db:
+            await db.execute(
+                "UPDATE jobs SET heartbeat_at = ?, updated_at = ? WHERE id = ?",
+                (utcnow().isoformat(), utcnow().isoformat(), job_id),
+            )
+            await db.commit()
 
     async def set_job_status(self, job_id: str, status: JobStatus, error: str | None = None) -> None:
         async with self._connect() as db:
@@ -330,27 +376,45 @@ class Store:
             await db.commit()
         return await self.get_job(job_id)
 
-    async def fail_interrupted_jobs(self, error: str) -> int:
+    async def interrupted_jobs(self, grace_seconds: int) -> list[ScanJob]:
+        cutoff = (utcnow() - timedelta(seconds=grace_seconds)).isoformat()
         async with self._connect() as db:
             cursor = await db.execute(
                 """
-                UPDATE jobs
-                SET status = ?, error = ?, updated_at = ?
+                SELECT * FROM jobs
                 WHERE status IN (?, ?, ?, ?, ?)
+                  AND COALESCE(heartbeat_at, updated_at) < ?
+                ORDER BY updated_at
                 """,
                 (
-                    JobStatus.FAILED.value,
-                    error,
-                    utcnow().isoformat(),
                     JobStatus.PREPARING.value,
                     JobStatus.COLMAP.value,
                     JobStatus.TRAINING.value,
                     JobStatus.EXPORTING.value,
                     JobStatus.RENDERING.value,
+                    cutoff,
                 ),
             )
+            rows = await cursor.fetchall()
+        return [_job(row) for row in rows]
+
+    async def fail_interrupted_jobs(self, error: str, grace_seconds: int = 0) -> list[ScanJob]:
+        interrupted = await self.interrupted_jobs(grace_seconds)
+        if not interrupted:
+            return []
+        job_ids = [job.id for job in interrupted]
+        placeholders = ",".join("?" for _ in job_ids)
+        async with self._connect() as db:
+            await db.execute(
+                f"""
+                UPDATE jobs
+                SET status = ?, error = ?, updated_at = ?, runpod_pod_id = NULL
+                WHERE id IN ({placeholders})
+                """,
+                (JobStatus.FAILED.value, error, utcnow().isoformat(), *job_ids),
+            )
             await db.commit()
-            return cursor.rowcount
+        return interrupted
 
     async def add_artifact(
         self,
@@ -363,6 +427,7 @@ class Store:
         artifact_id = uuid.uuid4().hex
         now = utcnow().isoformat()
         async with self._connect() as db:
+            await db.execute("DELETE FROM job_artifacts WHERE job_id = ? AND kind = ?", (job_id, kind.value))
             await db.execute(
                 """
                 INSERT INTO job_artifacts (id, job_id, kind, local_path, remote_key, url, created_at)

@@ -74,13 +74,30 @@ class Dispatcher:
             return False
         if self.settings.worker_backend == WorkerBackend.RUNPOD:
             try:
-                pod = await asyncio.to_thread(self.runpod_launcher.launch, job)
+                loop = asyncio.get_running_loop()
+
+                def record_pod_id(pod_id: str | None) -> None:
+                    future = asyncio.run_coroutine_threadsafe(
+                        self.store.set_job_runpod_pod_id(job.id, pod_id),
+                        loop,
+                    )
+                    future.result(timeout=10)
+
+                pod = await asyncio.to_thread(self.runpod_launcher.launch, job, record_pod_id)
                 LOGGER.info("finished RunPod pod %s for job %s", pod.id, job.id)
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("RunPod job %s failed", job.id)
                 updated = await self.store.set_job_failed_unless_terminal(job.id, str(exc))
                 if self.notifier and updated and updated.status == JobStatus.FAILED and updated.error == str(exc):
                     await self.notifier.job_failed(updated, str(exc))
+            return True
+        if self.settings.worker_backend != WorkerBackend.LOCAL:
+            updated = await self.store.set_job_failed_unless_terminal(
+                job.id,
+                f"Worker backend is not implemented: {self.settings.worker_backend.value}",
+            )
+            if self.notifier and updated and updated.status == JobStatus.FAILED:
+                await self.notifier.job_failed(updated, updated.error or "worker backend is not implemented")
             return True
         media = await self.store.list_media(job.session_id)
         try:
@@ -110,10 +127,36 @@ async def amain() -> None:
     store = Store(settings.database_path)
     await store.init()
     notifier = TelegramNotifier(settings.telegram_token) if settings.telegram_token else None
-    interrupted = await store.fail_interrupted_jobs("Job interrupted by bot restart; please resubmit.")
+    interrupted = await recover_interrupted_jobs(settings, store, notifier)
     if interrupted:
         LOGGER.warning("marked %s interrupted job(s) failed on dispatcher startup", interrupted)
     await Dispatcher(settings, store, notifier=notifier).run_forever()
+
+
+async def recover_interrupted_jobs(
+    settings: Settings,
+    store: Store,
+    notifier: TelegramNotifier | None,
+) -> int:
+    interrupted = await store.fail_interrupted_jobs(
+        "Job interrupted by bot restart; please resubmit.",
+        grace_seconds=settings.interrupted_job_grace_seconds,
+    )
+    if settings.worker_backend == WorkerBackend.RUNPOD and settings.runpod_api_key:
+        launcher = RunPodLauncher(settings)
+        for job in interrupted:
+            if job.runpod_pod_id:
+                try:
+                    await asyncio.to_thread(launcher.client.delete_pod, job.runpod_pod_id)
+                except Exception:  # noqa: BLE001
+                    LOGGER.exception("failed to delete interrupted RunPod pod %s", job.runpod_pod_id)
+    if notifier:
+        for job in interrupted:
+            try:
+                await notifier.job_failed(job, "Job interrupted by bot restart; please resubmit.")
+            except Exception:  # noqa: BLE001
+                LOGGER.exception("failed to notify user about interrupted job %s", job.id)
+    return len(interrupted)
 
 
 def main() -> None:

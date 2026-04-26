@@ -22,7 +22,10 @@ class PipelineOutputs:
 class ScanPipeline:
     def __init__(self, settings: Settings, runner: CommandRunner | None = None) -> None:
         self.settings = settings
-        self.runner = runner or CommandRunner()
+        self.runner = runner or CommandRunner(
+            timeout_seconds=settings.command_timeout_seconds,
+            tail_bytes=settings.command_tail_bytes,
+        )
 
     async def run(
         self,

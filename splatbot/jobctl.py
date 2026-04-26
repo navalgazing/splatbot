@@ -18,6 +18,13 @@ async def set_status(job_id: str, status: JobStatus, error: str | None) -> None:
     await store.set_job_status(job_id, status, error)
 
 
+async def heartbeat(job_id: str) -> None:
+    settings = Settings()
+    store = Store(settings.database_path)
+    await store.init()
+    await store.heartbeat_job(job_id)
+
+
 async def complete(job_id: str, notify: bool) -> None:
     settings = Settings()
     store = Store(settings.database_path)
@@ -69,6 +76,9 @@ def main() -> None:
     set_parser.add_argument("status", choices=[status.value for status in JobStatus])
     set_parser.add_argument("--error")
 
+    heartbeat_parser = subparsers.add_parser("heartbeat")
+    heartbeat_parser.add_argument("job_id")
+
     complete_parser = subparsers.add_parser("complete")
     complete_parser.add_argument("job_id")
     complete_parser.add_argument("--notify", action="store_true")
@@ -81,6 +91,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "set-status":
         asyncio.run(set_status(args.job_id, JobStatus(args.status), args.error))
+    elif args.command == "heartbeat":
+        asyncio.run(heartbeat(args.job_id))
     elif args.command == "complete":
         asyncio.run(complete(args.job_id, args.notify))
     elif args.command == "fail":

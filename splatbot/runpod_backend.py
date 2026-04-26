@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import shlex
 import subprocess
 import time
@@ -9,9 +10,13 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from .config import Settings
 from .models import ScanJob
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class RunPodError(RuntimeError):
@@ -97,18 +102,22 @@ class RunPodLauncher:
         self.settings = settings
         self.client = client or RunPodClient(settings.runpod_api_key)
 
-    def launch(self, job: ScanJob) -> RunPodPod:
+    def launch(self, job: ScanJob, on_pod_id: Callable[[str | None], None] | None = None) -> RunPodPod:
         self._validate()
         public_key = self.settings.runpod_pod_ssh_key.with_suffix(".pub").read_text().strip()
         pod = self.client.create_ssh_pod(self.settings, job, public_key)
+        if on_pod_id:
+            on_pod_id(pod.id)
         try:
             target = self.wait_for_ssh(pod.id)
             self.run_worker(job, pod.id, target)
         finally:
             try:
                 self.client.delete_pod(pod.id)
-            except Exception:
-                pass
+                if on_pod_id:
+                    on_pod_id(None)
+            except Exception:  # noqa: BLE001
+                LOGGER.exception("failed to delete RunPod pod %s", pod.id)
         return pod
 
     def _validate(self) -> None:
@@ -181,6 +190,7 @@ class RunPodLauncher:
                 input=command.encode(),
                 stdout=log,
                 stderr=subprocess.STDOUT,
+                timeout=self.settings.runpod_worker_timeout_seconds,
                 check=False,
             )
         if result.returncode != 0:

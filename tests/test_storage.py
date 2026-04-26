@@ -72,8 +72,59 @@ async def test_fail_interrupted_jobs_marks_running_states_failed(tmp_path) -> No
 
     changed = await store.fail_interrupted_jobs("restart")
 
-    assert changed == 1
+    assert [job.id for job in changed] == [job.id]
     updated = await store.get_job(job.id)
     assert updated is not None
     assert updated.status == JobStatus.FAILED
     assert updated.error == "restart"
+
+
+async def test_create_job_is_idempotent_for_session(tmp_path) -> None:
+    store = Store(tmp_path / "splatbot.sqlite3")
+    await store.init()
+    session = await store.create_session(telegram_user_id=42, mode=ScanMode.OBJECT)
+
+    first = await store.create_job(session)
+    second = await store.create_job(session)
+
+    assert second.id == first.id
+
+
+async def test_runpod_pod_id_can_be_recorded(tmp_path) -> None:
+    store = Store(tmp_path / "splatbot.sqlite3")
+    await store.init()
+    session = await store.create_session(telegram_user_id=42, mode=ScanMode.OBJECT)
+    job = await store.create_job(session)
+
+    await store.set_job_runpod_pod_id(job.id, "pod123")
+    updated = await store.get_job(job.id)
+
+    assert updated is not None
+    assert updated.runpod_pod_id == "pod123"
+
+
+async def test_heartbeat_updates_job(tmp_path) -> None:
+    store = Store(tmp_path / "splatbot.sqlite3")
+    await store.init()
+    session = await store.create_session(telegram_user_id=42, mode=ScanMode.OBJECT)
+    job = await store.create_job(session)
+
+    await store.heartbeat_job(job.id)
+    updated = await store.get_job(job.id)
+
+    assert updated is not None
+    assert updated.heartbeat_at is not None
+
+
+async def test_add_artifact_replaces_existing_kind(tmp_path) -> None:
+    store = Store(tmp_path / "splatbot.sqlite3")
+    await store.init()
+    session = await store.create_session(telegram_user_id=42, mode=ScanMode.OBJECT)
+    job = await store.create_job(session)
+
+    await store.add_artifact(job.id, ArtifactKind.PLY, tmp_path / "old.ply", url="old")
+    await store.add_artifact(job.id, ArtifactKind.PLY, tmp_path / "new.ply", url="new")
+    artifacts = await store.list_artifacts(job.id)
+
+    assert len(artifacts) == 1
+    assert artifacts[0].url == "new"

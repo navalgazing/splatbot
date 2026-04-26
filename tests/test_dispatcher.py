@@ -108,9 +108,11 @@ async def test_dispatcher_does_not_overwrite_completed_runpod_job(tmp_path) -> N
     job = await store.create_job(session)
 
     class CompletingThenFailingRunPodLauncher:
-        def launch(self, job: ScanJob):
+        def launch(self, job: ScanJob, on_pod_id=None):
             import asyncio
 
+            if on_pod_id:
+                on_pod_id("pod123")
             asyncio.run(store.set_job_status(job.id, JobStatus.DONE))
             raise RuntimeError("ssh died after remote completion")
 

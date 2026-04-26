@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +26,10 @@ class CommandError(RuntimeError):
 
 
 class CommandRunner:
+    def __init__(self, timeout_seconds: int | None = None, tail_bytes: int = 64 * 1024) -> None:
+        self.timeout_seconds = timeout_seconds
+        self.tail_bytes = tail_bytes
+
     async def run(self, argv: list[str], cwd: Path | None = None) -> CommandResult:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -32,13 +37,43 @@ class CommandRunner:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                asyncio.gather(
+                    _read_tail(proc.stdout, self.tail_bytes),
+                    _read_tail(proc.stderr, self.tail_bytes),
+                ),
+                timeout=self.timeout_seconds,
+            )
+            returncode = await proc.wait()
+        except TimeoutError as exc:
+            proc.kill()
+            with contextlib.suppress(ProcessLookupError):
+                await proc.wait()
+            result = CommandResult(
+                argv=argv,
+                returncode=-1,
+                stdout="",
+                stderr=f"command timed out after {self.timeout_seconds} seconds",
+            )
+            raise CommandError(result) from exc
         result = CommandResult(
             argv=argv,
-            returncode=proc.returncode,
+            returncode=returncode,
             stdout=stdout.decode(errors="replace"),
             stderr=stderr.decode(errors="replace"),
         )
         if result.returncode != 0:
             raise CommandError(result)
         return result
+
+
+async def _read_tail(stream: asyncio.StreamReader | None, limit: int) -> bytes:
+    if stream is None:
+        return b""
+    tail = bytearray()
+    while chunk := await stream.read(8192):
+        tail.extend(chunk)
+        if len(tail) > limit:
+            del tail[: len(tail) - limit]
+    return bytes(tail)

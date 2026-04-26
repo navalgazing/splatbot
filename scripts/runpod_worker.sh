@@ -28,6 +28,18 @@ fail_job() {
 
 trap fail_job ERR
 
+heartbeat_loop() {
+  while true; do
+    ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
+      "/opt/splatbot/venv/bin/splatbot-jobctl heartbeat $SPLATBOT_JOB_ID" || true
+    sleep 60
+  done
+}
+
+heartbeat_loop &
+HEARTBEAT_PID="$!"
+trap 'kill "$HEARTBEAT_PID" 2>/dev/null || true' EXIT
+
 ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
   "/opt/splatbot/venv/bin/splatbot-jobctl set-status $SPLATBOT_JOB_ID preparing"
 
@@ -95,4 +107,10 @@ else
   ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
     "/opt/splatbot/venv/bin/splatbot-jobctl fail $SPLATBOT_JOB_ID --error 'RunPod worker failed with exit code $rc' --notify"
   exit "$rc"
+fi
+
+if [ -n "${RUNPOD_POD_ID:-}" ] && [ -n "${SPLATBOT_RUNPOD_API_KEY:-}" ]; then
+  curl -fsS --request DELETE \
+    --header "Authorization: Bearer $SPLATBOT_RUNPOD_API_KEY" \
+    "https://rest.runpod.io/v1/pods/$RUNPOD_POD_ID" || true
 fi

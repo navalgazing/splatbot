@@ -61,6 +61,9 @@ class ScanJob:
     error: str | None
     created_at: datetime
     updated_at: datetime
+    runpod_pod_id: str | None = None
+    claimed_at: datetime | None = None
+    heartbeat_at: datetime | None = None
 
 
 @dataclass(frozen=True)

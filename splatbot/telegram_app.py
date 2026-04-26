@@ -15,7 +15,7 @@ from telegram.ext import (
     filters,
 )
 
-from .config import ScanMode, Settings
+from .config import ScanMode, Settings, TelegramMode
 from .logging_config import configure_logging
 from .media import MediaValidationError, classify_path, validate_submission
 from .models import JobArtifact, JobStatus, MediaKind, ScanJob
@@ -89,6 +89,19 @@ def _upload_hint(count: int, mode: ScanMode, settings: Settings) -> str:
         "When upload is complete, press Submit scan.\n"
         f"Use one video or {settings.min_images}-{settings.max_images} photos."
     )
+
+
+def _media_file_size(update: Update) -> int | None:
+    message = update.effective_message
+    if message is None:
+        return None
+    if message.video:
+        return message.video.file_size
+    if message.document:
+        return message.document.file_size
+    if message.photo:
+        return message.photo[-1].file_size
+    return None
 
 
 async def _guard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -201,6 +214,13 @@ async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     session_dir.mkdir(parents=True, exist_ok=True)
 
     await update.effective_chat.send_action(ChatAction.UPLOAD_DOCUMENT)
+    file_size = _media_file_size(update)
+    if file_size is not None and file_size > settings.max_upload_bytes:
+        await update.effective_message.reply_text(
+            f"File is too large. Max upload size is {settings.max_upload_bytes // (1024 * 1024)} MB.",
+            reply_markup=_session_keyboard(),
+        )
+        return
     if update.effective_message.video:
         tg_file = await update.effective_message.video.get_file()
         suffix = Path(tg_file.file_path or "upload.mp4").suffix or ".mp4"
@@ -219,6 +239,28 @@ async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         suffix = ".jpg"
         kind = MediaKind.PHOTO
     else:
+        return
+
+    existing_items = await store.list_media(session.id)
+    existing_photos = [item for item in existing_items if item.kind == MediaKind.PHOTO]
+    existing_videos = [item for item in existing_items if item.kind == MediaKind.VIDEO]
+    if kind == MediaKind.VIDEO and existing_items:
+        await update.effective_message.reply_text(
+            "Use either one video or photos, not both. Send /cancel to start over.",
+            reply_markup=_session_keyboard(),
+        )
+        return
+    if kind == MediaKind.PHOTO and existing_videos:
+        await update.effective_message.reply_text(
+            "This scan already has a video. Send /cancel to start over with photos.",
+            reply_markup=_session_keyboard(),
+        )
+        return
+    if kind == MediaKind.PHOTO and len(existing_photos) >= settings.max_images:
+        await update.effective_message.reply_text(
+            f"Already received the max {settings.max_images} photos. Press Submit scan.",
+            reply_markup=_session_keyboard(),
+        )
         return
 
     dest = session_dir / f"{tg_file.file_unique_id}{suffix.lower()}"
@@ -307,6 +349,8 @@ async def amain() -> None:
     configure_logging()
     settings = Settings()
     settings.require_telegram()
+    if settings.telegram_mode != TelegramMode.POLLING:
+        raise ValueError("Only SPLATBOT_TELEGRAM_MODE=polling is currently implemented")
     if not settings.allowed_telegram_ids and not settings.allow_all_telegram_users:
         raise ValueError("SPLATBOT_ALLOWED_TELEGRAM_IDS is required unless SPLATBOT_ALLOW_ALL_TELEGRAM_USERS=true")
     settings.data_dir.mkdir(parents=True, exist_ok=True)

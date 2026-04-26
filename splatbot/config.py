@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     max_images: int = 300
     max_video_frames: int = 140
     max_video_seconds: int = 60
+    max_upload_bytes: int = 1024 * 1024 * 1024
+    interrupted_job_grace_seconds: int = 10 * 60
     default_scan_mode: ScanMode = ScanMode.SCENE
     job_retention_days: int = 14
 
@@ -64,11 +66,13 @@ class Settings(BaseSettings):
     ns_render_bin: str = "ns-render"
     rembg_bin: str = "rembg"
     colmap_use_gpu: bool = False
+    command_timeout_seconds: int = 6 * 60 * 60
+    command_tail_bytes: int = 64 * 1024
     train_max_iterations: int = 10000
     train_steps_per_save: int = 10000
     render_preview: bool = False
 
-    worker_backend: WorkerBackend = WorkerBackend.SSH
+    worker_backend: WorkerBackend = WorkerBackend.LOCAL
     gpu_ssh_host: str = ""
     gpu_ssh_key: Path | None = None
     gpu_workdir: Path = Path("/srv/splatbot")
@@ -86,6 +90,7 @@ class Settings(BaseSettings):
     runpod_ssh_user: str = "root"
     runpod_pod_ssh_key: Path | None = None
     runpod_ssh_ready_timeout_seconds: int = 900
+    runpod_worker_timeout_seconds: int = 6 * 60 * 60
     runpod_vps_host: str = ""
     runpod_vps_user: str = "root"
     runpod_vps_ssh_key: Path | None = None
