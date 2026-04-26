@@ -29,10 +29,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.runpod
-          push: true
-          no-cache: true
-          tags: ghcr.io/navalgazing/splatbot-runpod:latest
+      - name: Build and push image
+        run: |
+          set -o pipefail
+          docker buildx build \
+            --progress=plain \
+            --push \
+            --no-cache \
+            --file Dockerfile.runpod \
+            --tag ghcr.io/navalgazing/splatbot-runpod:latest \
+            . 2>&1 | tee /tmp/runpod-image-build.log
+      - name: Summarize Docker build failure
+        if: failure()
+        run: |
+          {
+            echo "### Docker build failure"
+            echo
+            echo '```text'
+            tail -n 180 /tmp/runpod-image-build.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
