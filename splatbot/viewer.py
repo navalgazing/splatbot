@@ -155,7 +155,7 @@ def render_viewer_html(job_id: str, has_preview: bool = True) -> str:
           initialCameraPosition: [1.4, -2.0, 1.2],
           initialCameraLookAt: [0, 0, 0],
           sharedMemoryForWorkers: false,
-          gpuAcceleratedSort: true,
+          gpuAcceleratedSort: false,
           halfPrecisionCovariancesOnGPU: true,
           integerBasedSort: false,
           sphericalHarmonicsDegree: 0,
