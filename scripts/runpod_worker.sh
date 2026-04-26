@@ -25,6 +25,12 @@ export SPLATBOT_LOG_COMMAND_OUTPUT="${SPLATBOT_LOG_COMMAND_OUTPUT:-1}"
 SSH_OPTS="-i /root/.ssh/id_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=6"
 VENV_DIR="${SPLATBOT_RUNPOD_VENV:-/workspace/venv}"
 CACHE_MARKER="${SPLATBOT_RUNPOD_RUNTIME_CACHE_MARKER:-/workspace/.splatbot-runtime-cache-version}"
+RUNTIME_CACHE_ENABLED=false
+case "$VENV_DIR" in
+  /workspace/*)
+    RUNTIME_CACHE_ENABLED=true
+    ;;
+esac
 VPS_JOBCTL="cd /opt/splatbot/app && /opt/splatbot/venv/bin/splatbot-jobctl"
 
 fail_job() {
@@ -80,7 +86,7 @@ check_colmap_cuda() {
 print_runtime_diagnostics() {
   echo "runtime diagnostics:"
   echo "  job=$SPLATBOT_JOB_ID mode=$SPLATBOT_SCAN_MODE"
-  echo "  venv=$VENV_DIR cache_ready=$RUNTIME_CACHE_READY cache_marker=$CACHE_MARKER"
+  echo "  venv=$VENV_DIR cache_enabled=$RUNTIME_CACHE_ENABLED cache_ready=$RUNTIME_CACHE_READY cache_marker=$CACHE_MARKER"
   echo "  python=$(command -v python || true)"
   echo "  colmap=$(command -v colmap || true)"
   colmap -h 2>&1 | sed -n '1p' || true
@@ -109,7 +115,7 @@ if [ -n "${SPLATBOT_RUNPOD_BOOTSTRAP_COMMAND:-}" ]; then
 fi
 
 RUNTIME_CACHE_READY=false
-if [ -n "${SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION:-}" ] && [ -r "$CACHE_MARKER" ]; then
+if [ "$RUNTIME_CACHE_ENABLED" = true ] && [ -n "${SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION:-}" ] && [ -r "$CACHE_MARKER" ]; then
   if [ "$(cat "$CACHE_MARKER")" = "$SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION" ]; then
     RUNTIME_CACHE_READY=true
     echo "RunPod runtime cache is ready: $SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION"
@@ -151,7 +157,7 @@ from gsplat.cuda import _backend
 if _backend._C is None:
     raise SystemExit("gsplat CUDA extension is not available")
 PY
-if [ -n "${SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION:-}" ]; then
+if [ "$RUNTIME_CACHE_ENABLED" = true ] && [ -n "${SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION:-}" ]; then
   mkdir -p "$(dirname "$CACHE_MARKER")"
   printf '%s\n' "$SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION" > "$CACHE_MARKER"
 fi
