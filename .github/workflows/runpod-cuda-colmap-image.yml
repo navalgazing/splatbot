@@ -1,0 +1,62 @@
+name: RunPod CUDA COLMAP Image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - Dockerfile.runpod.cuda
+      - .github/workflows/runpod-cuda-colmap-image.yml
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune -af || true
+          sudo docker builder prune -af || true
+          df -h
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Build and push CUDA COLMAP image
+        run: |
+          set +e
+          set -o pipefail
+          docker buildx build \
+            --progress=plain \
+            --push \
+            --cache-from type=gha,scope=runpod-cuda-colmap \
+            --cache-to type=gha,mode=max,scope=runpod-cuda-colmap \
+            --file Dockerfile.runpod.cuda \
+            --tag ghcr.io/navalgazing/splatbot-runpod:cuda-colmap \
+            . 2>&1 | tee /tmp/runpod-cuda-colmap-image-build.log
+          rc="${PIPESTATUS[0]}"
+          if [ "$rc" -ne 0 ]; then
+            tail="$(tail -n 120 /tmp/runpod-cuda-colmap-image-build.log)"
+            tail="${tail//'%'/'%25'}"
+            tail="${tail//$'\n'/'%0A'}"
+            tail="${tail//$'\r'/'%0D'}"
+            echo "::error title=CUDA COLMAP Docker build failed::$tail"
+            exit "$rc"
+          fi
+      - name: Summarize Docker build failure
+        if: failure()
+        run: |
+          {
+            echo "### CUDA COLMAP Docker build failure"
+            echo
+            echo '```text'
+            tail -n 180 /tmp/runpod-cuda-colmap-image-build.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
