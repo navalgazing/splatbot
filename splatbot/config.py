@@ -53,12 +53,14 @@ class Settings(BaseSettings):
     max_images: int = 300
     max_video_frames: int = 140
     max_video_seconds: int = 60
+    max_video_sample_fps: float = 10.0
     max_upload_bytes: int = 1024 * 1024 * 1024
     interrupted_job_grace_seconds: int = 10 * 60
     default_scan_mode: ScanMode = ScanMode.SCENE
     job_retention_days: int = 14
 
     ffmpeg_bin: str = "ffmpeg"
+    ffprobe_bin: str = "ffprobe"
     colmap_bin: str = "colmap"
     ns_process_data_bin: str = "ns-process-data"
     ns_train_bin: str = "ns-train"

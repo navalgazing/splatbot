@@ -5,7 +5,13 @@ from pathlib import Path
 from splatbot.commands import CommandResult
 from splatbot.config import ScanMode, Settings
 from splatbot.models import JobStatus, MediaItem, MediaKind
-from splatbot.pipeline import ScanPipeline, clean_ply, latest_nerfstudio_config
+from splatbot.pipeline import (
+    ScanPipeline,
+    clean_ply,
+    format_fps,
+    latest_nerfstudio_config,
+    parse_ffprobe_duration,
+)
 
 
 class FakeRunner:
@@ -14,6 +20,8 @@ class FakeRunner:
 
     async def run(self, argv: list[str], cwd: Path | None = None) -> CommandResult:
         self.calls.append(argv)
+        if argv[0] == "ffprobe":
+            return CommandResult(argv=argv, returncode=0, stdout="21.0\n", stderr="")
         if argv[0] == "ns-train":
             output_dir = Path(argv[argv.index("--output-dir") + 1])
             config_dir = output_dir / "processed" / "splatfacto" / "2026-04-25_120000"
@@ -122,8 +130,6 @@ async def test_pipeline_builds_expected_commands(tmp_path) -> None:
         str(tmp_path / "jobs" / "job1" / "images"),
         "--output-dir",
         str(tmp_path / "jobs" / "job1" / "processed"),
-        "--max-dataset-size",
-        "300",
         "--no-gpu",
     ]
     assert runner.calls[1] == [
@@ -167,18 +173,28 @@ async def test_pipeline_uses_video_speedups(tmp_path) -> None:
     )
 
     assert runner.calls[0] == [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(video),
+    ]
+    assert runner.calls[1] == [
         "ffmpeg",
         "-i",
         str(video),
         "-t",
         "60",
         "-vf",
-        "fps=140/60",
+        "fps=6.667",
         "-q:v",
         "2",
         str(tmp_path / "jobs" / "job1" / "images" / "frame_%05d.jpg"),
     ]
-    assert runner.calls[1] == [
+    assert runner.calls[2] == [
         "ns-process-data",
         "images",
         "--data",
@@ -187,10 +203,20 @@ async def test_pipeline_uses_video_speedups(tmp_path) -> None:
         str(tmp_path / "jobs" / "job1" / "processed"),
         "--matching-method",
         "sequential",
-        "--max-dataset-size",
-        "140",
         "--no-gpu",
     ]
+
+
+def test_parse_ffprobe_duration() -> None:
+    assert parse_ffprobe_duration("21.25\n") == 21.25
+    assert parse_ffprobe_duration("N/A\n") is None
+    assert parse_ffprobe_duration("") is None
+    assert parse_ffprobe_duration("-1\n") is None
+
+
+def test_format_fps() -> None:
+    assert format_fps(6.6666667) == "6.667"
+    assert format_fps(10.0) == "10"
 
 
 async def test_pipeline_can_render_preview_when_enabled(tmp_path) -> None:

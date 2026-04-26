@@ -62,7 +62,6 @@ class ScanPipeline:
             input_images_dir,
             processed_dir,
             matching_method="sequential" if is_video else None,
-            max_dataset_size=self.settings.max_video_frames if is_video else self.settings.max_images,
         )
         if on_status:
             await on_status(job_id, JobStatus.TRAINING)
@@ -80,6 +79,7 @@ class ScanPipeline:
         return PipelineOutputs(cleaned_ply=cleaned_ply, preview_mp4=preview_mp4)
 
     async def extract_video_frames(self, video: Path, images_dir: Path) -> None:
+        fps = await self.video_sample_fps(video)
         await self.runner.run(
             [
                 self.settings.ffmpeg_bin,
@@ -88,11 +88,33 @@ class ScanPipeline:
                 "-t",
                 str(self.settings.max_video_seconds),
                 "-vf",
-                f"fps={self.settings.max_video_frames}/{self.settings.max_video_seconds}",
+                f"fps={format_fps(fps)}",
                 "-q:v",
                 "2",
                 str(images_dir / "frame_%05d.jpg"),
             ]
+        )
+
+    async def video_sample_fps(self, video: Path) -> float:
+        result = await self.runner.run(
+            [
+                self.settings.ffprobe_bin,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(video),
+            ]
+        )
+        duration = parse_ffprobe_duration(result.stdout)
+        if duration is None:
+            return self.settings.max_video_frames / self.settings.max_video_seconds
+        sampled_seconds = max(1.0, min(duration, float(self.settings.max_video_seconds)))
+        return min(
+            self.settings.max_video_frames / sampled_seconds,
+            self.settings.max_video_sample_fps,
         )
 
     async def copy_or_link_images(self, media: list[MediaItem], images_dir: Path) -> None:
@@ -113,7 +135,6 @@ class ScanPipeline:
         images_dir: Path,
         processed_dir: Path,
         matching_method: str | None = None,
-        max_dataset_size: int | None = None,
     ) -> None:
         argv = [
             self.settings.ns_process_data_bin,
@@ -125,8 +146,6 @@ class ScanPipeline:
         ]
         if matching_method:
             argv.extend(["--matching-method", matching_method])
-        if max_dataset_size:
-            argv.extend(["--max-dataset-size", str(max_dataset_size)])
         if not self.settings.colmap_use_gpu:
             argv.append("--no-gpu")
         await self.runner.run(argv)
@@ -189,6 +208,18 @@ def latest_nerfstudio_config(ns_dir: Path) -> Path:
     if not configs:
         raise FileNotFoundError(f"no Nerfstudio config.yml found under {ns_dir}")
     return configs[-1]
+
+
+def parse_ffprobe_duration(stdout: str) -> float | None:
+    try:
+        duration = float(stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        return None
+    return duration if duration > 0 else None
+
+
+def format_fps(fps: float) -> str:
+    return f"{fps:.3f}".rstrip("0").rstrip(".")
 
 
 def clean_ply(src: Path, dest: Path) -> None:
