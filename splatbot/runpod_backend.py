@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import shlex
 import subprocess
 import time
@@ -129,10 +130,18 @@ class RunPodLauncher:
             raise RunPodError("SPLATBOT_RUNPOD_VPS_SSH_KEY is required for RunPod backend")
         if self.settings.runpod_pod_ssh_key is None:
             raise RunPodError("SPLATBOT_RUNPOD_POD_SSH_KEY is required for RunPod backend")
-        if not self.settings.runpod_pod_ssh_key.exists():
-            raise RunPodError(f"pod SSH key missing: {self.settings.runpod_pod_ssh_key}")
-        if not self.settings.runpod_pod_ssh_key.with_suffix(".pub").exists():
-            raise RunPodError(f"pod SSH public key missing: {self.settings.runpod_pod_ssh_key.with_suffix('.pub')}")
+        self._validate_readable_file(self.settings.runpod_vps_ssh_key, "SPLATBOT_RUNPOD_VPS_SSH_KEY")
+        self._validate_readable_file(self.settings.runpod_pod_ssh_key, "SPLATBOT_RUNPOD_POD_SSH_KEY")
+        self._validate_readable_file(self.settings.runpod_pod_ssh_key.with_suffix(".pub"), "pod SSH public key")
+
+    @staticmethod
+    def _validate_readable_file(path: Path, label: str) -> None:
+        if not path.exists():
+            raise RunPodError(f"{label} missing: {path}")
+        if not path.is_file():
+            raise RunPodError(f"{label} is not a file: {path}")
+        if not os.access(path, os.R_OK):
+            raise RunPodError(f"{label} is not readable by this process: {path}")
 
     def wait_for_ssh(self, pod_id: str) -> RunPodSshTarget:
         deadline = time.monotonic() + self.settings.runpod_ssh_ready_timeout_seconds
@@ -169,7 +178,15 @@ class RunPodLauncher:
             "-i",
             str(self.settings.runpod_pod_ssh_key),
             "-o",
-            "StrictHostKeyChecking=accept-new",
+            "BatchMode=yes",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "LogLevel=ERROR",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
             "-o",
             "ConnectTimeout=10",
             "-p",
