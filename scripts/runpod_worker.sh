@@ -14,7 +14,7 @@ export PATH="$CUDA_HOME/bin:/usr/local/cuda/bin:$PATH"
 export LD_LIBRARY_PATH="$CUDA_HOME/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
 export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.9}"
 export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD="${TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD:-1}"
-SSH_OPTS="-i /root/.ssh/id_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=20"
+SSH_OPTS="-i /root/.ssh/id_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=6"
 VENV_DIR="${SPLATBOT_RUNPOD_VENV:-/workspace/venv}"
 VPS_JOBCTL="cd /opt/splatbot/app && /opt/splatbot/venv/bin/splatbot-jobctl"
 
@@ -39,7 +39,15 @@ heartbeat_loop() {
 
 heartbeat_loop &
 HEARTBEAT_PID="$!"
-trap 'kill "$HEARTBEAT_PID" 2>/dev/null || true' EXIT
+
+cleanup_worker() {
+  if [ -n "${HEARTBEAT_PID:-}" ]; then
+    kill "$HEARTBEAT_PID" 2>/dev/null || true
+  fi
+  rm -f /root/.ssh/id_ed25519
+}
+
+trap cleanup_worker EXIT
 
 ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
   "$VPS_JOBCTL set-status $SPLATBOT_JOB_ID preparing"
@@ -92,10 +100,13 @@ job_id="$1"
 status="$2"
 ssh -i /root/.ssh/id_ed25519 \
   -o BatchMode=yes \
+  -o IdentitiesOnly=yes \
   -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null \
   -o LogLevel=ERROR \
   -o ConnectTimeout=20 \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=6 \
   "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
   "cd /opt/splatbot/app && /opt/splatbot/venv/bin/splatbot-jobctl set-status $job_id $status"
 SH

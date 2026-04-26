@@ -62,6 +62,33 @@ class FakeNotifier:
         self.failed.append((job, error))
 
 
+class TerminalRacePipeline:
+    def __init__(self, store: Store) -> None:
+        self.store = store
+
+    async def run(self, job_id: str, mode: ScanMode, media: list[MediaItem], on_status=None) -> PipelineOutputs:
+        root = Path(media[0].local_path).parent
+        ply = root / "clean.ply"
+        ply.write_text(
+            "\n".join(
+                [
+                    "ply",
+                    "format ascii 1.0",
+                    "element vertex 1",
+                    "property float x",
+                    "property float y",
+                    "property float z",
+                    "end_header",
+                    "0 0 0",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        await self.store.set_job_failed_unless_terminal(job_id, "cancelled elsewhere")
+        return PipelineOutputs(cleaned_ply=ply, preview_mp4=None)
+
+
 async def test_dispatcher_runs_next_job(tmp_path) -> None:
     store = Store(tmp_path / "splatbot.sqlite3")
     await store.init()
@@ -132,3 +159,31 @@ async def test_dispatcher_does_not_overwrite_completed_runpod_job(tmp_path) -> N
     assert await dispatcher.run_once() is True
     assert (await store.get_job(job.id)).status == JobStatus.DONE
     assert notifier.failed == []
+
+
+async def test_dispatcher_does_not_notify_done_if_terminal_state_wins_race(tmp_path) -> None:
+    store = Store(tmp_path / "splatbot.sqlite3")
+    await store.init()
+    session = await store.create_session(telegram_user_id=1, mode=ScanMode.SCENE)
+    await store.add_media(session.id, MediaKind.PHOTO, tmp_path / "scan.jpg")
+    job = await store.create_job(session)
+
+    notifier = FakeNotifier()
+    dispatcher = Dispatcher(
+        Settings(
+            data_dir=tmp_path,
+            database_path=tmp_path / "splatbot.sqlite3",
+            public_results_dir=tmp_path / "public",
+            public_base_url="https://example.test",
+        ),
+        store,
+        TerminalRacePipeline(store),
+        FakeArtifactStore(),
+        notifier,
+    )
+
+    assert await dispatcher.run_once() is True
+    updated = await store.get_job(job.id)
+    assert updated is not None
+    assert updated.status == JobStatus.FAILED
+    assert notifier.done == []

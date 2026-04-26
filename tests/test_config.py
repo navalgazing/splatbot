@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from splatbot.config import ScanMode, Settings
 
 
@@ -32,3 +35,8 @@ def test_job_dir_is_under_data_dir(tmp_path) -> None:
     settings = Settings(data_dir=tmp_path)
 
     assert settings.job_dir("abc") == tmp_path / "jobs" / "abc"
+
+
+def test_unsupported_worker_backend_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Settings(worker_backend="ssh")

@@ -117,6 +117,19 @@ async def test_runpod_pod_id_can_be_recorded(tmp_path) -> None:
     assert updated.runpod_pod_id == "pod123"
 
 
+async def test_terminal_jobs_with_runpod_pods(tmp_path) -> None:
+    store = Store(tmp_path / "splatbot.sqlite3")
+    await store.init()
+    session = await store.create_session(telegram_user_id=42, mode=ScanMode.OBJECT)
+    job = await store.create_job(session)
+    await store.set_job_runpod_pod_id(job.id, "pod123")
+    await store.set_job_status(job.id, JobStatus.DONE)
+
+    terminal = await store.terminal_jobs_with_runpod_pods()
+
+    assert [job.id for job in terminal] == [job.id]
+
+
 async def test_heartbeat_updates_job(tmp_path) -> None:
     store = Store(tmp_path / "splatbot.sqlite3")
     await store.init()

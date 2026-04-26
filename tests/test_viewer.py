@@ -119,3 +119,25 @@ def test_write_viewer_point_cloud_copies_truncated_binary_ply(tmp_path) -> None:
     write_viewer_point_cloud(src, dest)
 
     assert dest.read_bytes() == data
+
+
+def test_write_viewer_point_cloud_accepts_crlf_binary_header(tmp_path) -> None:
+    src = tmp_path / "gaussian_crlf.ply"
+    dest = tmp_path / "viewer_points.ply"
+    header = (
+        "ply\r\n"
+        "format binary_little_endian 1.0\r\n"
+        "element vertex 1\r\n"
+        "property float x\r\n"
+        "property float y\r\n"
+        "property float z\r\n"
+        "property float f_dc_0\r\n"
+        "property float f_dc_1\r\n"
+        "property float f_dc_2\r\n"
+        "end_header\r\n"
+    ).encode("ascii")
+    src.write_bytes(header + struct.pack("<ffffff", 1.0, 2.0, 3.0, 0.0, 0.0, 0.0))
+
+    write_viewer_point_cloud(src, dest)
+
+    assert b"property uchar red" in dest.read_bytes()

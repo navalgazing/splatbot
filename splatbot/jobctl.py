@@ -7,11 +7,11 @@ import shutil
 from datetime import timedelta
 
 from .config import Settings
-from .models import ArtifactKind, JobStatus, utcnow
+from .models import JobStatus, utcnow
 from .notifications import TelegramNotifier
 from .pipeline import PipelineOutputs
+from .publishing import publish_job_artifacts
 from .storage import Store
-from .viewer import publish_viewer
 
 LOGGER = logging.getLogger(__name__)
 
@@ -42,23 +42,19 @@ async def complete(job_id: str, notify: bool) -> None:
     ply = settings.job_dir(job_id) / "export" / "cleaned_splat.ply"
     preview = settings.job_dir(job_id) / "renders" / "turntable.mp4"
     preview_output = preview if preview.exists() else None
-    viewer_path = publish_viewer(settings, job_id, PipelineOutputs(ply, preview_output))
-    artifacts = [
-        await store.add_artifact(job_id, ArtifactKind.PLY, ply),
-    ]
-    if preview_output is not None:
-        artifacts.append(await store.add_artifact(job_id, ArtifactKind.PREVIEW, preview_output))
-    artifacts.append(
-        await store.add_artifact(
-            job_id,
-            ArtifactKind.VIEWER,
-            viewer_path,
-            url=settings.public_job_url(job_id) or None,
-        )
+    artifacts = await publish_job_artifacts(
+        settings,
+        store,
+        job,
+        PipelineOutputs(ply, preview_output),
     )
     await store.set_job_status(job_id, JobStatus.DONE)
     updated = await store.get_job(job_id)
-    if notify and settings.telegram_token and updated:
+    if updated is None:
+        raise SystemExit(f"job disappeared before completion could be recorded: {job_id}")
+    if updated.status != JobStatus.DONE:
+        raise SystemExit(f"job {job_id} was not marked done: {updated.status.value}")
+    if notify and settings.telegram_token:
         try:
             await TelegramNotifier(settings.telegram_token).job_done(updated, artifacts)
         except Exception:  # noqa: BLE001

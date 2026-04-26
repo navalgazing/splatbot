@@ -34,6 +34,8 @@ SPLATBOT_DATABASE_PATH=/var/lib/splatbot/splatbot.sqlite3
 SPLATBOT_WORKER_BACKEND=local
 ```
 
+`SPLATBOT_WORKER_BACKEND` supports `local` and `runpod`.
+
 On the GPU machine, make sure these commands are available or set their paths in `.env`:
 
 - `ffmpeg`

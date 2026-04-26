@@ -302,6 +302,24 @@ class Store:
             row = await cursor.fetchone()
         return _job(row) if row else None
 
+    async def terminal_jobs_with_runpod_pods(self) -> list[ScanJob]:
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """
+                SELECT * FROM jobs
+                WHERE runpod_pod_id IS NOT NULL
+                  AND status IN (?, ?, ?)
+                ORDER BY updated_at
+                """,
+                (
+                    JobStatus.DONE.value,
+                    JobStatus.FAILED.value,
+                    JobStatus.CANCELLED.value,
+                ),
+            )
+            rows = await cursor.fetchall()
+        return [_job(row) for row in rows]
+
     async def next_queued_job(self) -> ScanJob | None:
         async with self._connect() as db:
             cursor = await db.execute(

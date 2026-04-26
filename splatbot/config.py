@@ -19,7 +19,6 @@ class TelegramMode(StrEnum):
 
 class WorkerBackend(StrEnum):
     LOCAL = "local"
-    SSH = "ssh"
     RUNPOD = "runpod"
 
 
@@ -75,9 +74,6 @@ class Settings(BaseSettings):
     render_preview: bool = False
 
     worker_backend: WorkerBackend = WorkerBackend.LOCAL
-    gpu_ssh_host: str = ""
-    gpu_ssh_key: Path | None = None
-    gpu_workdir: Path = Path("/srv/splatbot")
 
     runpod_api_key: str = ""
     runpod_gpu_type_id: str = "NVIDIA GeForce RTX 4090"

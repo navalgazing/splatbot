@@ -2,17 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
 
-from .artifacts import ArtifactRef, ArtifactStore
+from .artifacts import ArtifactStore
 from .config import Settings, WorkerBackend
 from .logging_config import configure_logging
-from .models import ArtifactKind, JobArtifact, JobStatus, ScanJob
+from .models import JobArtifact, JobStatus, ScanJob
 from .notifications import TelegramNotifier
-from .pipeline import PipelineOutputs, ScanPipeline
+from .pipeline import ScanPipeline
+from .publishing import publish_job_artifacts
 from .runpod_backend import RunPodLauncher
 from .storage import Store
-from .viewer import publish_viewer
 
 LOGGER = logging.getLogger(__name__)
 
@@ -33,40 +32,6 @@ class Dispatcher:
         self.artifact_store = artifact_store or ArtifactStore(settings)
         self.notifier = notifier
         self.runpod_launcher = runpod_launcher or RunPodLauncher(settings)
-
-    def _upload_artifact(self, job: ScanJob, kind: ArtifactKind, path: Path) -> ArtifactRef | None:
-        if not self.artifact_store.enabled:
-            return None
-        suffix = path.suffix or f".{kind.value}"
-        return self.artifact_store.upload(path, f"jobs/{job.id}/{kind.value}{suffix}")
-
-    async def _publish_artifacts(self, job: ScanJob, outputs: PipelineOutputs) -> list[JobArtifact]:
-        published: list[JobArtifact] = []
-        viewer_path = publish_viewer(self.settings, job.id, outputs)
-        viewer_url = self.settings.public_job_url(job.id)
-        artifacts_to_publish = [(ArtifactKind.PLY, outputs.cleaned_ply)]
-        if outputs.preview_mp4 is not None and outputs.preview_mp4.exists():
-            artifacts_to_publish.append((ArtifactKind.PREVIEW, outputs.preview_mp4))
-        for kind, path in artifacts_to_publish:
-            ref = self._upload_artifact(job, kind, path)
-            published.append(
-                await self.store.add_artifact(
-                    job.id,
-                    kind,
-                    path,
-                    remote_key=ref.key if ref else None,
-                    url=ref.url if ref else None,
-                )
-            )
-        published.append(
-            await self.store.add_artifact(
-                job.id,
-                ArtifactKind.VIEWER,
-                viewer_path,
-                url=viewer_url or None,
-            )
-        )
-        return published
 
     async def _notify_done(self, job: ScanJob, artifacts: list[JobArtifact]) -> None:
         if not self.notifier:
@@ -118,10 +83,18 @@ class Dispatcher:
         media = await self.store.list_media(job.session_id)
         try:
             outputs = await self.pipeline.run(job.id, job.mode, media, self.store.set_job_status)
-            artifacts = await self._publish_artifacts(job, outputs)
+            artifacts = await publish_job_artifacts(
+                self.settings,
+                self.store,
+                job,
+                outputs,
+                self.artifact_store,
+            )
             LOGGER.info("job %s done: ply=%s preview=%s", job.id, outputs.cleaned_ply, outputs.preview_mp4)
             await self.store.set_job_status(job.id, JobStatus.DONE)
-            await self._notify_done(job, artifacts)
+            updated = await self.store.get_job(job.id)
+            if updated and updated.status == JobStatus.DONE:
+                await self._notify_done(updated, artifacts)
         except Exception as exc:  # noqa: BLE001 - user-visible job failures should be persisted.
             LOGGER.exception("job %s failed", job.id)
             updated = await self.store.set_job_failed_unless_terminal(job.id, str(exc))
@@ -165,6 +138,14 @@ async def recover_interrupted_jobs(
                     await asyncio.to_thread(launcher.client.delete_pod, job.runpod_pod_id)
                 except Exception:  # noqa: BLE001
                     LOGGER.exception("failed to delete interrupted RunPod pod %s", job.runpod_pod_id)
+        for job in await store.terminal_jobs_with_runpod_pods():
+            if job.runpod_pod_id:
+                try:
+                    await asyncio.to_thread(launcher.client.delete_pod, job.runpod_pod_id)
+                except Exception:  # noqa: BLE001
+                    LOGGER.exception("failed to delete terminal RunPod pod %s", job.runpod_pod_id)
+                else:
+                    await store.set_job_runpod_pod_id(job.id, None)
     if notifier:
         for job in interrupted:
             try:

@@ -209,6 +209,10 @@ class RunPodLauncher:
             "UserKnownHostsFile=/dev/null",
             "-o",
             "ConnectTimeout=10",
+            "-o",
+            "ServerAliveInterval=30",
+            "-o",
+            "ServerAliveCountMax=6",
             "-p",
             str(target.port),
             f"{self.settings.runpod_ssh_user}@{target.host}",
@@ -277,7 +281,7 @@ if ! command -v ssh >/dev/null || ! command -v rsync >/dev/null || ! command -v 
 fi
 printf %s {shlex.quote(key_b64)} | base64 -d > /root/.ssh/id_ed25519
 chmod 600 /root/.ssh/id_ed25519
-SSH_OPTS="-i /root/.ssh/id_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=20"
+SSH_OPTS="-i /root/.ssh/id_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=6"
 rsync -r --delete --no-perms --no-owner --no-group --omit-dir-times --exclude "__pycache__" --exclude "*.egg-info" -e "ssh $SSH_OPTS" {user}@{host}:/opt/splatbot/app/pyproject.toml /workspace/splatbot-app/
 rsync -r --delete --no-perms --no-owner --no-group --omit-dir-times --exclude "__pycache__" --exclude "*.egg-info" -e "ssh $SSH_OPTS" {user}@{host}:/opt/splatbot/app/splatbot/ /workspace/splatbot-app/splatbot/
 rsync -r --delete --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" {user}@{host}:/opt/splatbot/app/scripts/ /workspace/splatbot-app/scripts/

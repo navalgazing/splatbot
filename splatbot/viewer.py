@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import shutil
 import struct
 from pathlib import Path
@@ -281,13 +282,12 @@ PLY_SCALAR_FORMATS = {
 
 
 def write_viewer_point_cloud(src: Path, dest: Path) -> None:
-    data = src.read_bytes()
-    header_end = data.find(b"end_header\n")
-    if header_end == -1:
+    with src.open("rb") as file:
+        header_bytes = read_ply_header(file)
+    if header_bytes is None:
         shutil.copy2(src, dest)
         return
-    header_end += len(b"end_header\n")
-    header = data[:header_end].decode("ascii", errors="replace").splitlines()
+    header = header_bytes.decode("ascii", errors="replace").splitlines()
     if "format binary_little_endian 1.0" not in header:
         shutil.copy2(src, dest)
         return
@@ -323,9 +323,6 @@ def write_viewer_point_cloud(src: Path, dest: Path) -> None:
         return
 
     indexes = {name: names.index(name) for name in required}
-    if len(data) < header_end + vertex_struct.size * vertex_count:
-        shutil.copy2(src, dest)
-        return
     out_header = (
         "ply\n"
         "format binary_little_endian 1.0\n"
@@ -343,21 +340,43 @@ def write_viewer_point_cloud(src: Path, dest: Path) -> None:
     c0 = 0.28209479177387814
 
     def channel(value: float) -> int:
+        if not math.isfinite(value):
+            return 0
         return max(0, min(255, round((0.5 + c0 * value) * 255)))
 
-    with dest.open("wb") as file:
-        file.write(out_header)
-        offset = header_end
-        for _ in range(vertex_count):
-            values = vertex_struct.unpack_from(data, offset)
-            offset += vertex_struct.size
-            file.write(
-                out_vertex.pack(
-                    float(values[indexes["x"]]),
-                    float(values[indexes["y"]]),
-                    float(values[indexes["z"]]),
-                    channel(float(values[indexes["f_dc_0"]])),
-                    channel(float(values[indexes["f_dc_1"]])),
-                    channel(float(values[indexes["f_dc_2"]])),
+    tmp = dest.with_name(dest.name + ".tmp")
+    try:
+        with src.open("rb") as source, tmp.open("wb") as target:
+            source.seek(len(header_bytes))
+            target.write(out_header)
+            for _ in range(vertex_count):
+                chunk = source.read(vertex_struct.size)
+                if len(chunk) != vertex_struct.size:
+                    raise EOFError("truncated vertex data")
+                values = vertex_struct.unpack(chunk)
+                target.write(
+                    out_vertex.pack(
+                        float(values[indexes["x"]]),
+                        float(values[indexes["y"]]),
+                        float(values[indexes["z"]]),
+                        channel(float(values[indexes["f_dc_0"]])),
+                        channel(float(values[indexes["f_dc_1"]])),
+                        channel(float(values[indexes["f_dc_2"]])),
+                    )
                 )
-            )
+    except (EOFError, struct.error, ValueError):
+        tmp.unlink(missing_ok=True)
+        shutil.copy2(src, dest)
+        return
+    tmp.replace(dest)
+
+
+def read_ply_header(file) -> bytes | None:
+    header = bytearray()
+    while line := file.readline():
+        header.extend(line)
+        if line.rstrip(b"\r\n") == b"end_header":
+            return bytes(header)
+        if len(header) > 1024 * 1024:
+            return None
+    return None

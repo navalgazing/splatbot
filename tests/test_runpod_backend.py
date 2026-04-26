@@ -55,6 +55,8 @@ def test_pod_ssh_args_are_noninteractive_and_ephemeral(tmp_path) -> None:
     assert "IdentitiesOnly=yes" in args
     assert "StrictHostKeyChecking=no" in args
     assert "UserKnownHostsFile=/dev/null" in args
+    assert "ServerAliveInterval=30" in args
+    assert "ServerAliveCountMax=6" in args
     assert args[-2:] == ["30022", "root@198.51.100.2"]
 
 
