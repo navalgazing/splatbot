@@ -50,6 +50,7 @@ class ScanPipeline:
             await self.extract_video_frames(Path(media[0].local_path), images_dir)
         else:
             await self.copy_or_link_images(media, images_dir)
+        log_directory_summary("image frames", images_dir)
 
         input_images_dir = images_dir
         if mode == ScanMode.OBJECT:
@@ -57,6 +58,7 @@ class ScanPipeline:
             object_dir.mkdir(parents=True, exist_ok=True)
             await self.remove_backgrounds(images_dir, object_dir)
             input_images_dir = object_dir
+            log_directory_summary("object images", object_dir)
 
         if on_status:
             await on_status(job_id, JobStatus.COLMAP)
@@ -65,14 +67,18 @@ class ScanPipeline:
             processed_dir,
             matching_method="sequential" if is_video else None,
         )
+        log_directory_summary("processed data", processed_dir)
         if on_status:
             await on_status(job_id, JobStatus.TRAINING)
         await self.train_splatfacto(processed_dir, ns_dir)
+        log_directory_summary("nerfstudio outputs", ns_dir)
         if on_status:
             await on_status(job_id, JobStatus.EXPORTING)
         raw_ply = await self.export_ply(ns_dir, export_dir)
         cleaned_ply = export_dir / "cleaned_splat.ply"
         clean_ply(raw_ply, cleaned_ply)
+        log_ply_summary("raw splat", raw_ply)
+        log_ply_summary("cleaned splat", cleaned_ply)
         preview_mp4 = None
         if self.settings.render_preview:
             if on_status:
@@ -222,6 +228,38 @@ def parse_ffprobe_duration(stdout: str) -> float | None:
 
 def format_fps(fps: float) -> str:
     return f"{fps:.3f}".rstrip("0").rstrip(".")
+
+
+def log_directory_summary(label: str, path: Path, limit: int = 8) -> None:
+    files = sorted(item for item in path.rglob("*") if item.is_file())
+    print(f"{label}: {len(files)} file(s) under {path}", flush=True)
+    for item in files[:limit]:
+        try:
+            size = item.stat().st_size
+        except OSError:
+            size = -1
+        print(f"  {item.relative_to(path)} {size} bytes", flush=True)
+    if len(files) > limit:
+        print(f"  ... {len(files) - limit} more file(s)", flush=True)
+
+
+def log_ply_summary(label: str, path: Path) -> None:
+    try:
+        size = path.stat().st_size
+        fmt = None
+        vertices = None
+        with path.open("rb") as handle:
+            for raw_line in handle:
+                line = raw_line.decode("ascii", errors="ignore").strip()
+                if line.startswith("format "):
+                    fmt = line
+                elif line.startswith("element vertex "):
+                    vertices = line.rsplit(" ", 1)[-1]
+                elif line == "end_header":
+                    break
+        print(f"{label}: {path} size={size} format={fmt} vertices={vertices}", flush=True)
+    except OSError as exc:
+        print(f"{label}: could not inspect {path}: {exc}", flush=True)
 
 
 def clean_ply(src: Path, dest: Path) -> None:

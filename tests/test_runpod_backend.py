@@ -84,6 +84,7 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     assert "export SPLATBOT_COLMAP_USE_GPU=false" in command
     assert "export SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION=splatbot-runtime-2026-04-26-v1" in command
     assert "export SPLATBOT_RUNPOD_RUNTIME_CACHE_MARKER=/workspace/.splatbot-runtime-cache-version" in command
+    assert "export SPLATBOT_LOG_COMMAND_OUTPUT=true" in command
 
 
 def test_launch_recycles_pods_without_public_ssh_endpoint(tmp_path) -> None:

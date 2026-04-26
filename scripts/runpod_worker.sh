@@ -21,6 +21,7 @@ export CUDA_CACHE_PATH="${CUDA_CACHE_PATH:-/workspace/cuda_cache}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/workspace/.cache}"
 export TORCH_HOME="${TORCH_HOME:-$XDG_CACHE_HOME/torch}"
 export U2NET_HOME="${U2NET_HOME:-/workspace/.u2net}"
+export SPLATBOT_LOG_COMMAND_OUTPUT="${SPLATBOT_LOG_COMMAND_OUTPUT:-1}"
 SSH_OPTS="-i /root/.ssh/id_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=6"
 VENV_DIR="${SPLATBOT_RUNPOD_VENV:-/workspace/venv}"
 CACHE_MARKER="${SPLATBOT_RUNPOD_RUNTIME_CACHE_MARKER:-/workspace/.splatbot-runtime-cache-version}"
@@ -74,6 +75,28 @@ check_colmap_cuda() {
     echo "SPLATBOT_COLMAP_USE_GPU=true requires a CUDA-enabled COLMAP build" >&2
     exit 2
   fi
+}
+
+print_runtime_diagnostics() {
+  echo "runtime diagnostics:"
+  echo "  job=$SPLATBOT_JOB_ID mode=$SPLATBOT_SCAN_MODE"
+  echo "  venv=$VENV_DIR cache_ready=$RUNTIME_CACHE_READY cache_marker=$CACHE_MARKER"
+  echo "  python=$(command -v python || true)"
+  echo "  colmap=$(command -v colmap || true)"
+  colmap -h 2>&1 | sed -n '1p' || true
+  ffmpeg -version 2>&1 | sed -n '1p' || true
+  "$VENV_DIR/bin/python" - <<'PY'
+import importlib.metadata as metadata
+import torch
+
+for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "torch", "numpy", "opencv-python"):
+    try:
+        version = metadata.version(package)
+    except metadata.PackageNotFoundError:
+        version = "missing"
+    print(f"  {package}={version}")
+print(f"  torch_cuda_available={torch.cuda.is_available()}")
+PY
 }
 
 trap cleanup_worker EXIT
@@ -132,6 +155,7 @@ if [ -n "${SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION:-}" ]; then
   mkdir -p "$(dirname "$CACHE_MARKER")"
   printf '%s\n' "$SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION" > "$CACHE_MARKER"
 fi
+print_runtime_diagnostics
 
 rm -rf /workspace/input-media /workspace/results
 mkdir -p /workspace/input-media /workspace/results
@@ -160,8 +184,27 @@ export SPLATBOT_STATUS_COMMAND=/workspace/splatbot-set-status
 rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
   "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:/var/lib/splatbot/sessions/$SPLATBOT_SESSION_ID/" \
   /workspace/input-media/
+find /workspace/input-media -maxdepth 1 -type f -printf 'input media: %f %s bytes\n' | sort
 
 if "$VENV_DIR/bin/splatbot-run-job-dir" "$SPLATBOT_JOB_ID" "$SPLATBOT_SCAN_MODE" /workspace/input-media /workspace/results; then
+  if [ -f /workspace/results/cleaned_splat.ply ]; then
+    "$VENV_DIR/bin/python" - <<'PY'
+from pathlib import Path
+
+path = Path("/workspace/results/cleaned_splat.ply")
+fmt = vertices = None
+with path.open("rb") as handle:
+    for raw_line in handle:
+        line = raw_line.decode("ascii", errors="ignore").strip()
+        if line.startswith("format "):
+            fmt = line
+        elif line.startswith("element vertex "):
+            vertices = line.rsplit(" ", 1)[-1]
+        elif line == "end_header":
+            break
+print(f"worker result ply: size={path.stat().st_size} format={fmt} vertices={vertices}")
+PY
+  fi
   ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
     "mkdir -p /var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/export /var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/renders"
   rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \

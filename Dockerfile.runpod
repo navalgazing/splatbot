@@ -1,56 +1,9 @@
-ARG RUNPOD_BASE=runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
-
-FROM ${RUNPOD_BASE} AS colmap-builder
-
-ARG COLMAP_VERSION=3.9.1
-ARG CUDA_ARCHITECTURES=89
+FROM runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV SPLATBOT_RUNPOD_VENV=/opt/splatbot/venv
 ENV CUDA_HOME=/usr/local/cuda
-ENV PATH=/usr/local/cuda/bin:$PATH
-ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-      build-essential \
-      ca-certificates \
-      cmake \
-      git \
-      libboost-filesystem-dev \
-      libboost-graph-dev \
-      libboost-program-options-dev \
-      libboost-system-dev \
-      libceres-dev \
-      libeigen3-dev \
-      libflann-dev \
-      libfreeimage-dev \
-      libglew-dev \
-      libgoogle-glog-dev \
-      liblz4-dev \
-      libmetis-dev \
-      libsqlite3-dev \
-      ninja-build \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN git clone --branch "${COLMAP_VERSION}" --depth 1 https://github.com/colmap/colmap.git /tmp/colmap \
-    && cmake -S /tmp/colmap -B /tmp/colmap/build -GNinja \
-      -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}" \
-      -DCMAKE_INSTALL_PREFIX=/opt/colmap-cuda \
-      -DCUDA_ENABLED=ON \
-      -DGUI_ENABLED=OFF \
-      -DOPENGL_ENABLED=OFF \
-      -DCGAL_ENABLED=OFF \
-      -DTESTS_ENABLED=OFF \
-    && cmake --build /tmp/colmap/build --target install --parallel "$(nproc)" \
-    && rm -rf /tmp/colmap
-
-FROM ${RUNPOD_BASE}
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV SPLATBOT_RUNPOD_VENV=/workspace/venv
-ENV CUDA_HOME=/usr/local/cuda
-ENV PATH=/workspace/venv/bin:/usr/local/cuda/bin:$PATH
+ENV PATH=/opt/splatbot/venv/bin:/usr/local/cuda/bin:$PATH
 ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 ENV TORCH_CUDA_ARCH_LIST=8.9
 ENV TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
@@ -60,30 +13,16 @@ ENV TRITON_CACHE_DIR=/workspace/triton_cache
 ENV CUDA_CACHE_PATH=/workspace/cuda_cache
 ENV XDG_CACHE_HOME=/workspace/.cache
 ENV TORCH_HOME=/workspace/.cache/torch
-ENV U2NET_HOME=/workspace/.u2net
+ENV U2NET_HOME=/root/.u2net
 ENV QT_QPA_PLATFORM=offscreen
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       build-essential \
       ca-certificates \
+      colmap \
       curl \
       ffmpeg \
-      libboost-filesystem1.83.0 \
-      libboost-graph1.83.0 \
-      libboost-program-options1.83.0 \
-      libboost-system1.83.0 \
-      libceres4t64 \
-      libflann1.9 \
-      libfreeimage3 \
-      libgl1 \
-      libglew2.2 \
-      libgomp1 \
-      libgoogle-glog0v6t64 \
-      liblz4-1 \
-      libmetis5 \
-      libopengl0 \
-      libsqlite3-0 \
       openssh-client \
       python3 \
       python3-pip \
@@ -91,13 +30,40 @@ RUN apt-get update \
       rsync \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=colmap-builder /opt/colmap-cuda/ /usr/local/
-
-RUN command -v ffmpeg \
+RUN python3 -m venv --system-site-packages /opt/splatbot/venv \
+    && /opt/splatbot/venv/bin/pip install --upgrade pip \
+    && /opt/splatbot/venv/bin/pip install \
+      aiosqlite \
+      boto3 \
+      nerfstudio \
+      pydantic-settings \
+      python-dotenv \
+      python-telegram-bot \
+      'rembg[cpu,cli]' \
+    && command -v ffmpeg \
     && command -v ffprobe \
     && command -v colmap \
     && command -v nvcc \
-    && command -v python3 \
-    && colmap -h | tee /tmp/colmap-help.txt \
-    && grep -q "with CUDA" /tmp/colmap-help.txt \
-    && colmap feature_extractor -h | grep -q "SiftExtraction.use_gpu"
+    && command -v ns-process-data \
+    && command -v ns-train \
+    && command -v ns-export \
+    && command -v ns-render \
+    && command -v rembg \
+    && mkdir -p /root/.u2net \
+    && curl -fsSL \
+      https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx \
+      -o /root/.u2net/u2net.onnx
+
+RUN colmap -h | sed -n '1p' \
+    && /opt/splatbot/venv/bin/python - <<'PY'
+import importlib.metadata as metadata
+import torch
+
+for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "torch"):
+    try:
+        version = metadata.version(package)
+    except metadata.PackageNotFoundError:
+        version = "missing"
+    print(f"{package}={version}")
+print(f"torch_cuda_available={torch.cuda.is_available()}")
+PY

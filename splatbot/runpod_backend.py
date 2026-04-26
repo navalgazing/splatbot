@@ -299,6 +299,7 @@ def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str, 
             "SPLATBOT_TRAIN_MAX_ITERATIONS": settings.train_max_iterations,
             "SPLATBOT_TRAIN_STEPS_PER_SAVE": settings.train_steps_per_save,
             "SPLATBOT_RENDER_PREVIEW": str(settings.render_preview).lower(),
+            "SPLATBOT_LOG_COMMAND_OUTPUT": "true",
         }.items()
     )
     return f"""
