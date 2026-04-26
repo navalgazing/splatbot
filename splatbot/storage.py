@@ -441,7 +441,7 @@ class Store:
             await db.execute(
                 f"""
                 UPDATE jobs
-                SET status = ?, error = ?, updated_at = ?, runpod_pod_id = NULL
+                SET status = ?, error = ?, updated_at = ?
                 WHERE id IN ({placeholders})
                 """,
                 (JobStatus.FAILED.value, error, utcnow().isoformat(), *job_ids),

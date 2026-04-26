@@ -138,6 +138,8 @@ async def recover_interrupted_jobs(
                     await asyncio.to_thread(launcher.client.delete_pod, job.runpod_pod_id)
                 except Exception:  # noqa: BLE001
                     LOGGER.exception("failed to delete interrupted RunPod pod %s", job.runpod_pod_id)
+                else:
+                    await store.set_job_runpod_pod_id(job.id, None)
         for job in await store.terminal_jobs_with_runpod_pods():
             if job.runpod_pod_id:
                 try:

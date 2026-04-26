@@ -93,6 +93,22 @@ async def test_fail_interrupted_jobs_marks_running_states_failed(tmp_path) -> No
     assert updated.error == "restart"
 
 
+async def test_fail_interrupted_jobs_preserves_runpod_pod_id_for_cleanup_retry(tmp_path) -> None:
+    store = Store(tmp_path / "splatbot.sqlite3")
+    await store.init()
+    session = await store.create_session(telegram_user_id=42, mode=ScanMode.OBJECT)
+    job = await store.create_job(session)
+    await store.claim_next_queued_job()
+    await store.set_job_runpod_pod_id(job.id, "pod123")
+
+    await store.fail_interrupted_jobs("restart")
+
+    updated = await store.get_job(job.id)
+    assert updated is not None
+    assert updated.status == JobStatus.FAILED
+    assert updated.runpod_pod_id == "pod123"
+
+
 async def test_create_job_is_idempotent_for_session(tmp_path) -> None:
     store = Store(tmp_path / "splatbot.sqlite3")
     await store.init()
