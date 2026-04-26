@@ -33,6 +33,7 @@ class Settings(BaseSettings):
 
     telegram_token: str = ""
     allowed_telegram_ids: set[int] = Field(default_factory=set)
+    allow_all_telegram_users: bool = False
     telegram_mode: TelegramMode = TelegramMode.POLLING
 
     data_dir: Path = Path("/var/lib/splatbot")

@@ -21,6 +21,13 @@ def test_allowed_telegram_ids_parse_from_single_int() -> None:
     assert settings.allowed_telegram_ids == {123}
 
 
+def test_telegram_access_is_private_by_default() -> None:
+    settings = Settings(telegram_token="x")
+
+    assert settings.allowed_telegram_ids == set()
+    assert settings.allow_all_telegram_users is False
+
+
 def test_job_dir_is_under_data_dir(tmp_path) -> None:
     settings = Settings(data_dir=tmp_path)
 

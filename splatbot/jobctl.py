@@ -25,6 +25,8 @@ async def complete(job_id: str, notify: bool) -> None:
     job = await store.get_job(job_id)
     if job is None:
         raise SystemExit(f"job not found: {job_id}")
+    if job.status in {JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED}:
+        raise SystemExit(f"job {job_id} is already terminal: {job.status.value}")
     ply = settings.job_dir(job_id) / "export" / "cleaned_splat.ply"
     preview = settings.job_dir(job_id) / "renders" / "turntable.mp4"
     preview_output = preview if preview.exists() else None
@@ -52,7 +54,7 @@ async def fail(job_id: str, error: str, notify: bool) -> None:
     settings = Settings()
     store = Store(settings.database_path)
     await store.init()
-    await store.set_job_status(job_id, JobStatus.FAILED, error)
+    await store.set_job_failed_unless_terminal(job_id, error)
     job = await store.get_job(job_id)
     if notify and settings.telegram_token and job:
         await TelegramNotifier(settings.telegram_token).job_failed(job, error)

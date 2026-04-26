@@ -9,6 +9,7 @@ def test_help_text_lists_flow_and_commands() -> None:
     assert "Press Submit scan" in text
     assert "Photos: 20-80 images" in text
     assert "Video: up to 45s sampled to 90 frames" in text
+    assert "/help" in text
     assert "/submit" in text
 
 

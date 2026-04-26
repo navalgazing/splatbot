@@ -26,7 +26,7 @@ LOGGER = logging.getLogger(__name__)
 
 def _allowed(settings: Settings, user_id: int | None) -> bool:
     return user_id is not None and (
-        not settings.allowed_telegram_ids or user_id in settings.allowed_telegram_ids
+        settings.allow_all_telegram_users or user_id in settings.allowed_telegram_ids
     )
 
 
@@ -74,6 +74,7 @@ def _help_text(settings: Settings) -> str:
         f"Video: up to {settings.max_video_seconds}s sampled to {settings.max_video_frames} frames.\n\n"
         "Commands:\n"
         "/start - open the guided menu\n"
+        "/help - show this help text\n"
         "/new - choose scan type\n"
         "/mode scene|object - change current scan type\n"
         "/submit - queue uploaded media\n"
@@ -306,6 +307,8 @@ async def amain() -> None:
     configure_logging()
     settings = Settings()
     settings.require_telegram()
+    if not settings.allowed_telegram_ids and not settings.allow_all_telegram_users:
+        raise ValueError("SPLATBOT_ALLOWED_TELEGRAM_IDS is required unless SPLATBOT_ALLOW_ALL_TELEGRAM_USERS=true")
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     store = Store(settings.database_path)
     await store.init()
