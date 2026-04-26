@@ -212,6 +212,25 @@ async def test_pipeline_uses_video_speedups(tmp_path) -> None:
     ]
 
 
+async def test_process_data_uses_colmap_gpu_when_enabled(tmp_path) -> None:
+    settings = Settings(data_dir=tmp_path, colmap_use_gpu=True)
+    runner = FakeRunner()
+    pipeline = ScanPipeline(settings, runner=runner)
+
+    await pipeline.process_data(tmp_path / "images", tmp_path / "processed")
+
+    assert runner.calls == [
+        [
+            "ns-process-data",
+            "images",
+            "--data",
+            str(tmp_path / "images"),
+            "--output-dir",
+            str(tmp_path / "processed"),
+        ]
+    ]
+
+
 def test_parse_ffprobe_duration() -> None:
     assert parse_ffprobe_duration("21.25\n") == 21.25
     assert parse_ffprobe_duration("N/A\n") is None

@@ -51,6 +51,7 @@ export U2NET_HOME="${{U2NET_HOME:-/workspace/.u2net}}"
 {shell_export("CACHE_VERSION", settings.runpod_runtime_cache_version.strip())}
 {shell_export("BOOTSTRAP_COMMAND", settings.runpod_bootstrap_command.strip())}
 {shell_export("SETUP_COMMAND", settings.runpod_setup_command.strip())}
+{shell_export("SPLATBOT_COLMAP_USE_GPU", str(settings.colmap_use_gpu).lower())}
 
 echo "warming runtime cache version: $CACHE_VERSION"
 echo "venv: $VENV_DIR"
@@ -105,6 +106,24 @@ command -v ns-train
 command -v ns-export
 command -v ns-render
 command -v rembg
+
+truthy() {{
+  case "${{1:-}}" in
+    1|true|TRUE|yes|YES|on|ON)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}}
+
+COLMAP_HELP="$(colmap -h 2>&1)"
+printf '%s\n' "$COLMAP_HELP" | sed -n '1p'
+if truthy "$SPLATBOT_COLMAP_USE_GPU" && ! printf '%s\n' "$COLMAP_HELP" | grep -q "with CUDA"; then
+  echo "SPLATBOT_COLMAP_USE_GPU=true requires a CUDA-enabled COLMAP build" >&2
+  exit 2
+fi
 
 python - <<'PY'
 import torch

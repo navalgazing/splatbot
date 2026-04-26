@@ -133,8 +133,9 @@ settings as the systemd services.
 The generic RunPod image works, but every job has to install COLMAP, ffmpeg,
 Nerfstudio, gsplat, and rembg before it can start GPU work. The fastest repeatable
 setup is a lean image for OS tools plus a RunPod network volume for the Python
-runtime cache. The image keeps `apt-get` out of each job; the network volume keeps
-the venv, rembg model, and compiled CUDA extensions across ephemeral pods.
+runtime cache. The image keeps `apt-get` out of each job and includes a
+CUDA-enabled headless COLMAP build; the network volume keeps the venv, rembg
+model, and compiled CUDA extensions across ephemeral pods.
 
 Example:
 
@@ -153,9 +154,12 @@ SPLATBOT_RUNPOD_VENV=/workspace/venv
 SPLATBOT_RUNPOD_BOOTSTRAP_COMMAND=
 SPLATBOT_RUNPOD_SETUP_COMMAND=/workspace/venv/bin/pip install aiosqlite boto3 nerfstudio pydantic-settings python-dotenv python-telegram-bot 'rembg[cpu,cli]'
 SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION=splatbot-runtime-2026-04-26-v1
+SPLATBOT_COLMAP_USE_GPU=true
 ```
 
 Keep the setup command populated even with the network volume: the worker skips it
 when the runtime cache marker matches, and uses it to self-heal a missing or
 outdated volume. Bump `SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION` when changing Python
-runtime dependencies.
+runtime dependencies. Only enable `SPLATBOT_COLMAP_USE_GPU=true` after the image
+smoke check or `scripts/warm_runpod_volume.py` confirms `colmap -h` reports a
+CUDA build.

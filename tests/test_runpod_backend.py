@@ -81,6 +81,7 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     assert "export SPLATBOT_MAX_VIDEO_FRAMES=140" in command
     assert "export SPLATBOT_FFPROBE_BIN=ffprobe" in command
     assert "export SPLATBOT_TRAIN_MAX_ITERATIONS=10000" in command
+    assert "export SPLATBOT_COLMAP_USE_GPU=false" in command
     assert "export SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION=splatbot-runtime-2026-04-26-v1" in command
     assert "export SPLATBOT_RUNPOD_RUNTIME_CACHE_MARKER=/workspace/.splatbot-runtime-cache-version" in command
 

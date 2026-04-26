@@ -55,6 +55,27 @@ cleanup_worker() {
   rm -f /root/.ssh/id_ed25519
 }
 
+truthy() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+check_colmap_cuda() {
+  local colmap_help
+  colmap_help="$(colmap -h 2>&1)"
+  printf '%s\n' "$colmap_help" | sed -n '1p'
+  if truthy "${SPLATBOT_COLMAP_USE_GPU:-false}" && ! printf '%s\n' "$colmap_help" | grep -q "with CUDA"; then
+    echo "SPLATBOT_COLMAP_USE_GPU=true requires a CUDA-enabled COLMAP build" >&2
+    exit 2
+  fi
+}
+
 trap cleanup_worker EXIT
 
 ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
@@ -93,8 +114,10 @@ command -v ns-export >/dev/null
 command -v ns-render >/dev/null
 command -v ffmpeg >/dev/null
 command -v ffprobe >/dev/null
+command -v colmap >/dev/null
 command -v rembg >/dev/null
 command -v nvcc >/dev/null
+check_colmap_cuda
 "$VENV_DIR/bin/python" - <<'PY'
 import torch
 
