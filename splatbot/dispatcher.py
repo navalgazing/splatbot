@@ -69,23 +69,21 @@ class Dispatcher:
         return published
 
     async def run_once(self) -> bool:
-        job = await self.store.next_queued_job()
+        job = await self.store.claim_next_queued_job()
         if job is None:
             return False
         if self.settings.worker_backend == WorkerBackend.RUNPOD:
             try:
-                await self.store.set_job_status(job.id, JobStatus.PREPARING)
                 pod = await asyncio.to_thread(self.runpod_launcher.launch, job)
                 LOGGER.info("finished RunPod pod %s for job %s", pod.id, job.id)
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("RunPod job %s failed", job.id)
-                await self.store.set_job_status(job.id, JobStatus.FAILED, str(exc))
-                if self.notifier:
-                    await self.notifier.job_failed(job, str(exc))
+                updated = await self.store.set_job_failed_unless_terminal(job.id, str(exc))
+                if self.notifier and updated and updated.status == JobStatus.FAILED and updated.error == str(exc):
+                    await self.notifier.job_failed(updated, str(exc))
             return True
         media = await self.store.list_media(job.session_id)
         try:
-            await self.store.set_job_status(job.id, JobStatus.PREPARING)
             outputs = await self.pipeline.run(job.id, job.mode, media, self.store.set_job_status)
             artifacts = await self._publish_artifacts(job, outputs)
             LOGGER.info("job %s done: ply=%s preview=%s", job.id, outputs.cleaned_ply, outputs.preview_mp4)
@@ -94,9 +92,9 @@ class Dispatcher:
                 await self.notifier.job_done(job, artifacts)
         except Exception as exc:  # noqa: BLE001 - user-visible job failures should be persisted.
             LOGGER.exception("job %s failed", job.id)
-            await self.store.set_job_status(job.id, JobStatus.FAILED, str(exc))
-            if self.notifier:
-                await self.notifier.job_failed(job, str(exc))
+            updated = await self.store.set_job_failed_unless_terminal(job.id, str(exc))
+            if self.notifier and updated and updated.status == JobStatus.FAILED:
+                await self.notifier.job_failed(updated, str(exc))
         return True
 
     async def run_forever(self, interval_seconds: float = 5.0) -> None:

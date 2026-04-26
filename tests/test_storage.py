@@ -33,3 +33,31 @@ async def test_session_media_and_job_lifecycle(tmp_path) -> None:
     )
     assert artifact.kind == ArtifactKind.PLY
     assert (await store.list_artifacts(job.id))[0].url == "https://example.test/ply"
+
+
+async def test_claim_next_queued_job_is_atomic(tmp_path) -> None:
+    store = Store(tmp_path / "splatbot.sqlite3")
+    await store.init()
+    session = await store.create_session(telegram_user_id=42, mode=ScanMode.OBJECT)
+    job = await store.create_job(session)
+
+    claimed = await store.claim_next_queued_job()
+
+    assert claimed is not None
+    assert claimed.id == job.id
+    assert claimed.status == JobStatus.PREPARING
+    assert await store.claim_next_queued_job() is None
+
+
+async def test_set_job_failed_unless_terminal_preserves_done(tmp_path) -> None:
+    store = Store(tmp_path / "splatbot.sqlite3")
+    await store.init()
+    session = await store.create_session(telegram_user_id=42, mode=ScanMode.OBJECT)
+    job = await store.create_job(session)
+    await store.set_job_status(job.id, JobStatus.DONE)
+
+    updated = await store.set_job_failed_unless_terminal(job.id, "late ssh failure")
+
+    assert updated is not None
+    assert updated.status == JobStatus.DONE
+    assert updated.error is None

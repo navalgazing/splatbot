@@ -96,9 +96,3 @@ else
     "/opt/splatbot/venv/bin/splatbot-jobctl fail $SPLATBOT_JOB_ID --error 'RunPod worker failed with exit code $rc' --notify"
   exit "$rc"
 fi
-
-if [ -n "${RUNPOD_POD_ID:-}" ] && [ -n "${SPLATBOT_RUNPOD_API_KEY:-}" ]; then
-  curl -fsS --request DELETE \
-    --header "Authorization: Bearer $SPLATBOT_RUNPOD_API_KEY" \
-    "https://rest.runpod.io/v1/pods/$RUNPOD_POD_ID" || true
-fi

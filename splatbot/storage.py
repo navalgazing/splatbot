@@ -279,6 +279,28 @@ class Store:
             row = await cursor.fetchone()
         return _job(row) if row else None
 
+    async def claim_next_queued_job(self) -> ScanJob | None:
+        now = utcnow().isoformat()
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                """
+                UPDATE jobs
+                SET status = ?, error = NULL, updated_at = ?
+                WHERE id = (
+                    SELECT id FROM jobs
+                    WHERE status = ?
+                    ORDER BY created_at
+                    LIMIT 1
+                )
+                RETURNING *
+                """,
+                (JobStatus.PREPARING.value, now, JobStatus.QUEUED.value),
+            )
+            row = await cursor.fetchone()
+            await db.commit()
+        return _job(row) if row else None
+
     async def set_job_status(self, job_id: str, status: JobStatus, error: str | None = None) -> None:
         async with self._connect() as db:
             await db.execute(
@@ -286,6 +308,27 @@ class Store:
                 (status.value, error, utcnow().isoformat(), job_id),
             )
             await db.commit()
+
+    async def set_job_failed_unless_terminal(self, job_id: str, error: str) -> ScanJob | None:
+        async with self._connect() as db:
+            await db.execute(
+                """
+                UPDATE jobs
+                SET status = ?, error = ?, updated_at = ?
+                WHERE id = ? AND status NOT IN (?, ?, ?)
+                """,
+                (
+                    JobStatus.FAILED.value,
+                    error,
+                    utcnow().isoformat(),
+                    job_id,
+                    JobStatus.DONE.value,
+                    JobStatus.FAILED.value,
+                    JobStatus.CANCELLED.value,
+                ),
+            )
+            await db.commit()
+        return await self.get_job(job_id)
 
     async def add_artifact(
         self,

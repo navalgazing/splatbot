@@ -94,3 +94,39 @@ async def test_dispatcher_runs_next_job(tmp_path) -> None:
     assert artifacts[0].url == f"https://example.test/jobs/{job.id}/ply.ply"
     assert artifacts[2].url == f"https://example.test/results/{job.id}/"
     assert len(notifier.done) == 1
+
+
+class FailingRunPodLauncher:
+    def launch(self, job: ScanJob):
+        raise RuntimeError("ssh died after remote completion")
+
+
+async def test_dispatcher_does_not_overwrite_completed_runpod_job(tmp_path) -> None:
+    store = Store(tmp_path / "splatbot.sqlite3")
+    await store.init()
+    session = await store.create_session(telegram_user_id=1, mode=ScanMode.SCENE)
+    job = await store.create_job(session)
+
+    class CompletingThenFailingRunPodLauncher:
+        def launch(self, job: ScanJob):
+            import asyncio
+
+            asyncio.run(store.set_job_status(job.id, JobStatus.DONE))
+            raise RuntimeError("ssh died after remote completion")
+
+    notifier = FakeNotifier()
+    dispatcher = Dispatcher(
+        Settings(
+            data_dir=tmp_path,
+            database_path=tmp_path / "splatbot.sqlite3",
+            worker_backend="runpod",
+            runpod_api_key="x",
+        ),
+        store,
+        notifier=notifier,
+        runpod_launcher=CompletingThenFailingRunPodLauncher(),
+    )
+
+    assert await dispatcher.run_once() is True
+    assert (await store.get_job(job.id)).status == JobStatus.DONE
+    assert notifier.failed == []
