@@ -31,6 +31,10 @@ class RunPodApiError(RunPodError):
         super().__init__(f"RunPod REST API failed: {status_code} {body}")
 
 
+class RunPodSshUnavailableError(RunPodError):
+    pass
+
+
 @dataclass(frozen=True)
 class RunPodPod:
     id: str
@@ -72,26 +76,34 @@ class RunPodClient:
         cloud_type = settings.runpod_cloud_type
         if cloud_type == "ALL":
             cloud_type = "SECURE"
+        payload = {
+            "name": "splatbot-" + job.id[:12],
+            "imageName": settings.runpod_image_name,
+            "gpuTypeIds": [settings.runpod_gpu_type_id],
+            "gpuCount": 1,
+            "cloudType": cloud_type,
+            "computeType": "GPU",
+            "containerDiskInGb": settings.runpod_container_disk_gb,
+            "volumeInGb": settings.runpod_volume_gb,
+            "volumeMountPath": settings.runpod_volume_mount_path,
+            "vcpuCount": settings.runpod_min_vcpu_count,
+            "minRAMPerGPU": settings.runpod_min_memory_gb,
+            "allowedCudaVersions": ["12.8", "12.9", "13.0"],
+            "supportPublicIp": True,
+            "ports": [settings.runpod_ports],
+            "env": {"PUBLIC_KEY": public_key},
+        }
+        if settings.runpod_network_volume_id:
+            payload["networkVolumeId"] = settings.runpod_network_volume_id
+            payload.pop("volumeInGb", None)
+        data_center_ids = [item.strip() for item in settings.runpod_data_center_ids.split(",") if item.strip()]
+        if data_center_ids:
+            payload["dataCenterIds"] = data_center_ids
+            payload["dataCenterPriority"] = "availability"
         pod = self.request(
             "POST",
             "/pods",
-            {
-                "name": "splatbot-" + job.id[:12],
-                "imageName": settings.runpod_image_name,
-                "gpuTypeIds": [settings.runpod_gpu_type_id],
-                "gpuCount": 1,
-                "cloudType": cloud_type,
-                "computeType": "GPU",
-                "containerDiskInGb": settings.runpod_container_disk_gb,
-                "volumeInGb": settings.runpod_volume_gb,
-                "volumeMountPath": settings.runpod_volume_mount_path,
-                "vcpuCount": settings.runpod_min_vcpu_count,
-                "minRAMPerGPU": settings.runpod_min_memory_gb,
-                "allowedCudaVersions": ["12.8", "12.9", "13.0"],
-                "supportPublicIp": True,
-                "ports": [settings.runpod_ports],
-                "env": {"PUBLIC_KEY": public_key},
-            },
+            payload,
         )
         assert isinstance(pod, dict)
         return RunPodPod(id=pod["id"], image_name=pod["imageName"])
@@ -118,24 +130,35 @@ class RunPodLauncher:
     def launch(self, job: ScanJob, on_pod_id: Callable[[str | None], None] | None = None) -> RunPodPod:
         self._validate()
         public_key = self.settings.runpod_pod_ssh_key.with_suffix(".pub").read_text().strip()
-        pod = self.client.create_ssh_pod(self.settings, job, public_key)
-        if on_pod_id:
-            on_pod_id(pod.id)
-        try:
-            target = self.wait_for_ssh(pod.id)
-            self.run_worker(job, pod.id, target)
-        finally:
+        attempts = max(1, self.settings.runpod_launch_attempts)
+        last_error: RunPodSshUnavailableError | None = None
+        for attempt in range(1, attempts + 1):
+            pod = self.client.create_ssh_pod(self.settings, job, public_key)
+            LOGGER.info("created RunPod pod %s for job %s attempt %s/%s", pod.id, job.id, attempt, attempts)
+            if on_pod_id:
+                on_pod_id(pod.id)
             try:
-                self.client.delete_pod(pod.id)
-            except Exception:  # noqa: BLE001
-                LOGGER.exception("failed to delete RunPod pod %s", pod.id)
-            else:
-                if on_pod_id:
-                    try:
-                        on_pod_id(None)
-                    except Exception:  # noqa: BLE001
-                        LOGGER.exception("failed to clear RunPod pod id for job %s", job.id)
-        return pod
+                target = self.wait_for_ssh(pod.id)
+                self.run_worker(job, pod.id, target)
+                return pod
+            except RunPodSshUnavailableError as exc:
+                last_error = exc
+                LOGGER.warning("RunPod pod %s did not become SSH-ready: %s", pod.id, exc)
+                if attempt >= attempts:
+                    raise
+            finally:
+                try:
+                    self.client.delete_pod(pod.id)
+                except Exception:  # noqa: BLE001
+                    LOGGER.exception("failed to delete RunPod pod %s", pod.id)
+                else:
+                    if on_pod_id:
+                        try:
+                            on_pod_id(None)
+                        except Exception:  # noqa: BLE001
+                            LOGGER.exception("failed to clear RunPod pod id for job %s", job.id)
+        assert last_error is not None
+        raise last_error
 
     def _validate(self) -> None:
         if not self.settings.runpod_api_key:
@@ -160,6 +183,7 @@ class RunPodLauncher:
             raise RunPodError(f"{label} is not readable by this process: {path}")
 
     def wait_for_ssh(self, pod_id: str) -> RunPodSshTarget:
+        started = time.monotonic()
         deadline = time.monotonic() + self.settings.runpod_ssh_ready_timeout_seconds
         last_seen = ""
         while time.monotonic() < deadline:
@@ -174,8 +198,12 @@ class RunPodLauncher:
                     return target
                 if ssh_error:
                     last_seen = f"{last_seen} ssh_error={ssh_error!r}"
+            elif time.monotonic() - started >= self.settings.runpod_no_endpoint_timeout_seconds:
+                raise RunPodSshUnavailableError(
+                    f"RunPod pod never received a public SSH endpoint before recycle timeout: {last_seen}"
+                )
             time.sleep(10)
-        raise RunPodError(f"RunPod pod SSH was not ready before timeout: {last_seen}")
+        raise RunPodSshUnavailableError(f"RunPod pod SSH was not ready before timeout: {last_seen}")
 
     def _ssh_ready(self, target: RunPodSshTarget) -> tuple[bool, str]:
         result = subprocess.run(
@@ -243,6 +271,8 @@ def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str, 
     user = shlex.quote(settings.runpod_vps_user)
     bootstrap_command = shlex.quote(settings.runpod_bootstrap_command.strip())
     setup_command = shlex.quote(settings.runpod_setup_command.strip())
+    runtime_cache_version = shlex.quote(settings.runpod_runtime_cache_version.strip())
+    runtime_cache_marker = shlex.quote(settings.runpod_runtime_cache_marker.strip())
     venv_export = (
         f"export SPLATBOT_RUNPOD_VENV={shlex.quote(settings.runpod_venv.strip())}"
         if settings.runpod_venv.strip()
@@ -297,5 +327,7 @@ export SPLATBOT_VPS_USER={user}
 {pipeline_exports}
 export SPLATBOT_RUNPOD_BOOTSTRAP_COMMAND={bootstrap_command}
 export SPLATBOT_RUNPOD_SETUP_COMMAND={setup_command}
+export SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION={runtime_cache_version}
+export SPLATBOT_RUNPOD_RUNTIME_CACHE_MARKER={runtime_cache_marker}
 exec /workspace/splatbot-app/scripts/runpod_worker.sh
 """

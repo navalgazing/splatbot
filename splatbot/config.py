@@ -78,23 +78,29 @@ class Settings(BaseSettings):
     runpod_api_key: str = ""
     runpod_gpu_type_id: str = "NVIDIA GeForce RTX 4090"
     runpod_cloud_type: str = "ALL"
-    runpod_image_name: str = "runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04"
+    runpod_image_name: str = "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404"
     runpod_container_disk_gb: int = 80
     runpod_volume_gb: int = 80
     runpod_min_vcpu_count: int = 8
     runpod_min_memory_gb: int = 30
     runpod_ports: str = "22/tcp"
     runpod_volume_mount_path: str = "/workspace"
+    runpod_network_volume_id: str = ""
+    runpod_data_center_ids: str = ""
     runpod_ssh_user: str = "root"
     runpod_pod_ssh_key: Path | None = None
     runpod_ssh_ready_timeout_seconds: int = 900
+    runpod_no_endpoint_timeout_seconds: int = 240
+    runpod_launch_attempts: int = 3
     runpod_worker_timeout_seconds: int = 6 * 60 * 60
     runpod_vps_host: str = ""
     runpod_vps_user: str = "root"
     runpod_vps_ssh_key: Path | None = None
     runpod_venv: str = ""
+    runpod_runtime_cache_version: str = "splatbot-runtime-2026-04-26-v1"
+    runpod_runtime_cache_marker: str = "/workspace/.splatbot-runtime-cache-version"
     runpod_bootstrap_command: str = "apt-get update && apt-get install -y openssh-client rsync curl ffmpeg colmap python3 python3-venv python3-pip build-essential"
-    runpod_setup_command: str = "/workspace/venv/bin/pip install nerfstudio 'rembg[cpu,cli]'"
+    runpod_setup_command: str = "/workspace/venv/bin/pip install aiosqlite boto3 nerfstudio pydantic-settings python-dotenv python-telegram-bot 'rembg[cpu,cli]'"
 
     @field_validator("allowed_telegram_ids", mode="before")
     @classmethod

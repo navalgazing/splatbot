@@ -6,8 +6,11 @@ import pytest
 from splatbot.config import Settings
 from splatbot.models import JobStatus, ScanJob, ScanMode
 from splatbot.runpod_backend import (
+    RunPodClient,
     RunPodError,
     RunPodLauncher,
+    RunPodPod,
+    RunPodSshUnavailableError,
     RunPodSshTarget,
     render_remote_worker_command,
 )
@@ -78,3 +81,81 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     assert "export SPLATBOT_MAX_VIDEO_FRAMES=140" in command
     assert "export SPLATBOT_FFPROBE_BIN=ffprobe" in command
     assert "export SPLATBOT_TRAIN_MAX_ITERATIONS=10000" in command
+    assert "export SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION=splatbot-runtime-2026-04-26-v1" in command
+    assert "export SPLATBOT_RUNPOD_RUNTIME_CACHE_MARKER=/workspace/.splatbot-runtime-cache-version" in command
+
+
+def test_launch_recycles_pods_without_public_ssh_endpoint(tmp_path) -> None:
+    settings = make_runpod_settings(tmp_path)
+    settings.runpod_no_endpoint_timeout_seconds = 0
+    settings.runpod_launch_attempts = 2
+
+    class EndpointlessClient:
+        def __init__(self) -> None:
+            self.created: list[str] = []
+            self.deleted: list[str] = []
+
+        def create_ssh_pod(self, settings, job, public_key):
+            pod_id = f"pod{len(self.created) + 1}"
+            self.created.append(pod_id)
+            return RunPodPod(id=pod_id, image_name=settings.runpod_image_name)
+
+        def get_pod(self, pod_id: str) -> dict:
+            return {"desiredStatus": "RUNNING", "publicIp": "", "portMappings": None}
+
+        def delete_pod(self, pod_id: str) -> None:
+            self.deleted.append(pod_id)
+
+    job = ScanJob(
+        id="job123",
+        session_id="session123",
+        telegram_user_id=42,
+        mode=ScanMode.SCENE,
+        status=JobStatus.QUEUED,
+        error=None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    client = EndpointlessClient()
+    pod_ids: list[str | None] = []
+
+    with pytest.raises(RunPodSshUnavailableError, match="never received a public SSH endpoint"):
+        RunPodLauncher(settings, client=client).launch(job, pod_ids.append)
+
+    assert client.created == ["pod1", "pod2"]
+    assert client.deleted == ["pod1", "pod2"]
+    assert pod_ids == ["pod1", None, "pod2", None]
+
+
+def test_create_pod_uses_network_volume_and_datacenter_filters(tmp_path) -> None:
+    settings = make_runpod_settings(tmp_path)
+    settings.runpod_network_volume_id = "vol123"
+    settings.runpod_data_center_ids = "EU-RO-1, EUR-IS-2"
+    job = ScanJob(
+        id="job123456789",
+        session_id="session123",
+        telegram_user_id=42,
+        mode=ScanMode.SCENE,
+        status=JobStatus.QUEUED,
+        error=None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    class CapturingClient(RunPodClient):
+        def __init__(self) -> None:
+            self.payload = None
+
+        def request(self, method, path, payload=None):
+            self.payload = payload
+            return {"id": "pod123", "imageName": payload["imageName"]}
+
+    client = CapturingClient()
+
+    pod = client.create_ssh_pod(settings, job, "public")
+
+    assert pod.id == "pod123"
+    assert client.payload["networkVolumeId"] == "vol123"
+    assert "volumeInGb" not in client.payload
+    assert client.payload["dataCenterIds"] == ["EU-RO-1", "EUR-IS-2"]
+    assert client.payload["dataCenterPriority"] == "availability"

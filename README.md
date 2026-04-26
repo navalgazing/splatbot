@@ -128,12 +128,13 @@ Keep `/opt/splatbot/app/.env` linked to `/etc/splatbot/splatbot.env` so those
 commands load the same public URL, Telegram token, database path, and retention
 settings as the systemd services.
 
-### Prebuilt RunPod Image
+### RunPod Runtime Cache
 
 The generic RunPod image works, but every job has to install COLMAP, ffmpeg,
-Nerfstudio, PyTorch/CUDA wheels, gsplat, and rembg before it can start GPU work.
-Build `Dockerfile.runpod` and use that image to make job pods start directly from
-the media sync/pipeline step.
+Nerfstudio, gsplat, and rembg before it can start GPU work. The fastest repeatable
+setup is a lean image for OS tools plus a RunPod network volume for the Python
+runtime cache. The image keeps `apt-get` out of each job; the network volume keeps
+the venv, rembg model, and compiled CUDA extensions across ephemeral pods.
 
 Example:
 
@@ -146,10 +147,15 @@ Then set:
 
 ```bash
 SPLATBOT_RUNPOD_IMAGE_NAME=ghcr.io/navalgazing/splatbot-runpod:latest
-SPLATBOT_RUNPOD_VENV=/opt/splatbot/venv
+SPLATBOT_RUNPOD_NETWORK_VOLUME_ID=...
+SPLATBOT_RUNPOD_DATA_CENTER_IDS=EU-RO-1
+SPLATBOT_RUNPOD_VENV=/workspace/venv
 SPLATBOT_RUNPOD_BOOTSTRAP_COMMAND=
-SPLATBOT_RUNPOD_SETUP_COMMAND=
+SPLATBOT_RUNPOD_SETUP_COMMAND=/workspace/venv/bin/pip install aiosqlite boto3 nerfstudio pydantic-settings python-dotenv python-telegram-bot 'rembg[cpu,cli]'
+SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION=splatbot-runtime-2026-04-26-v1
 ```
 
-Keep the bootstrap/setup commands populated only when using a generic base image
-or debugging dependency changes.
+Keep the setup command populated even with the network volume: the worker skips it
+when the runtime cache marker matches, and uses it to self-heal a missing or
+outdated volume. Bump `SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION` when changing Python
+runtime dependencies.
