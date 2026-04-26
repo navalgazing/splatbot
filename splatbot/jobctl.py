@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import shutil
+from datetime import timedelta
 
 from .config import Settings
-from .models import ArtifactKind, JobStatus
+from .models import ArtifactKind, JobStatus, utcnow
 from .notifications import TelegramNotifier
 from .pipeline import PipelineOutputs
 from .storage import Store
@@ -67,6 +69,26 @@ async def fail(job_id: str, error: str, notify: bool) -> None:
         await TelegramNotifier(settings.telegram_token).job_failed(job, error)
 
 
+async def cleanup() -> None:
+    settings = Settings()
+    store = Store(settings.database_path)
+    await store.init()
+    cutoff = utcnow() - timedelta(days=settings.job_retention_days)
+    deleted = 0
+    async with store._connect() as db:
+        cursor = await db.execute("SELECT id, session_id, updated_at FROM jobs WHERE updated_at < ?", (cutoff.isoformat(),))
+        rows = await cursor.fetchall()
+        for row in rows:
+            shutil.rmtree(settings.job_dir(row["id"]), ignore_errors=True)
+            shutil.rmtree(settings.public_results_dir / row["id"], ignore_errors=True)
+            shutil.rmtree(settings.data_dir / "sessions" / row["session_id"], ignore_errors=True)
+            await db.execute("DELETE FROM jobs WHERE id = ?", (row["id"],))
+            await db.execute("DELETE FROM sessions WHERE id = ?", (row["session_id"],))
+            deleted += 1
+        await db.commit()
+    print(f"deleted {deleted} expired job(s)")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Update Splatbot job state.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -88,6 +110,8 @@ def main() -> None:
     fail_parser.add_argument("--error", required=True)
     fail_parser.add_argument("--notify", action="store_true")
 
+    subparsers.add_parser("cleanup")
+
     args = parser.parse_args()
     if args.command == "set-status":
         asyncio.run(set_status(args.job_id, JobStatus(args.status), args.error))
@@ -97,6 +121,8 @@ def main() -> None:
         asyncio.run(complete(args.job_id, args.notify))
     elif args.command == "fail":
         asyncio.run(fail(args.job_id, args.error, args.notify))
+    elif args.command == "cleanup":
+        asyncio.run(cleanup())
 
 
 if __name__ == "__main__":
