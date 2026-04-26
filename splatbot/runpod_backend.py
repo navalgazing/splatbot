@@ -24,6 +24,13 @@ class RunPodError(RuntimeError):
     pass
 
 
+class RunPodApiError(RunPodError):
+    def __init__(self, status_code: int, body: str) -> None:
+        self.status_code = status_code
+        self.body = body
+        super().__init__(f"RunPod REST API failed: {status_code} {body}")
+
+
 @dataclass(frozen=True)
 class RunPodPod:
     id: str
@@ -59,7 +66,7 @@ class RunPodClient:
                 return json.loads(body) if body else {}
         except urllib.error.HTTPError as exc:
             body = exc.read().decode(errors="replace")
-            raise RunPodError(f"RunPod REST API failed: {exc.code} {body}") from exc
+            raise RunPodApiError(exc.code, body) from exc
 
     def create_ssh_pod(self, settings: Settings, job: ScanJob, public_key: str) -> RunPodPod:
         cloud_type = settings.runpod_cloud_type
@@ -95,7 +102,12 @@ class RunPodClient:
         return pod
 
     def delete_pod(self, pod_id: str) -> None:
-        self.request("DELETE", f"/pods/{pod_id}")
+        try:
+            self.request("DELETE", f"/pods/{pod_id}")
+        except RunPodApiError as exc:
+            if exc.status_code == 404:
+                return
+            raise
 
 
 class RunPodLauncher:
@@ -115,10 +127,14 @@ class RunPodLauncher:
         finally:
             try:
                 self.client.delete_pod(pod.id)
-                if on_pod_id:
-                    on_pod_id(None)
             except Exception:  # noqa: BLE001
                 LOGGER.exception("failed to delete RunPod pod %s", pod.id)
+            else:
+                if on_pod_id:
+                    try:
+                        on_pod_id(None)
+                    except Exception:  # noqa: BLE001
+                        LOGGER.exception("failed to clear RunPod pod id for job %s", job.id)
         return pod
 
     def _validate(self) -> None:
@@ -153,12 +169,15 @@ class RunPodLauncher:
             last_seen = f"host={host!r} port={port!r} status={pod.get('desiredStatus')!r}"
             if host and port:
                 target = RunPodSshTarget(host=host, port=int(port))
-                if self._ssh_ready(target):
+                ready, ssh_error = self._ssh_ready(target)
+                if ready:
                     return target
+                if ssh_error:
+                    last_seen = f"{last_seen} ssh_error={ssh_error!r}"
             time.sleep(10)
         raise RunPodError(f"RunPod pod SSH was not ready before timeout: {last_seen}")
 
-    def _ssh_ready(self, target: RunPodSshTarget) -> bool:
+    def _ssh_ready(self, target: RunPodSshTarget) -> tuple[bool, str]:
         result = subprocess.run(
             [
                 "ssh",
@@ -166,12 +185,13 @@ class RunPodLauncher:
                 "echo",
                 "ready",
             ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             timeout=20,
             check=False,
         )
-        return result.returncode == 0
+        error = result.stderr.decode(errors="replace").strip()[-500:]
+        return result.returncode == 0, error
 
     def _pod_ssh_args(self, target: RunPodSshTarget) -> list[str]:
         return [
@@ -224,6 +244,29 @@ def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str, 
         if settings.runpod_venv.strip()
         else ""
     )
+    pipeline_exports = "\n".join(
+        f"export {name}={shlex.quote(str(value))}"
+        for name, value in {
+            "SPLATBOT_MAX_IMAGES": settings.max_images,
+            "SPLATBOT_MAX_VIDEO_FRAMES": settings.max_video_frames,
+            "SPLATBOT_MAX_VIDEO_SECONDS": settings.max_video_seconds,
+            "SPLATBOT_MAX_VIDEO_SAMPLE_FPS": settings.max_video_sample_fps,
+            "SPLATBOT_FFMPEG_BIN": settings.ffmpeg_bin,
+            "SPLATBOT_FFPROBE_BIN": settings.ffprobe_bin,
+            "SPLATBOT_COLMAP_BIN": settings.colmap_bin,
+            "SPLATBOT_NS_PROCESS_DATA_BIN": settings.ns_process_data_bin,
+            "SPLATBOT_NS_TRAIN_BIN": settings.ns_train_bin,
+            "SPLATBOT_NS_EXPORT_BIN": settings.ns_export_bin,
+            "SPLATBOT_NS_RENDER_BIN": settings.ns_render_bin,
+            "SPLATBOT_REMBG_BIN": settings.rembg_bin,
+            "SPLATBOT_COLMAP_USE_GPU": str(settings.colmap_use_gpu).lower(),
+            "SPLATBOT_COMMAND_TIMEOUT_SECONDS": settings.command_timeout_seconds,
+            "SPLATBOT_COMMAND_TAIL_BYTES": settings.command_tail_bytes,
+            "SPLATBOT_TRAIN_MAX_ITERATIONS": settings.train_max_iterations,
+            "SPLATBOT_TRAIN_STEPS_PER_SAVE": settings.train_steps_per_save,
+            "SPLATBOT_RENDER_PREVIEW": str(settings.render_preview).lower(),
+        }.items()
+    )
     return f"""
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -234,7 +277,7 @@ if ! command -v ssh >/dev/null || ! command -v rsync >/dev/null || ! command -v 
 fi
 printf %s {shlex.quote(key_b64)} | base64 -d > /root/.ssh/id_ed25519
 chmod 600 /root/.ssh/id_ed25519
-SSH_OPTS="-i /root/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20"
+SSH_OPTS="-i /root/.ssh/id_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=20"
 rsync -r --delete --no-perms --no-owner --no-group --omit-dir-times --exclude "__pycache__" --exclude "*.egg-info" -e "ssh $SSH_OPTS" {user}@{host}:/opt/splatbot/app/pyproject.toml /workspace/splatbot-app/
 rsync -r --delete --no-perms --no-owner --no-group --omit-dir-times --exclude "__pycache__" --exclude "*.egg-info" -e "ssh $SSH_OPTS" {user}@{host}:/opt/splatbot/app/splatbot/ /workspace/splatbot-app/splatbot/
 rsync -r --delete --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" {user}@{host}:/opt/splatbot/app/scripts/ /workspace/splatbot-app/scripts/
@@ -247,6 +290,7 @@ export RUNPOD_POD_ID={shlex.quote(pod_id)}
 export SPLATBOT_VPS_HOST={host}
 export SPLATBOT_VPS_USER={user}
 {venv_export}
+{pipeline_exports}
 export SPLATBOT_RUNPOD_BOOTSTRAP_COMMAND={bootstrap_command}
 export SPLATBOT_RUNPOD_SETUP_COMMAND={setup_command}
 exec /workspace/splatbot-app/scripts/runpod_worker.sh

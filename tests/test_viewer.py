@@ -2,7 +2,9 @@ from splatbot.config import Settings
 from splatbot.pipeline import PipelineOutputs
 import struct
 
-from splatbot.viewer import publish_viewer, write_viewer_point_cloud
+import pytest
+
+from splatbot.viewer import publish_viewer, safe_result_dir, write_viewer_point_cloud
 
 
 def test_publish_viewer_writes_static_result_page(tmp_path) -> None:
@@ -41,6 +43,7 @@ def test_publish_viewer_writes_static_result_page(tmp_path) -> None:
     assert 'from "three"' in html
     assert "viewer_points.ply" in html
     assert "PLYLoader" in html
+    assert 'name="robots"' in html
 
 
 def test_publish_viewer_allows_missing_preview(tmp_path) -> None:
@@ -89,3 +92,30 @@ def test_write_viewer_point_cloud_converts_gaussian_dc_color(tmp_path) -> None:
     assert "property uchar green" in header
     assert "property uchar blue" in header
     assert struct.unpack("<fffBBB", data[header_end:]) == (1.0, 2.0, 3.0, 199, 128, 56)
+
+
+def test_safe_result_dir_rejects_path_traversal(tmp_path) -> None:
+    with pytest.raises(ValueError):
+        safe_result_dir(tmp_path / "public", "../escape")
+
+
+def test_write_viewer_point_cloud_copies_truncated_binary_ply(tmp_path) -> None:
+    src = tmp_path / "bad.ply"
+    dest = tmp_path / "viewer_points.ply"
+    data = (
+        "ply\n"
+        "format binary_little_endian 1.0\n"
+        "element vertex 2\n"
+        "property float x\n"
+        "property float y\n"
+        "property float z\n"
+        "property float f_dc_0\n"
+        "property float f_dc_1\n"
+        "property float f_dc_2\n"
+        "end_header\n"
+    ).encode("ascii")
+    src.write_bytes(data)
+
+    write_viewer_point_cloud(src, dest)
+
+    assert dest.read_bytes() == data

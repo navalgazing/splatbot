@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import signal
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +38,7 @@ class CommandRunner:
             cwd=str(cwd) if cwd else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
         try:
             stdout, stderr = await asyncio.wait_for(
@@ -47,7 +50,10 @@ class CommandRunner:
             )
             returncode = await proc.wait()
         except TimeoutError as exc:
-            proc.kill()
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
             with contextlib.suppress(ProcessLookupError):
                 await proc.wait()
             result = CommandResult(

@@ -63,6 +63,20 @@ async def test_set_job_failed_unless_terminal_preserves_done(tmp_path) -> None:
     assert updated.error is None
 
 
+async def test_set_job_status_does_not_overwrite_terminal_job(tmp_path) -> None:
+    store = Store(tmp_path / "splatbot.sqlite3")
+    await store.init()
+    session = await store.create_session(telegram_user_id=42, mode=ScanMode.OBJECT)
+    job = await store.create_job(session)
+    await store.set_job_status(job.id, JobStatus.DONE)
+
+    await store.set_job_status(job.id, JobStatus.COLMAP)
+    updated = await store.get_job(job.id)
+
+    assert updated is not None
+    assert updated.status == JobStatus.DONE
+
+
 async def test_fail_interrupted_jobs_marks_running_states_failed(tmp_path) -> None:
     store = Store(tmp_path / "splatbot.sqlite3")
     await store.init()

@@ -11,6 +11,7 @@ class JobStatus(StrEnum):
     COLLECTING = "collecting"
     QUEUED = "queued"
     PREPARING = "preparing"
+    PREPROCESSING = "preprocessing"
     COLMAP = "colmap"
     TRAINING = "training"
     EXPORTING = "exporting"

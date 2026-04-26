@@ -14,7 +14,7 @@ export PATH="$CUDA_HOME/bin:/usr/local/cuda/bin:$PATH"
 export LD_LIBRARY_PATH="$CUDA_HOME/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
 export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.9}"
 export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD="${TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD:-1}"
-SSH_OPTS="-i /root/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20"
+SSH_OPTS="-i /root/.ssh/id_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=20"
 VENV_DIR="${SPLATBOT_RUNPOD_VENV:-/workspace/venv}"
 
 fail_job() {
@@ -63,6 +63,11 @@ command -v ns-process-data >/dev/null
 command -v ns-train >/dev/null
 command -v ns-export >/dev/null
 command -v ns-render >/dev/null
+command -v ffmpeg >/dev/null
+command -v ffprobe >/dev/null
+if [ "$SPLATBOT_SCAN_MODE" = "object" ]; then
+  command -v rembg >/dev/null
+fi
 command -v nvcc >/dev/null
 "$VENV_DIR/bin/python" - <<'PY'
 import torch
@@ -77,20 +82,30 @@ PY
 
 rm -rf /workspace/input-media /workspace/results
 mkdir -p /workspace/input-media /workspace/results
+cat > /workspace/splatbot-set-status <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+: "${SPLATBOT_VPS_USER:=root}"
+: "${SPLATBOT_VPS_HOST:?}"
+job_id="$1"
+status="$2"
+ssh -i /root/.ssh/id_ed25519 \
+  -o BatchMode=yes \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null \
+  -o LogLevel=ERROR \
+  -o ConnectTimeout=20 \
+  "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
+  "/opt/splatbot/venv/bin/splatbot-jobctl set-status $job_id $status"
+SH
+chmod +x /workspace/splatbot-set-status
+export SPLATBOT_STATUS_COMMAND=/workspace/splatbot-set-status
+
 rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
   "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:/var/lib/splatbot/sessions/$SPLATBOT_SESSION_ID/" \
   /workspace/input-media/
 
-ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
-  "/opt/splatbot/venv/bin/splatbot-jobctl set-status $SPLATBOT_JOB_ID colmap"
-
-set +e
-"$VENV_DIR/bin/splatbot-run-job-dir" "$SPLATBOT_JOB_ID" "$SPLATBOT_SCAN_MODE" /workspace/input-media /workspace/results
-rc="$?"
-set -e
-trap - ERR
-
-if [ "$rc" -eq 0 ]; then
+if "$VENV_DIR/bin/splatbot-run-job-dir" "$SPLATBOT_JOB_ID" "$SPLATBOT_SCAN_MODE" /workspace/input-media /workspace/results; then
   ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
     "mkdir -p /var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/export /var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/renders"
   rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
@@ -104,6 +119,7 @@ if [ "$rc" -eq 0 ]; then
   ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
     "/opt/splatbot/venv/bin/splatbot-jobctl complete $SPLATBOT_JOB_ID --notify"
 else
+  rc="$?"
   ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
     "/opt/splatbot/venv/bin/splatbot-jobctl fail $SPLATBOT_JOB_ID --error 'RunPod worker failed with exit code $rc' --notify"
   exit "$rc"

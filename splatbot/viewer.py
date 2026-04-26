@@ -11,7 +11,7 @@ from .pipeline import PipelineOutputs
 
 
 def publish_viewer(settings: Settings, job_id: str, outputs: PipelineOutputs) -> Path:
-    target = settings.public_results_dir / job_id
+    target = safe_result_dir(settings.public_results_dir, job_id)
     target.mkdir(parents=True, exist_ok=True)
     shutil.copy2(outputs.cleaned_ply, target / "cleaned_splat.ply")
     write_viewer_point_cloud(outputs.cleaned_ply, target / "viewer_points.ply")
@@ -20,6 +20,14 @@ def publish_viewer(settings: Settings, job_id: str, outputs: PipelineOutputs) ->
         shutil.copy2(outputs.preview_mp4, target / "turntable.mp4")
     (target / "index.html").write_text(render_viewer_html(job_id, has_preview=has_preview), encoding="utf-8")
     return target / "index.html"
+
+
+def safe_result_dir(root: Path, job_id: str) -> Path:
+    root = root.resolve()
+    target = (root / job_id).resolve()
+    if not target.is_relative_to(root):
+        raise ValueError(f"invalid job id for result path: {job_id}")
+    return target
 
 
 def render_viewer_html(job_id: str, has_preview: bool = True) -> str:
@@ -35,6 +43,7 @@ def render_viewer_html(job_id: str, has_preview: bool = True) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
   <title>{html.escape(title)}</title>
   <style>
     * {{ box-sizing: border-box; }}
@@ -289,7 +298,11 @@ def write_viewer_point_cloud(src: Path, dest: Path) -> None:
     for line in header:
         parts = line.split()
         if parts[:2] == ["element", "vertex"] and len(parts) == 3:
-            vertex_count = int(parts[2])
+            try:
+                vertex_count = int(parts[2])
+            except ValueError:
+                shutil.copy2(src, dest)
+                return
             in_vertex = True
             continue
         if parts[:1] == ["element"] and parts[1:2] != ["vertex"]:
@@ -310,6 +323,9 @@ def write_viewer_point_cloud(src: Path, dest: Path) -> None:
         return
 
     indexes = {name: names.index(name) for name in required}
+    if len(data) < header_end + vertex_struct.size * vertex_count:
+        shutil.copy2(src, dest)
+        return
     out_header = (
         "ply\n"
         "format binary_little_endian 1.0\n"

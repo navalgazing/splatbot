@@ -157,7 +157,12 @@ async def test_pipeline_builds_expected_commands(tmp_path) -> None:
         "raw_splat.ply",
     ]
     assert [call[0] for call in runner.calls] == ["ns-process-data", "ns-train", "ns-export"]
-    assert statuses == [JobStatus.COLMAP, JobStatus.TRAINING, JobStatus.EXPORTING]
+    assert statuses == [
+        JobStatus.PREPROCESSING,
+        JobStatus.COLMAP,
+        JobStatus.TRAINING,
+        JobStatus.EXPORTING,
+    ]
 
 
 async def test_pipeline_uses_video_speedups(tmp_path) -> None:

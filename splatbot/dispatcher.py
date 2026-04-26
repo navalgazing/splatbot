@@ -68,6 +68,22 @@ class Dispatcher:
         )
         return published
 
+    async def _notify_done(self, job: ScanJob, artifacts: list[JobArtifact]) -> None:
+        if not self.notifier:
+            return
+        try:
+            await self.notifier.job_done(job, artifacts)
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("failed to notify user about completed job %s", job.id)
+
+    async def _notify_failed(self, job: ScanJob, error: str) -> None:
+        if not self.notifier:
+            return
+        try:
+            await self.notifier.job_failed(job, error)
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("failed to notify user about failed job %s", job.id)
+
     async def run_once(self) -> bool:
         job = await self.store.claim_next_queued_job()
         if job is None:
@@ -89,7 +105,7 @@ class Dispatcher:
                 LOGGER.exception("RunPod job %s failed", job.id)
                 updated = await self.store.set_job_failed_unless_terminal(job.id, str(exc))
                 if self.notifier and updated and updated.status == JobStatus.FAILED and updated.error == str(exc):
-                    await self.notifier.job_failed(updated, str(exc))
+                    await self._notify_failed(updated, str(exc))
             return True
         if self.settings.worker_backend != WorkerBackend.LOCAL:
             updated = await self.store.set_job_failed_unless_terminal(
@@ -97,7 +113,7 @@ class Dispatcher:
                 f"Worker backend is not implemented: {self.settings.worker_backend.value}",
             )
             if self.notifier and updated and updated.status == JobStatus.FAILED:
-                await self.notifier.job_failed(updated, updated.error or "worker backend is not implemented")
+                await self._notify_failed(updated, updated.error or "worker backend is not implemented")
             return True
         media = await self.store.list_media(job.session_id)
         try:
@@ -105,13 +121,12 @@ class Dispatcher:
             artifacts = await self._publish_artifacts(job, outputs)
             LOGGER.info("job %s done: ply=%s preview=%s", job.id, outputs.cleaned_ply, outputs.preview_mp4)
             await self.store.set_job_status(job.id, JobStatus.DONE)
-            if self.notifier:
-                await self.notifier.job_done(job, artifacts)
+            await self._notify_done(job, artifacts)
         except Exception as exc:  # noqa: BLE001 - user-visible job failures should be persisted.
             LOGGER.exception("job %s failed", job.id)
             updated = await self.store.set_job_failed_unless_terminal(job.id, str(exc))
             if self.notifier and updated and updated.status == JobStatus.FAILED:
-                await self.notifier.job_failed(updated, str(exc))
+                await self._notify_failed(updated, str(exc))
         return True
 
     async def run_forever(self, interval_seconds: float = 5.0) -> None:

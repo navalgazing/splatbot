@@ -44,6 +44,8 @@ class ScanPipeline:
             path.mkdir(parents=True, exist_ok=True)
 
         is_video = len(media) == 1 and media[0].kind == MediaKind.VIDEO
+        if on_status:
+            await on_status(job_id, JobStatus.PREPROCESSING)
         if is_video:
             await self.extract_video_frames(Path(media[0].local_path), images_dir)
         else:

@@ -1,10 +1,16 @@
 import os
+from datetime import UTC, datetime
 
 import pytest
 
 from splatbot.config import Settings
-from splatbot.models import ScanMode
-from splatbot.runpod_backend import RunPodError, RunPodLauncher, RunPodSshTarget
+from splatbot.models import JobStatus, ScanJob, ScanMode
+from splatbot.runpod_backend import (
+    RunPodError,
+    RunPodLauncher,
+    RunPodSshTarget,
+    render_remote_worker_command,
+)
 
 
 def make_runpod_settings(tmp_path, pod_key=None, vps_key=None) -> Settings:
@@ -50,3 +56,23 @@ def test_pod_ssh_args_are_noninteractive_and_ephemeral(tmp_path) -> None:
     assert "StrictHostKeyChecking=no" in args
     assert "UserKnownHostsFile=/dev/null" in args
     assert args[-2:] == ["30022", "root@198.51.100.2"]
+
+
+def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
+    settings = make_runpod_settings(tmp_path)
+    job = ScanJob(
+        id="job123",
+        session_id="session123",
+        telegram_user_id=42,
+        mode=ScanMode.OBJECT,
+        status=JobStatus.QUEUED,
+        error=None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    command = render_remote_worker_command(settings, job, "pod123", "a2V5")
+
+    assert "export SPLATBOT_MAX_VIDEO_FRAMES=140" in command
+    assert "export SPLATBOT_FFPROBE_BIN=ffprobe" in command
+    assert "export SPLATBOT_TRAIN_MAX_ITERATIONS=10000" in command

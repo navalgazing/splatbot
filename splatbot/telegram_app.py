@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 from pathlib import Path
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -153,6 +154,7 @@ async def create_session(
     existing = await store.get_active_session(user_id)
     if existing:
         await store.set_session_status(existing.id, JobStatus.CANCELLED)
+        shutil.rmtree(settings.data_dir / "sessions" / existing.id, ignore_errors=True)
     session = await store.create_session(user_id, mode)
     session_dir = settings.data_dir / "sessions" / session.id
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -196,6 +198,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await cancel(update, context)
     elif data.startswith("new:"):
         _, mode_value = data.split(":", 1)
+        if mode_value not in {ScanMode.SCENE.value, ScanMode.OBJECT.value}:
+            await query.message.reply_text("Unknown scan type.", reply_markup=_main_keyboard())
+            return
         await create_session(update, context, ScanMode(mode_value))
 
 
@@ -209,7 +214,11 @@ async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user_id = update.effective_user.id
     session = await store.get_active_session(user_id)
     if session is None:
-        session = await store.create_session(user_id, settings.default_scan_mode)
+        await update.effective_message.reply_text(
+            "Choose object or scene first, then resend the media.",
+            reply_markup=_main_keyboard(),
+        )
+        return
     session_dir = settings.data_dir / "sessions" / session.id
     session_dir.mkdir(parents=True, exist_ok=True)
 
@@ -264,6 +273,9 @@ async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     dest = session_dir / f"{tg_file.file_unique_id}{suffix.lower()}"
+    if any(Path(item.local_path) == dest for item in existing_items):
+        await update.effective_message.reply_text("Already received that file.", reply_markup=_session_keyboard())
+        return
     await tg_file.download_to_drive(custom_path=dest)
     await store.add_media(session.id, kind, dest)
     items = await store.list_media(session.id)
@@ -342,6 +354,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_message.reply_text("No active scan.")
         return
     await store.set_session_status(session.id, JobStatus.CANCELLED)
+    shutil.rmtree(_settings(context).data_dir / "sessions" / session.id, ignore_errors=True)
     await update.effective_message.reply_text("Cancelled current scan.", reply_markup=_main_keyboard())
 
 

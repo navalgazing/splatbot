@@ -138,6 +138,7 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(self.path) as db:
             await db.executescript(SCHEMA)
+            await db.execute("PRAGMA busy_timeout=30000")
             await self._migrate(db)
             await db.commit()
 
@@ -154,6 +155,7 @@ class Store:
         db = await aiosqlite.connect(self.path)
         db.row_factory = sqlite3.Row
         await db.execute("PRAGMA foreign_keys=ON")
+        await db.execute("PRAGMA busy_timeout=30000")
         try:
             yield db
         finally:
@@ -350,8 +352,20 @@ class Store:
     async def set_job_status(self, job_id: str, status: JobStatus, error: str | None = None) -> None:
         async with self._connect() as db:
             await db.execute(
-                "UPDATE jobs SET status = ?, error = ?, updated_at = ? WHERE id = ?",
-                (status.value, error, utcnow().isoformat(), job_id),
+                """
+                UPDATE jobs
+                SET status = ?, error = ?, updated_at = ?
+                WHERE id = ? AND status NOT IN (?, ?, ?)
+                """,
+                (
+                    status.value,
+                    error,
+                    utcnow().isoformat(),
+                    job_id,
+                    JobStatus.DONE.value,
+                    JobStatus.FAILED.value,
+                    JobStatus.CANCELLED.value,
+                ),
             )
             await db.commit()
 
@@ -382,12 +396,13 @@ class Store:
             cursor = await db.execute(
                 """
                 SELECT * FROM jobs
-                WHERE status IN (?, ?, ?, ?, ?)
+                WHERE status IN (?, ?, ?, ?, ?, ?)
                   AND COALESCE(heartbeat_at, updated_at) < ?
                 ORDER BY updated_at
                 """,
                 (
                     JobStatus.PREPARING.value,
+                    JobStatus.PREPROCESSING.value,
                     JobStatus.COLMAP.value,
                     JobStatus.TRAINING.value,
                     JobStatus.EXPORTING.value,

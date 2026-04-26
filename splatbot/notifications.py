@@ -6,6 +6,14 @@ from telegram import Bot
 
 from .models import ArtifactKind, JobArtifact, ScanJob
 
+TELEGRAM_UPLOAD_LIMIT_BYTES = 45 * 1024 * 1024
+
+
+def _shorten(text: str, limit: int = 1200) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "..."
+
 
 class TelegramNotifier:
     def __init__(self, token: str) -> None:
@@ -25,20 +33,33 @@ class TelegramNotifier:
             )
         downloadable = [artifact for artifact in artifacts if artifact.kind != ArtifactKind.VIEWER]
         for artifact in downloadable:
+            local_path = Path(artifact.local_path)
             if artifact.url:
                 await self.bot.send_message(
                     chat_id=job.telegram_user_id,
                     text=f"{artifact.kind.value}: {artifact.url}",
                 )
+            elif viewer and artifact.kind == ArtifactKind.PLY:
+                continue
+            elif not local_path.exists():
+                await self.bot.send_message(
+                    chat_id=job.telegram_user_id,
+                    text=f"{artifact.kind.value}: artifact file was not found on the server.",
+                )
+            elif local_path.stat().st_size > TELEGRAM_UPLOAD_LIMIT_BYTES:
+                await self.bot.send_message(
+                    chat_id=job.telegram_user_id,
+                    text=f"{artifact.kind.value}: saved on the server; use the viewer download link.",
+                )
             elif artifact.kind == ArtifactKind.PREVIEW:
-                with Path(artifact.local_path).open("rb") as video:
+                with local_path.open("rb") as video:
                     await self.bot.send_video(
                         chat_id=job.telegram_user_id,
                         video=video,
                         caption="Preview",
                     )
             else:
-                with Path(artifact.local_path).open("rb") as document:
+                with local_path.open("rb") as document:
                     await self.bot.send_document(
                         chat_id=job.telegram_user_id,
                         document=document,
@@ -48,5 +69,5 @@ class TelegramNotifier:
     async def job_failed(self, job: ScanJob, error: str) -> None:
         await self.bot.send_message(
             chat_id=job.telegram_user_id,
-            text=f"Job {job.id} failed: {error}",
+            text=f"Job {job.id} failed: {_shorten(error)}",
         )

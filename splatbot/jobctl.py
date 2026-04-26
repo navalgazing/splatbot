@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import shutil
 from datetime import timedelta
 
@@ -11,6 +12,8 @@ from .notifications import TelegramNotifier
 from .pipeline import PipelineOutputs
 from .storage import Store
 from .viewer import publish_viewer
+
+LOGGER = logging.getLogger(__name__)
 
 
 async def set_status(job_id: str, status: JobStatus, error: str | None) -> None:
@@ -56,17 +59,22 @@ async def complete(job_id: str, notify: bool) -> None:
     await store.set_job_status(job_id, JobStatus.DONE)
     updated = await store.get_job(job_id)
     if notify and settings.telegram_token and updated:
-        await TelegramNotifier(settings.telegram_token).job_done(updated, artifacts)
+        try:
+            await TelegramNotifier(settings.telegram_token).job_done(updated, artifacts)
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("failed to send completion notification for job %s", job_id)
 
 
 async def fail(job_id: str, error: str, notify: bool) -> None:
     settings = Settings()
     store = Store(settings.database_path)
     await store.init()
-    await store.set_job_failed_unless_terminal(job_id, error)
-    job = await store.get_job(job_id)
-    if notify and settings.telegram_token and job:
-        await TelegramNotifier(settings.telegram_token).job_failed(job, error)
+    job = await store.set_job_failed_unless_terminal(job_id, error)
+    if notify and settings.telegram_token and job and job.status == JobStatus.FAILED and job.error == error:
+        try:
+            await TelegramNotifier(settings.telegram_token).job_failed(job, error)
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("failed to send failure notification for job %s", job_id)
 
 
 async def cleanup() -> None:
