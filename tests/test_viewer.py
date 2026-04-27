@@ -63,6 +63,38 @@ def test_publish_viewer_allows_missing_preview(tmp_path) -> None:
     assert "Download preview video" not in html
 
 
+def test_publish_viewer_copies_mesh_and_quality_report(tmp_path) -> None:
+    ply = tmp_path / "cleaned_splat.ply"
+    mesh = tmp_path / "mesh.glb"
+    report = tmp_path / "quality_report.json"
+    candidate = tmp_path / "candidate_report.json"
+    ply.write_text("ply\nformat ascii 1.0\nend_header\n", encoding="utf-8")
+    mesh.write_bytes(b"glb")
+    report.write_text('{"passed": true}\n', encoding="utf-8")
+    candidate.write_text('{"jobs": []}\n', encoding="utf-8")
+
+    path = publish_viewer(
+        Settings(public_results_dir=tmp_path / "public"),
+        "job1",
+        PipelineOutputs(
+            cleaned_ply=ply,
+            preview_mp4=None,
+            mesh_path=mesh,
+            quality_report_path=report,
+            candidate_report_path=candidate,
+        ),
+    )
+
+    result_dir = tmp_path / "public" / "job1"
+    html = path.read_text(encoding="utf-8")
+    assert (result_dir / "mesh.glb").exists()
+    assert (result_dir / "quality_report.json").exists()
+    assert (result_dir / "candidate_report.json").exists()
+    assert "Use mesh view" in html
+    assert "Download mesh" in html
+    assert "GLTFLoader" in html
+
+
 def test_write_viewer_point_cloud_converts_gaussian_dc_color(tmp_path) -> None:
     src = tmp_path / "gaussian.ply"
     dest = tmp_path / "viewer_points.ply"

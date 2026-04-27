@@ -26,6 +26,9 @@ class PipelineOutputs:
     cleaned_ply: Path
     preview_mp4: Path | None
     metrics_path: Path | None = None
+    mesh_path: Path | None = None
+    quality_report_path: Path | None = None
+    candidate_report_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -107,6 +110,21 @@ class SilhouetteFrame:
     cy: float
 
 
+@dataclass(frozen=True)
+class PointMaskSupport:
+    observed: int
+    inside: int
+    outside: int
+
+    @property
+    def inside_fraction(self) -> float:
+        return self.inside / self.observed if self.observed else 0.0
+
+    @property
+    def outside_fraction(self) -> float:
+        return self.outside / self.observed if self.observed else 0.0
+
+
 @dataclass
 class SilhouetteEvaluator:
     frames: list[SilhouetteFrame]
@@ -123,36 +141,19 @@ class SilhouetteEvaluator:
     def keep(self, values: tuple[float, ...]) -> bool:
         if len(values) < 3:
             return True
-        xyz = (values[0], values[1], values[2])
-        observed = 0
-        outside = 0
-        inside = 0
-        for frame in self.frames:
-            projection = project_world_point(frame, xyz)
-            if projection is None:
-                continue
-            u, v, alt_v = projection
-            if u < 0 or u >= frame.mask.width or v < 0 or v >= frame.mask.height:
-                continue
-            observed += 1
-            foreground = frame.mask.is_foreground(u, v, self.alpha_threshold, self.padding_px)
-            if not foreground and alt_v is not None and 0 <= alt_v < frame.mask.height:
-                # Be conservative across camera-y conventions: an alternate-y hit
-                # means this point may be legitimate, so do not count it outside.
-                foreground = frame.mask.is_foreground(u, alt_v, self.alpha_threshold, self.padding_px)
-            if foreground:
-                inside += 1
-            else:
-                outside += 1
-        if observed:
+        support = point_mask_support(
+            values[:3],
+            self.frames,
+            alpha_threshold=self.alpha_threshold,
+            padding_px=self.padding_px,
+        )
+        if support.observed:
             self.checked_points += 1
-            self.total_observations += observed
-        if observed < self.min_views:
+            self.total_observations += support.observed
+        if support.observed < self.min_views:
             return True
-        outside_fraction = outside / observed
-        inside_fraction = inside / observed
-        inside_is_low = inside <= self.max_inside_views or inside_fraction <= self.max_inside_ratio
-        remove = outside_fraction >= self.outside_ratio and inside_is_low
+        inside_is_low = support.inside <= self.max_inside_views or support.inside_fraction <= self.max_inside_ratio
+        remove = support.outside_fraction >= self.outside_ratio and inside_is_low
         if remove:
             self.removed_points += 1
         return not remove
@@ -209,13 +210,18 @@ class ScanPipeline:
                 "duplicate_frame_threshold": self.settings.duplicate_frame_threshold,
                 "colmap_retry_frame_counts": parse_int_list(self.settings.colmap_retry_frame_counts),
                 "colmap_retry_matching_methods": parse_csv_list(self.settings.colmap_retry_matching_methods),
+                "segmentation_backend": self.settings.segmentation_backend,
                 "object_mask_backend": self.settings.object_mask_backend,
                 "object_mask_qa_enabled": self.settings.object_mask_qa_enabled,
                 "object_mask_refine_enabled": self.settings.object_mask_refine_enabled,
+                "pose_backends": parse_csv_list(self.settings.pose_backends),
                 "train_method": preset_config.train_method,
+                "train_backends": parse_csv_list(self.settings.train_backends),
                 "train_max_iterations": preset_config.train_max_iterations,
                 "train_steps_per_save": preset_config.train_steps_per_save,
                 "train_extra_args": list(preset_config.train_extra_args),
+                "mesh_export_enabled": self.settings.mesh_export_enabled,
+                "mesh_backend": self.settings.mesh_backend,
                 "colmap_use_gpu": self.settings.colmap_use_gpu,
                 "colmap_bin": self.settings.colmap_bin,
                 "silhouette_cleanup": {
@@ -252,11 +258,12 @@ class ScanPipeline:
             object_dir = job_dir / "object_images"
             object_dir.mkdir(parents=True, exist_ok=True)
             stage_start = time.perf_counter()
-            await self.remove_backgrounds(images_dir, object_dir)
+            mask_backend = await self.remove_backgrounds(images_dir, object_dir, preset_config)
             refinement = refine_object_masks(object_dir, self.settings)
             record_stage(metrics, "rembg", stage_start)
             input_images_dir = object_dir
             metrics["frames"]["object"] = count_files(object_dir)
+            metrics.setdefault("masks", {})["backend"] = mask_backend
             if refinement:
                 metrics.setdefault("masks", {})["refinement"] = refinement
             mask_qa = apply_object_mask_qa(
@@ -303,7 +310,7 @@ class ScanPipeline:
         if on_status:
             await on_status(job_id, JobStatus.TRAINING)
         stage_start = time.perf_counter()
-        await self.train_splatfacto(processed_dir, ns_dir, preset_config)
+        await self.train_reconstruction(processed_dir, ns_dir, preset_config, metrics, metrics_path)
         record_stage(metrics, "training", stage_start)
         write_json(metrics_path, metrics)
         log_directory_summary("nerfstudio outputs", ns_dir)
@@ -323,6 +330,14 @@ class ScanPipeline:
         }
         write_json(metrics_path, metrics)
         validate_ply_quality(metrics, self.settings)
+        mesh_path = None
+        mesh_metrics = {"enabled": False, "reason": "disabled"}
+        if self.settings.mesh_export_enabled:
+            stage_start = time.perf_counter()
+            mesh_path, mesh_metrics = await self.export_mesh(processed_dir, ns_dir, export_dir, cleaned_ply)
+            record_stage(metrics, "mesh", stage_start)
+            metrics["mesh"] = mesh_metrics
+            write_json(metrics_path, metrics)
         preview_mp4 = None
         if self.settings.render_preview:
             if on_status:
@@ -331,7 +346,21 @@ class ScanPipeline:
             preview_mp4 = await self.render_turntable(ns_dir, render_dir)
             record_stage(metrics, "rendering", stage_start)
             write_json(metrics_path, metrics)
-        return PipelineOutputs(cleaned_ply=cleaned_ply, preview_mp4=preview_mp4, metrics_path=metrics_path)
+        quality_report_path = None
+        candidate_report_path = None
+        if self.settings.quality_report_enabled:
+            quality_report_path = job_dir / "quality_report.json"
+            candidate_report_path = job_dir / "candidate_report.json"
+            write_json(quality_report_path, build_quality_report(metrics, self.settings))
+            write_json(candidate_report_path, build_candidate_report(metrics, self.settings))
+        return PipelineOutputs(
+            cleaned_ply=cleaned_ply,
+            preview_mp4=preview_mp4,
+            metrics_path=metrics_path,
+            mesh_path=mesh_path,
+            quality_report_path=quality_report_path,
+            candidate_report_path=candidate_report_path,
+        )
 
     async def extract_video_frames(
         self,
@@ -471,30 +500,29 @@ class ScanPipeline:
                 dest.unlink()
             dest.symlink_to(src)
 
-    async def remove_backgrounds(self, images_dir: Path, object_dir: Path) -> None:
-        backend = self.settings.object_mask_backend.strip().lower()
-        if backend in {"", "rembg"}:
-            await self.runner.run(
-                [self.settings.rembg_bin, "p", str(images_dir), str(object_dir)]
-            )
-            return
-
-        if backend in {"external", "sam2", "sam2-video"}:
-            if not self.settings.object_mask_command.strip():
-                raise ValueError(
-                    "SPLATBOT_OBJECT_MASK_COMMAND is required when SPLATBOT_OBJECT_MASK_BACKEND "
-                    f"is {self.settings.object_mask_backend!r}"
-                )
-            rendered = self.settings.object_mask_command.format(
-                images_dir=shlex.quote(str(images_dir)),
-                object_dir=shlex.quote(str(object_dir)),
-                input_dir=shlex.quote(str(images_dir)),
-                output_dir=shlex.quote(str(object_dir)),
-            )
-            await self.runner.run(shlex.split(rendered))
-            return
-
-        raise ValueError(f"unsupported object mask backend: {self.settings.object_mask_backend}")
+    async def remove_backgrounds(self, images_dir: Path, object_dir: Path, preset: ScanPresetConfig | None = None) -> dict:
+        attempts: list[dict] = []
+        for backend in configured_segmentation_backends(self.settings, preset):
+            if object_dir.exists():
+                shutil.rmtree(object_dir)
+            object_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                command = object_mask_command_for_backend(self.settings, backend, images_dir, object_dir)
+                if command is None:
+                    attempts.append({"backend": backend, "applied": False, "reason": "missing_command"})
+                    continue
+                await self.runner.run(command)
+                output_count = count_files(object_dir)
+                attempts.append({"backend": backend, "applied": True, "output_files": output_count})
+                if output_count > 0:
+                    return {"selected": backend, "attempts": attempts}
+            except Exception as exc:  # noqa: BLE001
+                attempts.append({"backend": backend, "applied": False, "error": str(exc)})
+        detail = "; ".join(
+            f"{attempt['backend']}: {attempt.get('error') or attempt.get('reason') or 'no outputs'}"
+            for attempt in attempts
+        )
+        raise ValueError(f"all object segmentation backends failed ({detail})")
 
     async def process_data(
         self,
@@ -518,7 +546,90 @@ class ScanPipeline:
             argv.append("--no-gpu")
         await self.runner.run(argv)
 
+    async def process_data_external_pose_backend(
+        self,
+        backend: str,
+        input_images_dir: Path,
+        processed_dir: Path,
+        matching_method: str | None,
+    ) -> None:
+        command = self.settings.pose_backend_command.strip()
+        if not command:
+            raise ValueError(
+                f"SPLATBOT_POSE_BACKEND_COMMAND is required for pose backend {backend!r}"
+            )
+        rendered = command.format(
+            backend=shlex.quote(backend),
+            input_dir=shlex.quote(str(input_images_dir)),
+            images_dir=shlex.quote(str(input_images_dir)),
+            output_dir=shlex.quote(str(processed_dir)),
+            processed_dir=shlex.quote(str(processed_dir)),
+            matching_method=shlex.quote(matching_method or ""),
+            colmap_bin=shlex.quote(self.settings.colmap_bin),
+            glomap_bin=shlex.quote(self.settings.glomap_bin),
+        )
+        await self.runner.run(shlex.split(rendered))
+
     async def process_data_with_quality_gate(
+        self,
+        input_images_dir: Path,
+        processed_dir: Path,
+        matching_method: str | None,
+        metrics: dict,
+        metrics_path: Path,
+        preset: ScanPresetConfig,
+        mode: ScanMode,
+        original_images_dir: Path,
+        object_images_dir: Path | None,
+    ) -> None:
+        errors: list[str] = []
+        for backend in configured_pose_backends(self.settings, preset):
+            metrics.setdefault("pose_backend_attempts", []).append(
+                {"backend": backend, "input_dir": str(input_images_dir)}
+            )
+            try:
+                if backend in {"colmap", "nerfstudio-colmap", "ns-process-data"}:
+                    await self.process_data_colmap_with_quality_gate(
+                        input_images_dir=input_images_dir,
+                        processed_dir=processed_dir,
+                        matching_method=matching_method,
+                        metrics=metrics,
+                        metrics_path=metrics_path,
+                        preset=preset,
+                        mode=mode,
+                        original_images_dir=original_images_dir,
+                        object_images_dir=object_images_dir,
+                    )
+                else:
+                    await self.process_data_external_pose_backend(
+                        backend=backend,
+                        input_images_dir=input_images_dir,
+                        processed_dir=processed_dir,
+                        matching_method=matching_method,
+                    )
+                    record_colmap_attempt(
+                        metrics,
+                        source=f"pose:{backend}",
+                        input_dir=input_images_dir,
+                        frame_count=count_files(input_images_dir),
+                        matching_method=matching_method,
+                        result=inspect_processed_dataset(processed_dir),
+                    )
+                    metrics["colmap"] = metrics["colmap_attempts"][-1]["result"]
+                    validate_colmap_quality(metrics, preset.max_video_frames, self.settings)
+                metrics["pose_backend"] = backend
+                write_json(metrics_path, metrics)
+                return
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{backend}: {exc}")
+                metrics.setdefault("pose_backend_failures", []).append({"backend": backend, "error": str(exc)})
+                write_json(metrics_path, metrics)
+                if processed_dir.exists():
+                    shutil.rmtree(processed_dir)
+                processed_dir.mkdir(parents=True, exist_ok=True)
+        raise ValueError("all pose backends failed: " + " | ".join(errors))
+
+    async def process_data_colmap_with_quality_gate(
         self,
         input_images_dir: Path,
         processed_dir: Path,
@@ -705,10 +816,44 @@ class ScanPipeline:
                 return True
         return False
 
-    async def train_splatfacto(self, processed_dir: Path, ns_dir: Path, preset: ScanPresetConfig) -> None:
+    async def train_reconstruction(
+        self,
+        processed_dir: Path,
+        ns_dir: Path,
+        preset: ScanPresetConfig,
+        metrics: dict,
+        metrics_path: Path,
+    ) -> None:
+        errors: list[str] = []
+        for backend in configured_train_backends(self.settings, preset):
+            try:
+                if backend in {"splatfacto", "splatfacto-big", preset.train_method.lower()}:
+                    method = backend if backend.startswith("splatfacto") else preset.train_method
+                    await self.train_splatfacto(processed_dir, ns_dir, preset, method=method)
+                else:
+                    await self.train_external_backend(backend, processed_dir, ns_dir, preset)
+                metrics["train_backend"] = backend
+                write_json(metrics_path, metrics)
+                return
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{backend}: {exc}")
+                metrics.setdefault("train_backend_failures", []).append({"backend": backend, "error": str(exc)})
+                write_json(metrics_path, metrics)
+                if ns_dir.exists():
+                    shutil.rmtree(ns_dir)
+                ns_dir.mkdir(parents=True, exist_ok=True)
+        raise ValueError("all train backends failed: " + " | ".join(errors))
+
+    async def train_splatfacto(
+        self,
+        processed_dir: Path,
+        ns_dir: Path,
+        preset: ScanPresetConfig,
+        method: str | None = None,
+    ) -> None:
         argv = [
             self.settings.ns_train_bin,
-            preset.train_method,
+            method or preset.train_method,
             "--data",
             str(processed_dir),
             "--output-dir",
@@ -722,6 +867,30 @@ class ScanPipeline:
         ]
         argv.extend(preset.train_extra_args)
         await self.runner.run(argv)
+
+    async def train_external_backend(
+        self,
+        backend: str,
+        processed_dir: Path,
+        ns_dir: Path,
+        preset: ScanPresetConfig,
+    ) -> None:
+        command = self.settings.train_backend_command.strip()
+        if not command:
+            raise ValueError(
+                f"SPLATBOT_TRAIN_BACKEND_COMMAND is required for train backend {backend!r}"
+            )
+        rendered = command.format(
+            backend=shlex.quote(backend),
+            processed_dir=shlex.quote(str(processed_dir)),
+            data_dir=shlex.quote(str(processed_dir)),
+            ns_dir=shlex.quote(str(ns_dir)),
+            output_dir=shlex.quote(str(ns_dir)),
+            max_iterations=shlex.quote(str(preset.train_max_iterations)),
+            steps_per_save=shlex.quote(str(preset.train_steps_per_save)),
+            extra_args=shlex.quote(" ".join(preset.train_extra_args)),
+        )
+        await self.runner.run(shlex.split(rendered))
 
     async def export_ply(self, ns_dir: Path, export_dir: Path) -> Path:
         raw_ply = export_dir / "raw_splat.ply"
@@ -757,6 +926,58 @@ class ScanPipeline:
         )
         return preview
 
+    async def export_mesh(
+        self,
+        processed_dir: Path,
+        ns_dir: Path,
+        export_dir: Path,
+        splat_ply: Path,
+    ) -> tuple[Path | None, dict]:
+        backend = self.settings.mesh_backend.strip().lower() or "mesh"
+        mesh_path = export_dir / (self.settings.mesh_export_filename.strip() or "mesh.glb")
+        command = self.settings.mesh_export_command.strip()
+        if not command:
+            metrics = {
+                "enabled": True,
+                "applied": False,
+                "backend": backend,
+                "reason": "missing_command",
+                "expected_path": str(mesh_path),
+            }
+            if self.settings.mesh_export_required:
+                raise ValueError("mesh export is required but SPLATBOT_MESH_EXPORT_COMMAND is empty")
+            return None, metrics
+        rendered = command.format(
+            backend=shlex.quote(backend),
+            processed_dir=shlex.quote(str(processed_dir)),
+            ns_dir=shlex.quote(str(ns_dir)),
+            export_dir=shlex.quote(str(export_dir)),
+            splat_ply=shlex.quote(str(splat_ply)),
+            mesh_path=shlex.quote(str(mesh_path)),
+        )
+        try:
+            await self.runner.run(shlex.split(rendered))
+            if not mesh_path.exists():
+                raise ValueError(f"mesh backend {backend!r} did not create {mesh_path}")
+        except Exception as exc:  # noqa: BLE001
+            if self.settings.mesh_export_required:
+                raise
+            return None, {
+                "enabled": True,
+                "applied": False,
+                "backend": backend,
+                "reason": "backend_failed",
+                "error": str(exc),
+                "expected_path": str(mesh_path),
+            }
+        return mesh_path, {
+            "enabled": True,
+            "applied": True,
+            "backend": backend,
+            "path": str(mesh_path),
+            "size_bytes": mesh_path.stat().st_size,
+        }
+
 
 def latest_nerfstudio_config(ns_dir: Path) -> Path:
     configs = sorted(ns_dir.glob("**/config.yml"), key=lambda path: path.stat().st_mtime)
@@ -772,6 +993,69 @@ def write_json(path: Path, data: dict) -> None:
     tmp.replace(path)
 
 
+def build_quality_report(metrics: dict, settings: Settings) -> dict:
+    issues: list[str] = []
+    warnings: list[str] = []
+    frames = metrics.get("frames", {})
+    video = metrics.get("video", {})
+    masks = metrics.get("masks", {})
+    colmap = metrics.get("colmap", {})
+    cleanup = metrics.get("ply", {}).get("cleanup", {})
+    validation = cleanup.get("validation", {})
+    mesh = metrics.get("mesh", {})
+
+    if video.get("quality_selection_fallback"):
+        warnings.append("frame_quality_fallback_used")
+    if frames.get("selected", 0) < settings.min_selected_video_frames:
+        warnings.append("low_selected_frame_count")
+    if masks.get("qa", {}).get("reason") == "too_few_accepted_masks":
+        issues.append("too_few_accepted_object_masks")
+    if metrics.get("colmap_fallback", {}).get("applied"):
+        warnings.append("object_pose_used_original_frame_fallback")
+    registered = colmap.get("active_registered_images") or colmap.get("transforms_frames")
+    selected = frames.get("selected")
+    if selected and registered and registered < max(2, int(selected * settings.min_colmap_registered_ratio)):
+        issues.append("low_pose_registration")
+    if validation.get("applied") and not validation.get("passed", True):
+        issues.append("postprocess_validation_failed")
+    if settings.mesh_export_enabled and not mesh.get("applied"):
+        warnings.append("mesh_not_exported")
+
+    return {
+        "job_id": metrics.get("job_id"),
+        "mode": metrics.get("mode"),
+        "preset": metrics.get("preset"),
+        "passed": not issues,
+        "issues": issues,
+        "warnings": warnings,
+        "stage_seconds": metrics.get("stages", {}),
+        "frames": frames,
+        "pose_backend": metrics.get("pose_backend"),
+        "segmentation_backend": masks.get("backend", {}).get("selected"),
+        "ply": metrics.get("ply", {}),
+        "mesh": mesh,
+    }
+
+
+def build_candidate_report(metrics: dict, settings: Settings) -> dict:
+    return {
+        "job_id": metrics.get("job_id"),
+        "configured": {
+            "segmentation_backends": configured_segmentation_backends(settings),
+            "pose_backends": configured_pose_backends(settings),
+            "train_backends": parse_csv_list(settings.train_backends),
+            "mesh_backend": settings.mesh_backend,
+        },
+        "video": metrics.get("video", {}),
+        "masks": metrics.get("masks", {}),
+        "pose_backend_attempts": metrics.get("pose_backend_attempts", []),
+        "pose_backend_failures": metrics.get("pose_backend_failures", []),
+        "colmap_attempts": metrics.get("colmap_attempts", []),
+        "cleanup": metrics.get("ply", {}).get("cleanup", {}),
+        "mesh": metrics.get("mesh", {}),
+    }
+
+
 def record_stage(metrics: dict, name: str, started: float) -> None:
     metrics.setdefault("stages", {})[name] = {
         "duration_seconds": round(time.perf_counter() - started, 3)
@@ -780,6 +1064,66 @@ def record_stage(metrics: dict, name: str, started: float) -> None:
 
 def count_files(path: Path) -> int:
     return sum(1 for item in path.iterdir() if item.is_file())
+
+
+def configured_segmentation_backends(settings: Settings, preset: ScanPresetConfig | None = None) -> list[str]:
+    configured = settings.segmentation_backend.strip() or settings.object_mask_backend.strip() or "rembg"
+    backends = parse_csv_list(configured)
+    if not backends:
+        backends = parse_csv_list(settings.object_mask_backend) or ["rembg"]
+    if preset is not None and preset.preset == ScanPreset.BEST and backends == ["rembg"]:
+        backends = ["sam3", "sam2", "rembg"]
+    return list(dict.fromkeys(backends))
+
+
+def object_mask_command_for_backend(
+    settings: Settings,
+    backend: str,
+    images_dir: Path,
+    object_dir: Path,
+) -> list[str] | None:
+    backend = backend.strip().lower()
+    if backend in {"", "rembg"}:
+        return [settings.rembg_bin, "p", str(images_dir), str(object_dir)]
+    command = {
+        "sam3": settings.sam3_mask_command,
+        "sam3-video": settings.sam3_mask_command,
+        "sam2": settings.sam2_mask_command,
+        "sam2-video": settings.sam2_mask_command,
+        "matting": settings.matting_command,
+        "matanyone": settings.matting_command,
+        "external": settings.object_mask_command,
+    }.get(backend)
+    command = (command or settings.object_mask_command).strip()
+    if not command:
+        return None
+        rendered = command.format(
+            backend=shlex.quote(backend),
+            images_dir=shlex.quote(str(images_dir)),
+            object_dir=shlex.quote(str(object_dir)),
+            input_dir=shlex.quote(str(images_dir)),
+            output_dir=shlex.quote(str(object_dir)),
+            prompt=shlex.quote(settings.object_mask_prompt),
+        )
+    return shlex.split(rendered)
+
+
+def configured_pose_backends(settings: Settings, preset: ScanPresetConfig | None = None) -> list[str]:
+    configured = parse_csv_list(settings.pose_backends) or ["colmap"]
+    if preset is not None and preset.preset == ScanPreset.BEST and configured == ["colmap"]:
+        configured = ["colmap-global", "colmap"]
+    return list(dict.fromkeys(configured))
+
+
+def configured_train_backends(settings: Settings, preset: ScanPresetConfig) -> list[str]:
+    configured = parse_csv_list(settings.train_backends)
+    if not configured:
+        configured = (
+            ["dn-splatter-big", preset.train_method.lower()]
+            if preset.preset == ScanPreset.BEST
+            else [preset.train_method.lower()]
+        )
+    return list(dict.fromkeys(configured))
 
 
 def select_video_frames(
@@ -1624,6 +1968,14 @@ def validate_ply_quality(metrics: dict, settings: Settings) -> None:
         raise ValueError(
             f"Exported splat appears flattened (axis ratio {ratio:.4f}, vertices {vertices})."
         )
+    validation = metrics.get("ply", {}).get("cleanup", {}).get("validation", {})
+    if validation.get("applied") and validation.get("passed") is False:
+        outside = validation.get("outside_candidate_fraction")
+        low_support = validation.get("low_support_fraction")
+        raise ValueError(
+            "Exported splat failed object-mask validation "
+            f"(outside={outside}, low_support={low_support})."
+        )
 
 
 def parse_ffprobe_duration(stdout: str) -> float | None:
@@ -1777,6 +2129,15 @@ def clean_exported_ply(
                 "alpha_threshold": settings.silhouette_cleanup_alpha_threshold,
             }
 
+    mask_support_dest = dest.with_suffix(dest.suffix + ".mask-support.tmp")
+    mask_support_cleanup = clean_mask_support_outliers(current, mask_support_dest, frames, settings)
+    stage_metrics["mask_support"] = mask_support_cleanup
+    if mask_support_cleanup.get("applied"):
+        current = mask_support_dest
+        intermediates.append(mask_support_dest)
+    elif mask_support_dest.exists():
+        mask_support_dest.unlink()
+
     gaussian_dest = dest.with_suffix(dest.suffix + ".gaussian.tmp")
     gaussian_cleanup = clean_gaussian_properties(current, gaussian_dest, settings)
     stage_metrics["gaussian"] = gaussian_cleanup
@@ -1809,6 +2170,7 @@ def clean_exported_ply(
     cleanup["output_vertices"] = final_summary.get("output_vertices", cleanup.get("output_vertices"))
     cleanup["filtered_vertices_removed"] = (
         (cleanup.get("filtered_vertices_removed") or 0)
+        + (mask_support_cleanup.get("filtered_vertices_removed") or 0)
         + (gaussian_cleanup.get("filtered_vertices_removed") or 0)
         + (spatial_cleanup.get("filtered_vertices_removed") or 0)
     )
@@ -1832,6 +2194,70 @@ def clean_ply(src: Path, dest: Path, row_filter: Callable[[tuple[float, ...]], b
         "invalid_vertices_removed": 0,
         "unsupported_format": layout.format,
     }
+
+
+def clean_mask_support_outliers(
+    src: Path,
+    dest: Path,
+    frames: list[SilhouetteFrame],
+    settings: Settings,
+) -> dict:
+    if not settings.mask_support_cleanup_enabled:
+        return {"applied": False, "reason": "disabled"}
+    if len(frames) < settings.mask_support_cleanup_min_views:
+        return {"applied": False, "reason": "not_enough_alpha_masks", "mask_views": len(frames)}
+    layout = read_ply_layout(src)
+    if layout is None:
+        return {"applied": False, "reason": "missing_layout"}
+
+    removed = 0
+
+    def keep(values: tuple[float, ...]) -> bool:
+        nonlocal removed
+        if len(values) < 3:
+            return True
+        support = point_mask_support(
+            values[:3],
+            frames,
+            alpha_threshold=settings.silhouette_cleanup_alpha_threshold,
+            padding_px=settings.silhouette_cleanup_padding_px,
+        )
+        if support.observed < settings.mask_support_cleanup_min_views:
+            return True
+        supported = (
+            support.inside >= settings.mask_support_cleanup_min_inside_views
+            or support.inside_fraction >= settings.mask_support_cleanup_min_inside_ratio
+        )
+        if supported:
+            return True
+        removed += 1
+        return False
+
+    cleanup = clean_ply(src, dest, row_filter=keep)
+    input_vertices = cleanup.get("input_vertices") or 0
+    removed_fraction = removed / input_vertices if input_vertices else 0.0
+    if removed_fraction > settings.mask_support_cleanup_max_remove_fraction:
+        if dest.exists():
+            dest.unlink()
+        return {
+            "applied": False,
+            "reason": "max_remove_fraction_exceeded",
+            "candidate_removed": removed,
+            "candidate_removed_fraction": round(removed_fraction, 6),
+            "max_remove_fraction": settings.mask_support_cleanup_max_remove_fraction,
+            "mask_views": len(frames),
+        }
+    cleanup.update(
+        {
+            "applied": removed > 0,
+            "removed_fraction": round(removed_fraction, 6),
+            "mask_views": len(frames),
+            "min_views": settings.mask_support_cleanup_min_views,
+            "min_inside_views": settings.mask_support_cleanup_min_inside_views,
+            "min_inside_ratio": settings.mask_support_cleanup_min_inside_ratio,
+        }
+    )
+    return cleanup
 
 
 def clean_gaussian_properties(src: Path, dest: Path, settings: Settings) -> dict:
@@ -1975,27 +2401,67 @@ def validate_postprocess_against_masks(
     layout = read_ply_layout(ply_path)
     if layout is None:
         return {"applied": False, "reason": "missing_layout"}
-    evaluator = SilhouetteEvaluator(
-        frames=frames,
-        alpha_threshold=settings.silhouette_cleanup_alpha_threshold,
-        padding_px=settings.silhouette_cleanup_padding_px,
-        outside_ratio=settings.silhouette_cleanup_outside_ratio,
-        max_inside_views=settings.silhouette_cleanup_max_inside_views,
-        max_inside_ratio=settings.silhouette_cleanup_max_inside_ratio,
-        min_views=settings.silhouette_cleanup_min_views,
+    sample_limit = max(1, settings.postprocess_validation_sample_limit)
+    stride = max(1, math.ceil(layout.vertex_count / sample_limit))
+    sampled_points = 0
+    checked_points = 0
+    unobserved_points = 0
+    outside_candidate_points = 0
+    low_support_points = 0
+    total_observations = 0
+    for idx, values in enumerate(iter_ply_vertex_values(ply_path, layout)):
+        if idx % stride != 0:
+            continue
+        if len(values) < 3:
+            continue
+        sampled_points += 1
+        support = point_mask_support(
+            values[:3],
+            frames,
+            alpha_threshold=settings.silhouette_cleanup_alpha_threshold,
+            padding_px=settings.silhouette_cleanup_padding_px,
+        )
+        total_observations += support.observed
+        if support.observed < settings.silhouette_cleanup_min_views:
+            unobserved_points += 1
+            continue
+        checked_points += 1
+        inside_is_low = (
+            support.inside <= settings.silhouette_cleanup_max_inside_views
+            or support.inside_fraction <= settings.silhouette_cleanup_max_inside_ratio
+        )
+        if support.outside_fraction >= settings.silhouette_cleanup_outside_ratio and inside_is_low:
+            outside_candidate_points += 1
+        if (
+            support.inside < settings.postprocess_validation_min_inside_views
+            and support.inside_fraction < settings.postprocess_validation_min_inside_ratio
+        ):
+            low_support_points += 1
+
+    outside_fraction = outside_candidate_points / checked_points if checked_points else 0.0
+    low_support_fraction = low_support_points / checked_points if checked_points else 0.0
+    unobserved_fraction = unobserved_points / sampled_points if sampled_points else 0.0
+    passed = (
+        outside_fraction <= settings.postprocess_validation_max_outside_fraction
+        and low_support_fraction <= settings.postprocess_validation_max_low_support_fraction
     )
-    for values in iter_ply_vertex_values(ply_path, layout):
-        evaluator.keep(values)
-    outside_fraction = evaluator.removed_points / evaluator.checked_points if evaluator.checked_points else 0.0
     return {
         "applied": True,
         "mask_views": len(frames),
-        "checked_points": evaluator.checked_points,
-        "outside_candidate_points": evaluator.removed_points,
+        "sampled_points": sampled_points,
+        "checked_points": checked_points,
+        "unobserved_points": unobserved_points,
+        "unobserved_fraction": round(unobserved_fraction, 6),
+        "outside_candidate_points": outside_candidate_points,
         "outside_candidate_fraction": round(outside_fraction, 6),
-        "total_observations": evaluator.total_observations,
-        "passed": outside_fraction <= settings.postprocess_validation_max_outside_fraction,
+        "low_support_points": low_support_points,
+        "low_support_fraction": round(low_support_fraction, 6),
+        "total_observations": total_observations,
+        "passed": passed,
         "max_outside_fraction": settings.postprocess_validation_max_outside_fraction,
+        "max_low_support_fraction": settings.postprocess_validation_max_low_support_fraction,
+        "min_inside_views": settings.postprocess_validation_min_inside_views,
+        "min_inside_ratio": settings.postprocess_validation_min_inside_ratio,
     }
 
 
@@ -2353,6 +2819,35 @@ def project_world_point(
     v = frame.fl_y * (cam_y / depth) + frame.cy
     alt_v = frame.cy - frame.fl_y * (cam_y / depth)
     return u, v, alt_v
+
+
+def point_mask_support(
+    xyz: tuple[float, float, float],
+    frames: list[SilhouetteFrame],
+    alpha_threshold: int,
+    padding_px: int,
+) -> PointMaskSupport:
+    observed = 0
+    outside = 0
+    inside = 0
+    for frame in frames:
+        projection = project_world_point(frame, xyz)
+        if projection is None:
+            continue
+        u, v, alt_v = projection
+        if u < 0 or u >= frame.mask.width or v < 0 or v >= frame.mask.height:
+            continue
+        observed += 1
+        foreground = frame.mask.is_foreground(u, v, alpha_threshold, padding_px)
+        if not foreground and alt_v is not None and 0 <= alt_v < frame.mask.height:
+            # Be conservative across camera-y conventions: an alternate-y hit
+            # means this point may be legitimate, so do not count it outside.
+            foreground = frame.mask.is_foreground(u, alt_v, alpha_threshold, padding_px)
+        if foreground:
+            inside += 1
+        else:
+            outside += 1
+    return PointMaskSupport(observed=observed, inside=inside, outside=outside)
 
 
 def load_alpha_mask(path: Path) -> AlphaMask | None:

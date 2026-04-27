@@ -130,13 +130,20 @@ print_runtime_diagnostics() {
 import importlib.metadata as metadata
 import torch
 
-for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "onnxruntime-gpu", "torch", "numpy", "opencv-python"):
+for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "onnxruntime-gpu", "torch", "numpy", "opencv-python", "dn-splatter"):
     try:
         version = metadata.version(package)
     except metadata.PackageNotFoundError:
         version = "missing"
     print(f"  {package}={version}")
 print(f"  torch_cuda_available={torch.cuda.is_available()}")
+for module in ("sam2", "sam3", "dn_splatter"):
+    try:
+        __import__(module)
+    except Exception as exc:
+        print(f"  {module}=unavailable ({exc})")
+    else:
+        print(f"  {module}=available")
 PY
 }
 
@@ -180,6 +187,10 @@ command -v ffmpeg >/dev/null
 command -v ffprobe >/dev/null
 command -v colmap >/dev/null
 command -v rembg >/dev/null
+command -v splatbot-segment >/dev/null
+command -v splatbot-pose >/dev/null
+command -v splatbot-train >/dev/null
+command -v splatbot-mesh >/dev/null
 command -v nvcc >/dev/null
 check_colmap_cuda
 check_rembg_cuda
@@ -252,6 +263,13 @@ PY
   rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
     /workspace/results/cleaned_splat.ply \
     "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/export/cleaned_splat.ply"
+  for mesh in /workspace/results/mesh.glb /workspace/results/mesh.gltf /workspace/results/mesh.obj; do
+    if [ -f "$mesh" ]; then
+      rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
+        "$mesh" \
+        "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/export/$(basename "$mesh")"
+    fi
+  done
   if [ -f /workspace/results/turntable.mp4 ]; then
     rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
       /workspace/results/turntable.mp4 \
@@ -262,6 +280,13 @@ PY
       /workspace/results/metrics.json \
       "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/metrics.json"
   fi
+  for report in quality_report.json candidate_report.json; do
+    if [ -f "/workspace/results/$report" ]; then
+      rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
+        "/workspace/results/$report" \
+        "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/$report"
+    fi
+  done
   ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
     "$VPS_JOBCTL complete $SPLATBOT_JOB_ID --notify"
 else

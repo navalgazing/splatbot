@@ -22,21 +22,33 @@ colmap feature_extractor -h > /tmp/feature-help.txt 2>&1
 grep -m1 'SiftExtraction.use_gpu' /tmp/feature-help.txt
 /opt/splatbot/venv/bin/python - <<'PY'
 import importlib.metadata as metadata
+import importlib.util
+from pathlib import Path
 import onnxruntime as ort
 import torch
 
 print("torch_cuda_available=" + str(torch.cuda.is_available()))
-for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "onnxruntime-gpu"):
+for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "onnxruntime-gpu", "dn-splatter"):
     try:
         version = metadata.version(package)
     except metadata.PackageNotFoundError:
         version = "missing"
     print(f"{package}={version}")
+for module in ("sam2", "dn_splatter"):
+    if importlib.util.find_spec(module) is None:
+        raise SystemExit(f"{module} is not importable")
+print("sam3_available=" + str(importlib.util.find_spec("sam3") is not None))
+checkpoint = Path("/opt/splatbot/models/sam2.1_hiera_large.pt")
+if not checkpoint.exists() or checkpoint.stat().st_size <= 0:
+    raise SystemExit(f"SAM2 checkpoint is missing: {checkpoint}")
 print("onnxruntime_device=" + ort.get_device())
 print("onnxruntime_providers=" + str(ort.get_available_providers()))
 if "CUDAExecutionProvider" not in ort.get_available_providers():
     raise SystemExit("onnxruntime CUDAExecutionProvider is not available")
 PY
+for cmd in splatbot-segment splatbot-pose splatbot-train splatbot-mesh; do
+  command -v "$cmd"
+done
 """
 
 

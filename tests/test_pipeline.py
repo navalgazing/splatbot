@@ -5,6 +5,8 @@ import zlib
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from splatbot.commands import CommandResult
 from splatbot.config import ScanMode, Settings
 from splatbot.models import JobStatus, MediaItem, MediaKind
@@ -25,7 +27,11 @@ from splatbot.pipeline import (
     quality_aware_sample,
     replace_processed_images_with_object_images,
     select_video_frames,
+    configured_pose_backends,
+    configured_segmentation_backends,
+    configured_train_backends,
     validate_colmap_quality,
+    validate_ply_quality,
     write_processed_training_masks,
 )
 
@@ -315,6 +321,43 @@ def test_silhouette_cleanup_skips_when_remove_fraction_is_too_high(tmp_path) -> 
     assert cleanup["silhouette"]["applied"] is False
     assert cleanup["silhouette"]["reason"] == "max_remove_fraction_exceeded"
     assert b"element vertex 2" in dest.read_bytes().split(b"end_header", 1)[0]
+
+
+def test_validate_ply_quality_rejects_failed_mask_validation(tmp_path) -> None:
+    metrics = {
+        "ply": {
+            "cleaned": {"vertices": 50_000, "flat_axis_ratio": 0.25},
+            "cleanup": {
+                "validation": {
+                    "applied": True,
+                    "passed": False,
+                    "outside_candidate_fraction": 0.01,
+                    "low_support_fraction": 0.4,
+                }
+            },
+        }
+    }
+
+    with pytest.raises(ValueError, match="object-mask validation"):
+        validate_ply_quality(metrics, Settings(data_dir=tmp_path, min_splat_vertices=1))
+
+
+def test_best_preset_enables_sota_backend_chain_by_default(tmp_path) -> None:
+    settings = Settings(data_dir=tmp_path)
+    best = settings.preset_config("best")
+
+    assert configured_segmentation_backends(settings, best) == ["sam3", "sam2", "rembg"]
+    assert configured_pose_backends(settings, best) == ["colmap-global", "colmap"]
+    assert configured_train_backends(settings, best) == ["dn-splatter-big", "splatfacto-big"]
+
+
+def test_balanced_preset_keeps_stable_default_backend_chain(tmp_path) -> None:
+    settings = Settings(data_dir=tmp_path)
+    balanced = settings.preset_config("balanced")
+
+    assert configured_segmentation_backends(settings, balanced) == ["rembg"]
+    assert configured_pose_backends(settings, balanced) == ["colmap"]
+    assert configured_train_backends(settings, balanced) == ["splatfacto"]
 
 
 def test_object_mask_qa_filters_bad_masks(tmp_path) -> None:

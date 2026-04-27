@@ -9,11 +9,11 @@ Private Telegram bot and worker for turning a photo set or short video into a Ga
 - SQLite queue shared by the bot and worker.
 - Local worker/dispatcher that runs one GPU job at a time.
 - RunPod backend for launching ephemeral GPU pods from the VPS.
-- Preset-aware Nerfstudio `splatfacto` pipeline with adaptive video frame quality scoring, optional object-background removal through `rembg`, and per-job metrics.
-- Artifact persistence for the cleaned `.ply` and preview `.mp4`.
+- Preset-aware reconstruction pipeline with adaptive video frame quality scoring, pluggable segmentation/pose/train backends, object cleanup gates, and per-job metrics.
+- Artifact persistence for the cleaned `.ply`, optional mesh, quality reports, and preview `.mp4`.
 - Optional S3-compatible artifact upload with signed result URLs.
 - Telegram completion/failure notifications when the dispatcher has a bot token.
-- Browser result pages with full Gaussian splat viewing and orbit/pan/zoom point-cloud fallback.
+- Browser result pages with full Gaussian splat viewing, optional mesh viewing, and orbit/pan/zoom point-cloud fallback.
 
 ## Setup
 
@@ -94,6 +94,35 @@ culled before publishing. The pass is bounded by
 `SPLATBOT_SILHOUETTE_CLEANUP_MAX_REMOVE_FRACTION` so bad masks or unusual camera
 poses cannot delete too much of a result.
 
+Maximum-quality runs can opt into newer reconstruction stages without changing
+the Telegram flow:
+
+```bash
+SPLATBOT_SEGMENTATION_BACKEND=sam3,sam2,rembg
+SPLATBOT_OBJECT_MASK_PROMPT='main object'
+SPLATBOT_SAM3_MASK_COMMAND='splatbot-segment --backend sam3 --input {images_dir} --output {object_dir} --prompt {prompt}'
+SPLATBOT_SAM2_MASK_COMMAND='splatbot-segment --backend sam2 --input {images_dir} --output {object_dir}'
+SPLATBOT_SAM2_CHECKPOINT=/opt/splatbot/models/sam2.1_hiera_large.pt
+SPLATBOT_SAM2_CONFIG=configs/sam2.1/sam2.1_hiera_l.yaml
+SPLATBOT_POSE_BACKENDS=glomap,colmap
+SPLATBOT_POSE_BACKEND_COMMAND='splatbot-pose --backend {backend} --input {images_dir} --output {processed_dir} --matching-method {matching_method}'
+SPLATBOT_TRAIN_BACKENDS=dn-splatter,splatfacto-big
+SPLATBOT_TRAIN_BACKEND_COMMAND='splatbot-train --backend {backend} --data {processed_dir} --output {ns_dir} --max-iterations {max_iterations} --steps-per-save {steps_per_save} {extra_args}'
+SPLATBOT_MESH_EXPORT_ENABLED=true
+SPLATBOT_MESH_BACKEND=o3dtsdf
+SPLATBOT_MESH_EXPORT_COMMAND='splatbot-mesh --backend {backend} --ns-dir {ns_dir} --output {mesh_path}'
+```
+
+Backends are attempted in order. In `best` mode, the default object chain is
+SAM3, SAM2, then rembg; pose is COLMAP global mapper when available, then normal
+COLMAP; training is DN-Splatter-big, then `splatfacto-big`. SAM3 needs access to
+Meta/Hugging Face checkpoints in the RunPod runtime, so deployments without that
+token fall back to SAM2/rembg.
+
+Object-mode postprocessing now includes a mask-support cleanup pass and a
+publish-time validation gate. If the cleaned splat still has too many points
+with weak mask support, the job fails instead of publishing a misleading viewer.
+
 ## Artifact Storage
 
 Without S3 settings, artifacts stay on local disk under:
@@ -118,9 +147,18 @@ Completed jobs publish:
 - `index.html`
 - `cleaned_splat.ply`
 - `metrics.json`
+- `quality_report.json`
+- `candidate_report.json`
+- `mesh.glb`, `mesh.gltf`, or `mesh.obj` when mesh export is enabled
 - `turntable.mp4` when preview rendering is enabled
 
-The viewer first loads the PLY with a browser Gaussian splat renderer. If that fails on the client, it falls back to a Three.js colored point preview with orbit, pan, and zoom controls. Telegram sends the viewer URL when available.
+The viewer first loads the PLY with a browser Gaussian splat renderer. If that fails on the client, it falls back to a Three.js colored point preview with orbit, pan, and zoom controls. Mesh outputs can be opened from the same page when present. Telegram sends the viewer URL when available.
+
+Compare saved jobs with:
+
+```bash
+splatbot-benchmark /var/lib/splatbot/jobs/<job_id> /var/lib/splatbot/jobs/<other_job_id>
+```
 
 Required S3 settings:
 

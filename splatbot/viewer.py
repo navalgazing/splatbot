@@ -16,12 +16,29 @@ def publish_viewer(settings: Settings, job_id: str, outputs: PipelineOutputs) ->
     target.mkdir(parents=True, exist_ok=True)
     shutil.copy2(outputs.cleaned_ply, target / "cleaned_splat.ply")
     write_viewer_point_cloud(outputs.cleaned_ply, target / "viewer_points.ply")
+    mesh_name = None
+    if outputs.mesh_path is not None and outputs.mesh_path.exists():
+        mesh_name = outputs.mesh_path.name
+        shutil.copy2(outputs.mesh_path, target / mesh_name)
     has_preview = outputs.preview_mp4 is not None and outputs.preview_mp4.exists()
     if has_preview and outputs.preview_mp4 is not None:
         shutil.copy2(outputs.preview_mp4, target / "turntable.mp4")
     if outputs.metrics_path is not None and outputs.metrics_path.exists():
         shutil.copy2(outputs.metrics_path, target / "metrics.json")
-    (target / "index.html").write_text(render_viewer_html(job_id, has_preview=has_preview), encoding="utf-8")
+    has_quality_report = outputs.quality_report_path is not None and outputs.quality_report_path.exists()
+    if has_quality_report and outputs.quality_report_path is not None:
+        shutil.copy2(outputs.quality_report_path, target / "quality_report.json")
+    if outputs.candidate_report_path is not None and outputs.candidate_report_path.exists():
+        shutil.copy2(outputs.candidate_report_path, target / "candidate_report.json")
+    (target / "index.html").write_text(
+        render_viewer_html(
+            job_id,
+            has_preview=has_preview,
+            mesh_name=mesh_name,
+            has_quality_report=has_quality_report,
+        ),
+        encoding="utf-8",
+    )
     return target / "index.html"
 
 
@@ -33,7 +50,12 @@ def safe_result_dir(root: Path, job_id: str) -> Path:
     return target
 
 
-def render_viewer_html(job_id: str, has_preview: bool = True) -> str:
+def render_viewer_html(
+    job_id: str,
+    has_preview: bool = True,
+    mesh_name: str | None = None,
+    has_quality_report: bool = False,
+) -> str:
     title = f"Splatbot Job {job_id}"
     preview_html = (
         '<video controls playsinline src="turntable.mp4"></video>\n'
@@ -41,6 +63,14 @@ def render_viewer_html(job_id: str, has_preview: bool = True) -> str:
         if has_preview
         else ""
     )
+    mesh_button = '<button id="mesh-button" type="button">Use mesh view</button>' if mesh_name else ""
+    mesh_download = f'<a href="{html.escape(mesh_name)}" download>Download mesh</a>' if mesh_name else ""
+    report_download = '<a href="quality_report.json" download>Download quality report</a>' if has_quality_report else ""
+    metadata = {
+        "job_id": job_id,
+        "mesh": mesh_name,
+        "has_quality_report": has_quality_report,
+    }
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -67,6 +97,11 @@ def render_viewer_html(job_id: str, has_preview: bool = True) -> str:
       position: relative;
     }}
     #fallback-viewport {{
+      display: none;
+      position: absolute;
+      inset: 0;
+    }}
+    #mesh-viewport {{
       display: none;
       position: absolute;
       inset: 0;
@@ -129,13 +164,18 @@ def render_viewer_html(job_id: str, has_preview: bool = True) -> str:
   <main>
     <section id="viewport">
       <div id="fallback-viewport"></div>
+      <div id="mesh-viewport"></div>
       <div class="status" id="status">Loading Gaussian splat scene...</div>
     </section>
     <aside>
       <h1>{html.escape(title)}</h1>
+      <button id="splat-button" type="button">Use splat view</button>
+      {mesh_button}
       <button id="fallback-button" type="button">Use point preview</button>
       {preview_html}
       <a href="cleaned_splat.ply" download>Download PLY</a>
+      {mesh_download}
+      {report_download}
     </aside>
   </main>
   <script type="importmap">
@@ -149,17 +189,26 @@ def render_viewer_html(job_id: str, has_preview: bool = True) -> str:
   <script type="module">
     import * as THREE from "three";
     import {{ OrbitControls }} from "three/addons/controls/OrbitControls.js";
+    import {{ GLTFLoader }} from "three/addons/loaders/GLTFLoader.js";
+    import {{ OBJLoader }} from "three/addons/loaders/OBJLoader.js";
     import {{ PLYLoader }} from "three/addons/loaders/PLYLoader.js";
     import * as GaussianSplats3D from "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.6/build/gaussian-splats-3d.module.js";
 
     const container = document.getElementById("viewport");
     const fallbackContainer = document.getElementById("fallback-viewport");
+    const meshContainer = document.getElementById("mesh-viewport");
     const status = document.getElementById("status");
+    const splatButton = document.getElementById("splat-button");
     const fallbackButton = document.getElementById("fallback-button");
+    const meshButton = document.getElementById("mesh-button");
+    const meshName = {json.dumps(mesh_name)};
     let splatViewer = null;
     let fallbackStarted = false;
+    let meshStarted = false;
 
     async function startSplatViewer() {{
+      fallbackContainer.style.display = "none";
+      meshContainer.style.display = "none";
       try {{
         splatViewer = new GaussianSplats3D.Viewer({{
           rootElement: container,
@@ -195,6 +244,7 @@ def render_viewer_html(job_id: str, has_preview: bool = True) -> str:
         try {{ splatViewer.dispose(); }} catch (error) {{ console.warn(error); }}
       }}
       fallbackContainer.style.display = "block";
+      meshContainer.style.display = "none";
       status.textContent = "Loading point preview...";
 
       const scene = new THREE.Scene();
@@ -254,10 +304,90 @@ def render_viewer_html(job_id: str, has_preview: bool = True) -> str:
     animate();
     }}
 
+    function startMeshPreview() {{
+      if (!meshName) return;
+      if (meshStarted) {{
+        fallbackContainer.style.display = "none";
+        meshContainer.style.display = "block";
+        return;
+      }}
+      meshStarted = true;
+      if (splatViewer) {{
+        try {{ splatViewer.dispose(); }} catch (error) {{ console.warn(error); }}
+      }}
+      fallbackContainer.style.display = "none";
+      meshContainer.style.display = "block";
+      status.textContent = "Loading mesh...";
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x0b1020);
+      const camera = new THREE.PerspectiveCamera(55, 1, 0.01, 1000);
+      camera.position.set(0, 0.8, 2.8);
+      const renderer = new THREE.WebGLRenderer({{ antialias: true }});
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      meshContainer.appendChild(renderer.domElement);
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x223044, 1.8));
+      const key = new THREE.DirectionalLight(0xffffff, 1.5);
+      key.position.set(2, -3, 4);
+      scene.add(key);
+
+      function resize() {{
+        const width = meshContainer.clientWidth || container.clientWidth;
+        const height = meshContainer.clientHeight || container.clientHeight;
+        camera.aspect = width / Math.max(height, 1);
+        camera.updateProjectionMatrix();
+        renderer.setSize(width, height, false);
+      }}
+      window.addEventListener("resize", resize);
+      resize();
+
+      function frameObject(object) {{
+        const box = new THREE.Box3().setFromObject(object);
+        const sphere = box.getBoundingSphere(new THREE.Sphere());
+        if (sphere.radius > 0) {{
+          controls.target.copy(sphere.center);
+          camera.position.copy(sphere.center).add(new THREE.Vector3(sphere.radius * 1.6, sphere.radius * 0.8, sphere.radius * 1.8));
+          camera.near = sphere.radius / 100;
+          camera.far = sphere.radius * 100;
+          camera.updateProjectionMatrix();
+        }}
+      }}
+
+      const extension = meshName.split(".").pop().toLowerCase();
+      const onLoad = object => {{
+        const root = object.scene || object;
+        scene.add(root);
+        frameObject(root);
+        status.textContent = "Drag to orbit. Scroll or pinch to zoom. Right-drag to pan.";
+      }};
+      const onError = error => {{
+        console.error(error);
+        status.textContent = "Could not load the mesh in-browser. Use the download link.";
+      }};
+      if (extension === "glb" || extension === "gltf") {{
+        new GLTFLoader().load(meshName, onLoad, undefined, onError);
+      }} else if (extension === "obj") {{
+        new OBJLoader().load(meshName, onLoad, undefined, onError);
+      }} else {{
+        status.textContent = "Mesh format is available for download but not previewed here.";
+      }}
+
+      function animate() {{
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+      }}
+      animate();
+    }}
+
+    splatButton.addEventListener("click", startSplatViewer);
+    if (meshButton) meshButton.addEventListener("click", startMeshPreview);
     fallbackButton.addEventListener("click", startPointPreview);
     startSplatViewer();
   </script>
-  <script type="application/json" id="metadata">{json.dumps({"job_id": job_id})}</script>
+  <script type="application/json" id="metadata">{json.dumps(metadata)}</script>
 </body>
 </html>
 """

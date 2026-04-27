@@ -40,14 +40,25 @@ async def complete(job_id: str, notify: bool) -> None:
     if job.status in {JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED}:
         raise SystemExit(f"job {job_id} is already terminal: {job.status.value}")
     ply = settings.job_dir(job_id) / "export" / "cleaned_splat.ply"
+    mesh = settings.job_dir(job_id) / "export" / (settings.mesh_export_filename.strip() or "mesh.glb")
+    mesh_output = mesh if mesh.exists() else None
     preview = settings.job_dir(job_id) / "renders" / "turntable.mp4"
     preview_output = preview if preview.exists() else None
     metrics = settings.job_dir(job_id) / "metrics.json"
+    quality_report = settings.job_dir(job_id) / "quality_report.json"
+    candidate_report = settings.job_dir(job_id) / "candidate_report.json"
     artifacts = await publish_job_artifacts(
         settings,
         store,
         job,
-        PipelineOutputs(ply, preview_output, metrics if metrics.exists() else None),
+        PipelineOutputs(
+            ply,
+            preview_output,
+            metrics if metrics.exists() else None,
+            mesh_path=mesh_output,
+            quality_report_path=quality_report if quality_report.exists() else None,
+            candidate_report_path=candidate_report if candidate_report.exists() else None,
+        ),
     )
     await store.set_job_status(job_id, JobStatus.DONE)
     updated = await store.get_job(job_id)

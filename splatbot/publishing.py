@@ -42,6 +42,10 @@ async def publish_job_artifacts(
     viewer_path = publish_viewer(settings, job.id, outputs)
     viewer_url = settings.public_job_url(job.id)
     artifacts_to_publish = [(ArtifactKind.PLY, outputs.cleaned_ply)]
+    if outputs.mesh_path is not None and outputs.mesh_path.exists():
+        artifacts_to_publish.append((ArtifactKind.MESH, outputs.mesh_path))
+    if outputs.quality_report_path is not None and outputs.quality_report_path.exists():
+        artifacts_to_publish.append((ArtifactKind.QUALITY_REPORT, outputs.quality_report_path))
     if outputs.preview_mp4 is not None and outputs.preview_mp4.exists():
         artifacts_to_publish.append((ArtifactKind.PREVIEW, outputs.preview_mp4))
     for kind, path in artifacts_to_publish:

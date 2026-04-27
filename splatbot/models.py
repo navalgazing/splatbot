@@ -28,6 +28,8 @@ class MediaKind(StrEnum):
 
 class ArtifactKind(StrEnum):
     PLY = "ply"
+    MESH = "mesh"
+    QUALITY_REPORT = "quality_report"
     PREVIEW = "preview"
     VIEWER = "viewer"
 

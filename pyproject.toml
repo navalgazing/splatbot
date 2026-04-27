@@ -29,6 +29,11 @@ splatbot-dispatcher = "splatbot.dispatcher:main"
 splatbot-jobctl = "splatbot.jobctl:main"
 splatbot-run-job-dir = "splatbot.run_job_dir:main"
 splatbot-colmap-wrapper = "splatbot.colmap_wrapper:main"
+splatbot-benchmark = "splatbot.benchmark:main"
+splatbot-segment = "splatbot.backends:segment_main"
+splatbot-pose = "splatbot.backends:pose_main"
+splatbot-train = "splatbot.backends:train_main"
+splatbot-mesh = "splatbot.backends:mesh_main"
 
 [tool.setuptools.packages.find]
 where = ["."]

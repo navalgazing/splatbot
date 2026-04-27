@@ -63,11 +63,30 @@ def promote_largest_sparse_model(
     return target
 
 
+def _has_colmap_command(command: str) -> bool:
+    result = subprocess.run([_real_colmap(), command, "-h"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    return result.returncode == 0
+
+
+def _mapped_argv(argv: list[str]) -> list[str]:
+    mapper = os.environ.get("SPLATBOT_COLMAP_MAPPER", "").strip().lower()
+    if argv[:1] == ["mapper"] and mapper in {"global", "glomap", "global_mapper"}:
+        if _has_colmap_command("global_mapper"):
+            return ["global_mapper", *argv[1:]]
+        print(
+            "splatbot-colmap-wrapper: requested global mapper but this COLMAP build has no global_mapper; "
+            "falling back to mapper",
+            file=sys.stderr,
+        )
+    return argv
+
+
 def main() -> None:
     argv = sys.argv[1:]
+    argv = _mapped_argv(argv)
     real_colmap = _real_colmap()
     result = subprocess.run([real_colmap, *argv], check=False)
-    if result.returncode == 0 and argv[:1] == ["mapper"]:
+    if result.returncode == 0 and argv[:1] in (["mapper"], ["global_mapper"]):
         output_path = _option_value(argv, "--output_path")
         if output_path:
             promote_largest_sparse_model(Path(output_path))

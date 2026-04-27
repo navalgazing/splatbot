@@ -72,12 +72,38 @@ RUN apt-get update \
       libmetis5 \
       libopengl0 \
       libsqlite3-0 \
+      curl \
+      git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=colmap-builder /opt/colmap-cuda/ /usr/local/
 
+ENV SPLATBOT_SAM2_CHECKPOINT=/opt/splatbot/models/sam2.1_hiera_large.pt
+ENV SPLATBOT_SAM2_CONFIG=configs/sam2.1/sam2.1_hiera_l.yaml
+
 RUN /opt/splatbot/venv/bin/pip uninstall -y onnxruntime onnxruntime-gpu || true \
     && /opt/splatbot/venv/bin/pip install --no-cache-dir --upgrade "rembg[gpu,cli]" onnxruntime-gpu
+
+RUN /opt/splatbot/venv/bin/pip install --no-cache-dir \
+      git+https://github.com/maturk/dn-splatter.git \
+      git+https://github.com/facebookresearch/sam2.git \
+    && /opt/splatbot/venv/bin/ns-install-cli \
+    && /opt/splatbot/venv/bin/python - <<'PY'
+import importlib.util
+
+required = ("dn_splatter", "sam2")
+missing = [name for name in required if importlib.util.find_spec(name) is None]
+if missing:
+    raise SystemExit(f"missing optional SOTA package(s): {missing}")
+PY
+
+RUN /opt/splatbot/venv/bin/pip install --no-cache-dir git+https://github.com/facebookresearch/sam3.git || true
+
+RUN mkdir -p /opt/splatbot/models \
+    && curl -fsSL \
+      https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt \
+      -o "$SPLATBOT_SAM2_CHECKPOINT" \
+    && test -s "$SPLATBOT_SAM2_CHECKPOINT"
 
 RUN set -eu; \
     ldconfig; \
@@ -106,10 +132,11 @@ RUN set -eu; \
 
 RUN /opt/splatbot/venv/bin/python - <<'PY'
 import importlib.metadata as metadata
+import importlib.util
 import onnxruntime as ort
 import torch
 
-for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "onnxruntime-gpu", "torch"):
+for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "onnxruntime-gpu", "torch", "dn-splatter"):
     try:
         version = metadata.version(package)
     except metadata.PackageNotFoundError:
@@ -118,6 +145,8 @@ for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "onnxruntime-gpu
 print(f"torch_cuda_available={torch.cuda.is_available()}")
 print(f"onnxruntime_device={ort.get_device()}")
 print(f"onnxruntime_providers={ort.get_available_providers()}")
+for module in ("sam2", "sam3", "dn_splatter"):
+    print(f"{module}_available={importlib.util.find_spec(module) is not None}")
 if "CUDAExecutionProvider" not in ort.get_available_providers():
     raise SystemExit("onnxruntime-gpu did not expose CUDAExecutionProvider")
 PY
