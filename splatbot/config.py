@@ -108,6 +108,14 @@ class Settings(BaseSettings):
     object_colmap_original_pose_fallback: bool = True
     colmap_retry_frame_counts: str = "120,80,60"
     colmap_retry_matching_methods: str = "sequential,exhaustive"
+    silhouette_cleanup_enabled: bool = True
+    silhouette_cleanup_min_views: int = 4
+    silhouette_cleanup_max_views: int = 48
+    silhouette_cleanup_alpha_threshold: int = 16
+    silhouette_cleanup_padding_px: int = 1
+    silhouette_cleanup_outside_ratio: float = 0.6
+    silhouette_cleanup_max_inside_views: int = 3
+    silhouette_cleanup_max_remove_fraction: float = 0.25
     min_splat_vertices: int = 10000
     max_flattened_axis_ratio: float = 0.015
 

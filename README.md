@@ -87,6 +87,13 @@ registers too few frames, the pipeline retries smaller evenly sampled subsets
 from `SPLATBOT_COLMAP_RETRY_FRAME_COUNTS` with methods from
 `SPLATBOT_COLMAP_RETRY_MATCHING_METHODS` before failing the job.
 
+Object exports also run conservative silhouette cleanup. The exported Gaussian
+centers are projected back into up to `SPLATBOT_SILHOUETTE_CLEANUP_MAX_VIEWS`
+training masks, and points that repeatedly land outside the alpha silhouette are
+culled before publishing. The pass is bounded by
+`SPLATBOT_SILHOUETTE_CLEANUP_MAX_REMOVE_FRACTION` so bad masks or unusual camera
+poses cannot delete too much of a result.
+
 ## Artifact Storage
 
 Without S3 settings, artifacts stay on local disk under:

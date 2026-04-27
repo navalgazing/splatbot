@@ -1,5 +1,7 @@
 import json
 import os
+import struct
+import zlib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -9,6 +11,7 @@ from splatbot.models import JobStatus, MediaItem, MediaKind
 from splatbot.pipeline import (
     FrameQuality,
     ScanPipeline,
+    clean_exported_ply,
     clean_ply,
     format_fps,
     inspect_processed_dataset,
@@ -122,6 +125,39 @@ def media(path: Path, kind: MediaKind = MediaKind.PHOTO) -> MediaItem:
     )
 
 
+def write_rgba_png(path: Path, width: int, height: int, alpha: list[int]) -> None:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        checksum = zlib.crc32(kind + data) & 0xFFFFFFFF
+        return len(data).to_bytes(4, "big") + kind + data + checksum.to_bytes(4, "big")
+
+    rows = bytearray()
+    for y in range(height):
+        rows.append(0)
+        for x in range(width):
+            rows.extend([255, 255, 255, alpha[(y * width) + x]])
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", width.to_bytes(4, "big") + height.to_bytes(4, "big") + bytes([8, 6, 0, 0, 0]))
+        + chunk(b"IDAT", zlib.compress(bytes(rows)))
+        + chunk(b"IEND", b"")
+    )
+
+
+def write_binary_xyz_ply(path: Path, points: list[tuple[float, float, float]]) -> None:
+    header = "\n".join(
+        [
+            "ply",
+            "format binary_little_endian 1.0",
+            f"element vertex {len(points)}",
+            "property float x",
+            "property float y",
+            "property float z",
+            "end_header",
+        ]
+    ) + "\n"
+    path.write_bytes(header.encode("ascii") + b"".join(struct.pack("<fff", *point) for point in points))
+
+
 def test_clean_ply_preserves_header_and_removes_invalid_rows(tmp_path) -> None:
     src = tmp_path / "raw.ply"
     dest = tmp_path / "clean.ply"
@@ -165,6 +201,116 @@ def test_clean_ply_leaves_binary_ply_unchanged(tmp_path) -> None:
     clean_ply(src, dest)
 
     assert dest.read_bytes() == data
+
+
+def test_object_silhouette_cleanup_culls_points_outside_alpha_mask(tmp_path) -> None:
+    processed = tmp_path / "processed"
+    images = processed / "images"
+    images.mkdir(parents=True)
+    alpha = [0] * 16
+    alpha[5] = 255
+    write_rgba_png(images / "frame_00001.png", 4, 4, alpha)
+    (processed / "transforms.json").write_text(
+        json.dumps(
+            {
+                "fl_x": 1.0,
+                "fl_y": 1.0,
+                "cx": 1.0,
+                "cy": 1.0,
+                "frames": [
+                    {
+                        "file_path": "images/frame_00001.png",
+                        "transform_matrix": [
+                            [1.0, 0.0, 0.0, 0.0],
+                            [0.0, 1.0, 0.0, 0.0],
+                            [0.0, 0.0, 1.0, 0.0],
+                            [0.0, 0.0, 0.0, 1.0],
+                        ],
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    src = tmp_path / "raw.ply"
+    dest = tmp_path / "clean.ply"
+    write_binary_xyz_ply(src, [(0.0, 0.0, -1.0), (1.0, 0.0, -1.0)])
+
+    cleanup = clean_exported_ply(
+        src,
+        dest,
+        processed,
+        ScanMode.OBJECT,
+        Settings(
+            data_dir=tmp_path,
+            silhouette_cleanup_min_views=1,
+            silhouette_cleanup_max_views=1,
+            silhouette_cleanup_padding_px=0,
+            silhouette_cleanup_outside_ratio=1.0,
+            silhouette_cleanup_max_inside_views=0,
+            silhouette_cleanup_max_remove_fraction=0.9,
+        ),
+    )
+
+    assert cleanup["output_vertices"] == 1
+    assert cleanup["silhouette"]["applied"] is True
+    assert cleanup["silhouette"]["removed_points"] == 1
+    assert b"element vertex 1" in dest.read_bytes().split(b"end_header", 1)[0]
+
+
+def test_silhouette_cleanup_skips_when_remove_fraction_is_too_high(tmp_path) -> None:
+    processed = tmp_path / "processed"
+    images = processed / "images"
+    images.mkdir(parents=True)
+    write_rgba_png(images / "frame_00001.png", 4, 4, [0] * 16)
+    (processed / "transforms.json").write_text(
+        json.dumps(
+            {
+                "fl_x": 1.0,
+                "fl_y": 1.0,
+                "cx": 1.0,
+                "cy": 1.0,
+                "frames": [
+                    {
+                        "file_path": "images/frame_00001.png",
+                        "transform_matrix": [
+                            [1.0, 0.0, 0.0, 0.0],
+                            [0.0, 1.0, 0.0, 0.0],
+                            [0.0, 0.0, 1.0, 0.0],
+                            [0.0, 0.0, 0.0, 1.0],
+                        ],
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    src = tmp_path / "raw.ply"
+    dest = tmp_path / "clean.ply"
+    write_binary_xyz_ply(src, [(0.0, 0.0, -1.0), (1.0, 0.0, -1.0)])
+
+    cleanup = clean_exported_ply(
+        src,
+        dest,
+        processed,
+        ScanMode.OBJECT,
+        Settings(
+            data_dir=tmp_path,
+            silhouette_cleanup_min_views=1,
+            silhouette_cleanup_max_views=1,
+            silhouette_cleanup_padding_px=0,
+            silhouette_cleanup_outside_ratio=1.0,
+            silhouette_cleanup_max_inside_views=0,
+            silhouette_cleanup_max_remove_fraction=0.25,
+        ),
+    )
+
+    assert cleanup["output_vertices"] == 2
+    assert cleanup["silhouette"]["applied"] is False
+    assert cleanup["silhouette"]["reason"] == "max_remove_fraction_exceeded"
+    assert b"element vertex 2" in dest.read_bytes().split(b"end_header", 1)[0]
 
 
 async def test_pipeline_builds_expected_commands(tmp_path) -> None:

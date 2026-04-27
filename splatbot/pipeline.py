@@ -5,6 +5,7 @@ import math
 import shutil
 import struct
 import time
+import zlib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from statistics import median
@@ -43,6 +44,98 @@ class FrameQuality:
 class FrameSelectionResult:
     selected_count: int
     metrics: dict
+
+
+@dataclass(frozen=True)
+class PlyLayout:
+    format: str
+    header_lines: list[str]
+    header_bytes: int
+    vertex_count: int
+    vertex_line_index: int
+    properties: list[tuple[str, str]]
+    row_size: int | None = None
+
+
+@dataclass(frozen=True)
+class AlphaMask:
+    width: int
+    height: int
+    alpha: bytes
+
+    def is_foreground(self, u: float, v: float, threshold: int, padding: int) -> bool:
+        x = round(u)
+        y = round(v)
+        if x < 0 or y < 0 or x >= self.width or y >= self.height:
+            return False
+        x0 = max(0, x - padding)
+        x1 = min(self.width - 1, x + padding)
+        y0 = max(0, y - padding)
+        y1 = min(self.height - 1, y + padding)
+        for sample_y in range(y0, y1 + 1):
+            row = sample_y * self.width
+            for sample_x in range(x0, x1 + 1):
+                if self.alpha[row + sample_x] >= threshold:
+                    return True
+        return False
+
+
+@dataclass(frozen=True)
+class SilhouetteFrame:
+    mask: AlphaMask
+    world_to_camera: list[list[float]]
+    fl_x: float
+    fl_y: float
+    cx: float
+    cy: float
+
+
+@dataclass
+class SilhouetteEvaluator:
+    frames: list[SilhouetteFrame]
+    alpha_threshold: int
+    padding_px: int
+    outside_ratio: float
+    max_inside_views: int
+    min_views: int
+    checked_points: int = 0
+    removed_points: int = 0
+    total_observations: int = 0
+
+    def keep(self, values: tuple[float, ...]) -> bool:
+        if len(values) < 3:
+            return True
+        xyz = (values[0], values[1], values[2])
+        observed = 0
+        outside = 0
+        inside = 0
+        for frame in self.frames:
+            projection = project_world_point(frame, xyz)
+            if projection is None:
+                continue
+            u, v, alt_v = projection
+            if u < 0 or u >= frame.mask.width or v < 0 or v >= frame.mask.height:
+                continue
+            observed += 1
+            foreground = frame.mask.is_foreground(u, v, self.alpha_threshold, self.padding_px)
+            if not foreground and alt_v is not None and 0 <= alt_v < frame.mask.height:
+                # Be conservative across camera-y conventions: an alternate-y hit
+                # means this point may be legitimate, so do not count it outside.
+                foreground = frame.mask.is_foreground(u, alt_v, self.alpha_threshold, self.padding_px)
+            if foreground:
+                inside += 1
+            else:
+                outside += 1
+        if observed:
+            self.checked_points += 1
+            self.total_observations += observed
+        if observed < self.min_views:
+            return True
+        outside_fraction = outside / observed
+        remove = outside_fraction >= self.outside_ratio and inside <= self.max_inside_views
+        if remove:
+            self.removed_points += 1
+        return not remove
 
 
 class ScanPipeline:
@@ -166,13 +259,14 @@ class ScanPipeline:
         stage_start = time.perf_counter()
         raw_ply = await self.export_ply(ns_dir, export_dir)
         cleaned_ply = export_dir / "cleaned_splat.ply"
-        clean_ply(raw_ply, cleaned_ply)
+        ply_cleanup = clean_exported_ply(raw_ply, cleaned_ply, processed_dir, mode, self.settings)
         record_stage(metrics, "exporting", stage_start)
         log_ply_summary("raw splat", raw_ply)
         log_ply_summary("cleaned splat", cleaned_ply)
         metrics["ply"] = {
             "raw": inspect_ply(raw_ply),
             "cleaned": inspect_ply(cleaned_ply),
+            "cleanup": ply_cleanup,
         }
         write_json(metrics_path, metrics)
         validate_ply_quality(metrics, self.settings)
@@ -960,7 +1054,7 @@ def build_even_subset(image_files: list[Path], subset_dir: Path, frame_count: in
         shutil.copy2(src, subset_dir / src.name)
 
 
-def quality_blind_even_sample(items: list[Path], count: int) -> list[Path]:
+def quality_blind_even_sample(items: list, count: int) -> list:
     if count >= len(items):
         return list(items)
     if count <= 0:
@@ -1150,6 +1244,10 @@ def ply_struct_code(kind: str) -> str:
     }[kind]
 
 
+def ply_type_size(kind: str) -> int:
+    return struct.calcsize("<" + ply_struct_code(kind))
+
+
 def update_bounds(mins: list[float], maxs: list[float], xyz: list[float]) -> None:
     if not all(math.isfinite(value) for value in xyz):
         return
@@ -1260,36 +1358,414 @@ def log_ply_summary(label: str, path: Path) -> None:
         print(f"{label}: could not inspect {path}: {exc}", flush=True)
 
 
-def clean_ply(src: Path, dest: Path) -> None:
-    """Conservatively remove invalid ASCII vertex rows while preserving properties."""
-    header_bytes = src.read_bytes()[:512]
-    if b"format binary_" in header_bytes:
+def clean_exported_ply(
+    src: Path,
+    dest: Path,
+    processed_dir: Path,
+    mode: ScanMode,
+    settings: Settings,
+) -> dict:
+    if mode != ScanMode.OBJECT or not settings.silhouette_cleanup_enabled:
+        cleanup = clean_ply(src, dest)
+        cleanup["silhouette"] = {"applied": False, "reason": "disabled_or_not_object_mode"}
+        return cleanup
+
+    frames = load_silhouette_frames(processed_dir, settings)
+    if len(frames) < settings.silhouette_cleanup_min_views:
+        cleanup = clean_ply(src, dest)
+        cleanup["silhouette"] = {
+            "applied": False,
+            "reason": "not_enough_alpha_masks",
+            "mask_views": len(frames),
+        }
+        return cleanup
+
+    evaluator = SilhouetteEvaluator(
+        frames=frames,
+        alpha_threshold=settings.silhouette_cleanup_alpha_threshold,
+        padding_px=settings.silhouette_cleanup_padding_px,
+        outside_ratio=settings.silhouette_cleanup_outside_ratio,
+        max_inside_views=settings.silhouette_cleanup_max_inside_views,
+        min_views=settings.silhouette_cleanup_min_views,
+    )
+    temp = dest.with_suffix(dest.suffix + ".silhouette.tmp")
+    cleanup = clean_ply(src, temp, row_filter=evaluator.keep)
+    input_vertices = cleanup.get("input_vertices") or 0
+    removed_fraction = evaluator.removed_points / input_vertices if input_vertices else 0.0
+    if removed_fraction > settings.silhouette_cleanup_max_remove_fraction:
+        if temp.exists():
+            temp.unlink()
+        fallback = clean_ply(src, dest)
+        fallback["silhouette"] = {
+            "applied": False,
+            "reason": "max_remove_fraction_exceeded",
+            "candidate_removed": evaluator.removed_points,
+            "candidate_removed_fraction": round(removed_fraction, 6),
+            "max_remove_fraction": settings.silhouette_cleanup_max_remove_fraction,
+            "mask_views": len(frames),
+        }
+        return fallback
+
+    temp.replace(dest)
+    cleanup["silhouette"] = {
+        "applied": True,
+        "mask_views": len(frames),
+        "checked_points": evaluator.checked_points,
+        "removed_points": evaluator.removed_points,
+        "removed_fraction": round(removed_fraction, 6),
+        "total_observations": evaluator.total_observations,
+        "outside_ratio": settings.silhouette_cleanup_outside_ratio,
+        "max_inside_views": settings.silhouette_cleanup_max_inside_views,
+        "padding_px": settings.silhouette_cleanup_padding_px,
+        "alpha_threshold": settings.silhouette_cleanup_alpha_threshold,
+    }
+    return cleanup
+
+
+def clean_ply(src: Path, dest: Path, row_filter: Callable[[tuple[float, ...]], bool] | None = None) -> dict:
+    """Remove invalid vertex rows while preserving PLY properties and binary layout."""
+    layout = read_ply_layout(src)
+    if layout is None:
         shutil.copy2(src, dest)
-        return
+        return {"input_vertices": None, "output_vertices": None, "invalid_vertices_removed": 0}
+    if layout.format == "format ascii 1.0":
+        return clean_ascii_ply(src, dest, layout, row_filter)
+    if layout.format == "format binary_little_endian 1.0" and layout.row_size:
+        return clean_binary_ply(src, dest, layout, row_filter)
+    shutil.copy2(src, dest)
+    return {
+        "input_vertices": layout.vertex_count,
+        "output_vertices": layout.vertex_count,
+        "invalid_vertices_removed": 0,
+        "unsupported_format": layout.format,
+    }
+
+
+def read_ply_layout(path: Path) -> PlyLayout | None:
+    header_lines: list[str] = []
+    header_bytes = 0
+    with path.open("rb") as handle:
+        while True:
+            raw = handle.readline()
+            if not raw:
+                return None
+            header_bytes += len(raw)
+            line = raw.decode("ascii", errors="ignore").strip()
+            header_lines.append(line)
+            if line == "end_header":
+                break
+    fmt = next((line for line in header_lines if line.startswith("format ")), "")
+    vertex_count: int | None = None
+    vertex_line_index = -1
+    properties: list[tuple[str, str]] = []
+    in_vertex = False
+    for idx, line in enumerate(header_lines):
+        if line.startswith("element vertex "):
+            try:
+                vertex_count = int(line.rsplit(" ", 1)[-1])
+            except ValueError:
+                return None
+            vertex_line_index = idx
+            in_vertex = True
+            continue
+        if line.startswith("element ") and in_vertex:
+            in_vertex = False
+        if in_vertex and line.startswith("property "):
+            parts = line.split()
+            if len(parts) != 3:
+                return None
+            properties.append((parts[1], parts[2]))
+    if vertex_count is None or vertex_line_index < 0 or not properties:
+        return None
+    try:
+        row_size = sum(ply_type_size(kind) for kind, _ in properties)
+    except KeyError:
+        row_size = None
+    return PlyLayout(
+        format=fmt,
+        header_lines=header_lines,
+        header_bytes=header_bytes,
+        vertex_count=vertex_count,
+        vertex_line_index=vertex_line_index,
+        properties=properties,
+        row_size=row_size,
+    )
+
+
+def clean_ascii_ply(
+    src: Path,
+    dest: Path,
+    layout: PlyLayout,
+    row_filter: Callable[[tuple[float, ...]], bool] | None,
+) -> dict:
     raw = src.read_text(encoding="utf-8", errors="replace").splitlines()
     try:
         end_header_idx = raw.index("end_header")
     except ValueError as exc:
         raise ValueError(f"{src} is missing a PLY header") from exc
-
-    header = raw[: end_header_idx + 1]
     body = raw[end_header_idx + 1 :]
+    vertex_rows = body[: layout.vertex_count]
+    tail = body[layout.vertex_count :]
     cleaned: list[str] = []
-    for line in body:
+    invalid = 0
+    filtered = 0
+    for line in vertex_rows:
         parts = line.split()
         if not parts:
+            invalid += 1
             continue
         try:
-            values = [float(part) for part in parts]
+            values = tuple(float(part) for part in parts)
         except ValueError:
+            invalid += 1
             continue
-        if all(value == value and value not in (float("inf"), float("-inf")) for value in values):
-            cleaned.append(line)
+        if not all(math.isfinite(value) for value in values):
+            invalid += 1
+            continue
+        if row_filter is not None and not row_filter(values):
+            filtered += 1
+            continue
+        cleaned.append(line)
 
-    updated_header: list[str] = []
-    for line in header:
+    updated_header = updated_ply_header(layout.header_lines, len(cleaned))
+    dest.write_text("\n".join(updated_header + cleaned + tail) + "\n", encoding="utf-8")
+    return {
+        "input_vertices": layout.vertex_count,
+        "output_vertices": len(cleaned),
+        "invalid_vertices_removed": invalid,
+        "filtered_vertices_removed": filtered,
+    }
+
+
+def clean_binary_ply(
+    src: Path,
+    dest: Path,
+    layout: PlyLayout,
+    row_filter: Callable[[tuple[float, ...]], bool] | None,
+) -> dict:
+    assert layout.row_size is not None
+    struct_format = "<" + "".join(ply_struct_code(kind) for kind, _ in layout.properties)
+    vertex_data_end = layout.header_bytes + (layout.vertex_count * layout.row_size)
+    kept_rows: list[bytes] = []
+    invalid = 0
+    filtered = 0
+    with src.open("rb") as handle:
+        handle.seek(layout.header_bytes)
+        for _ in range(layout.vertex_count):
+            row = handle.read(layout.row_size)
+            if len(row) != layout.row_size:
+                invalid += 1
+                break
+            values = tuple(float(value) for value in struct.unpack(struct_format, row))
+            if not all(math.isfinite(value) for value in values):
+                invalid += 1
+                continue
+            if row_filter is not None and not row_filter(values):
+                filtered += 1
+                continue
+            kept_rows.append(row)
+        handle.seek(vertex_data_end)
+        tail = handle.read()
+
+    header = "\n".join(updated_ply_header(layout.header_lines, len(kept_rows))) + "\n"
+    with dest.open("wb") as handle:
+        handle.write(header.encode("ascii"))
+        for row in kept_rows:
+            handle.write(row)
+        handle.write(tail)
+    return {
+        "input_vertices": layout.vertex_count,
+        "output_vertices": len(kept_rows),
+        "invalid_vertices_removed": invalid,
+        "filtered_vertices_removed": filtered,
+    }
+
+
+def updated_ply_header(header_lines: list[str], vertex_count: int) -> list[str]:
+    updated: list[str] = []
+    for line in header_lines:
         if line.startswith("element vertex "):
-            updated_header.append(f"element vertex {len(cleaned)}")
+            updated.append(f"element vertex {vertex_count}")
         else:
-            updated_header.append(line)
-    dest.write_text("\n".join(updated_header + cleaned) + "\n", encoding="utf-8")
+            updated.append(line)
+    return updated
+
+
+def load_silhouette_frames(processed_dir: Path, settings: Settings) -> list[SilhouetteFrame]:
+    transforms_path = processed_dir / "transforms.json"
+    if not transforms_path.exists():
+        return []
+    try:
+        data = json.loads(transforms_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    raw_frames = [frame for frame in data.get("frames", []) if isinstance(frame, dict)]
+    if settings.silhouette_cleanup_max_views > 0:
+        raw_frames = quality_blind_even_sample(raw_frames, min(settings.silhouette_cleanup_max_views, len(raw_frames)))
+
+    frames: list[SilhouetteFrame] = []
+    for frame in raw_frames:
+        file_path = frame.get("file_path")
+        transform = frame.get("transform_matrix")
+        if not isinstance(file_path, str) or not isinstance(transform, list):
+            continue
+        mask_path = processed_dir / PurePosixPath(file_path.lstrip("./")).as_posix()
+        mask = load_alpha_mask(mask_path)
+        if mask is None:
+            continue
+        fl_x = float(frame.get("fl_x") or data.get("fl_x") or 0.0)
+        fl_y = float(frame.get("fl_y") or data.get("fl_y") or fl_x)
+        cx = float(frame.get("cx") or data.get("cx") or (mask.width / 2.0))
+        cy = float(frame.get("cy") or data.get("cy") or (mask.height / 2.0))
+        if fl_x <= 0 or fl_y <= 0:
+            continue
+        world_to_camera = invert_camera_transform(transform)
+        if world_to_camera is None:
+            continue
+        frames.append(
+            SilhouetteFrame(
+                mask=mask,
+                world_to_camera=world_to_camera,
+                fl_x=fl_x,
+                fl_y=fl_y,
+                cx=cx,
+                cy=cy,
+            )
+        )
+    return frames
+
+
+def invert_camera_transform(transform: list) -> list[list[float]] | None:
+    try:
+        matrix = [[float(transform[row][col]) for col in range(4)] for row in range(4)]
+    except (TypeError, ValueError, IndexError):
+        return None
+    rotation = [[matrix[row][col] for col in range(3)] for row in range(3)]
+    translation = [matrix[row][3] for row in range(3)]
+    inverse_rotation = [[rotation[row][col] for row in range(3)] for col in range(3)]
+    inverse_translation = [
+        -sum(inverse_rotation[row][col] * translation[col] for col in range(3))
+        for row in range(3)
+    ]
+    return [
+        inverse_rotation[0] + [inverse_translation[0]],
+        inverse_rotation[1] + [inverse_translation[1]],
+        inverse_rotation[2] + [inverse_translation[2]],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+
+
+def project_world_point(
+    frame: SilhouetteFrame,
+    xyz: tuple[float, float, float],
+) -> tuple[float, float, float | None] | None:
+    x, y, z = xyz
+    matrix = frame.world_to_camera
+    cam_x = matrix[0][0] * x + matrix[0][1] * y + matrix[0][2] * z + matrix[0][3]
+    cam_y = matrix[1][0] * x + matrix[1][1] * y + matrix[1][2] * z + matrix[1][3]
+    cam_z = matrix[2][0] * x + matrix[2][1] * y + matrix[2][2] * z + matrix[2][3]
+    depth = -cam_z
+    if depth <= 1e-6:
+        return None
+    u = frame.fl_x * (cam_x / depth) + frame.cx
+    v = frame.fl_y * (cam_y / depth) + frame.cy
+    alt_v = frame.cy - frame.fl_y * (cam_y / depth)
+    return u, v, alt_v
+
+
+def load_alpha_mask(path: Path) -> AlphaMask | None:
+    try:
+        import cv2  # type: ignore[import-not-found]
+    except Exception:  # noqa: BLE001
+        return load_png_alpha_mask(path)
+    image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    if image is None or len(image.shape) < 3 or image.shape[2] < 4:
+        return load_png_alpha_mask(path)
+    height, width = image.shape[:2]
+    return AlphaMask(width=width, height=height, alpha=image[:, :, 3].tobytes())
+
+
+def load_png_alpha_mask(path: Path) -> AlphaMask | None:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return None
+    pos = 8
+    width = height = bit_depth = color_type = None
+    idat = bytearray()
+    while pos + 8 <= len(raw):
+        length = int.from_bytes(raw[pos : pos + 4], "big")
+        chunk_type = raw[pos + 4 : pos + 8]
+        chunk_data = raw[pos + 8 : pos + 8 + length]
+        pos += 12 + length
+        if chunk_type == b"IHDR":
+            width = int.from_bytes(chunk_data[0:4], "big")
+            height = int.from_bytes(chunk_data[4:8], "big")
+            bit_depth = chunk_data[8]
+            color_type = chunk_data[9]
+            interlace = chunk_data[12]
+            if bit_depth != 8 or interlace != 0 or color_type not in {4, 6}:
+                return None
+        elif chunk_type == b"IDAT":
+            idat.extend(chunk_data)
+        elif chunk_type == b"IEND":
+            break
+    if width is None or height is None or color_type is None:
+        return None
+    channels = 4 if color_type == 6 else 2
+    stride = width * channels
+    try:
+        decompressed = zlib.decompress(bytes(idat))
+    except zlib.error:
+        return None
+    rows: list[bytes] = []
+    alpha = bytearray(width * height)
+    offset = 0
+    previous = bytes(stride)
+    for row_idx in range(height):
+        if offset >= len(decompressed):
+            return None
+        filter_type = decompressed[offset]
+        offset += 1
+        row = bytearray(decompressed[offset : offset + stride])
+        offset += stride
+        if len(row) != stride:
+            return None
+        unfilter_png_row(row, previous, filter_type, channels)
+        rows.append(bytes(row))
+        previous = rows[-1]
+        alpha_offset = row_idx * width
+        for x in range(width):
+            alpha[alpha_offset + x] = row[(x * channels) + (channels - 1)]
+    return AlphaMask(width=width, height=height, alpha=bytes(alpha))
+
+
+def unfilter_png_row(row: bytearray, previous: bytes, filter_type: int, bytes_per_pixel: int) -> None:
+    if filter_type == 0:
+        return
+    for idx in range(len(row)):
+        left = row[idx - bytes_per_pixel] if idx >= bytes_per_pixel else 0
+        up = previous[idx] if idx < len(previous) else 0
+        up_left = previous[idx - bytes_per_pixel] if idx >= bytes_per_pixel and idx < len(previous) else 0
+        if filter_type == 1:
+            row[idx] = (row[idx] + left) & 0xFF
+        elif filter_type == 2:
+            row[idx] = (row[idx] + up) & 0xFF
+        elif filter_type == 3:
+            row[idx] = (row[idx] + ((left + up) // 2)) & 0xFF
+        elif filter_type == 4:
+            row[idx] = (row[idx] + paeth_predictor(left, up, up_left)) & 0xFF
+
+
+def paeth_predictor(left: int, up: int, up_left: int) -> int:
+    estimate = left + up - up_left
+    left_distance = abs(estimate - left)
+    up_distance = abs(estimate - up)
+    up_left_distance = abs(estimate - up_left)
+    if left_distance <= up_distance and left_distance <= up_left_distance:
+        return left
+    if up_distance <= up_left_distance:
+        return up
+    return up_left
