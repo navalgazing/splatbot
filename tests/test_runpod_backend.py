@@ -86,7 +86,11 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     assert "export SPLATBOT_FRAME_QUALITY_REJECT_THRESHOLD=35.0" in command
     assert "export SPLATBOT_OBJECT_COLMAP_ORIGINAL_POSE_FALLBACK=true" in command
     assert "export SPLATBOT_SILHOUETTE_CLEANUP_ENABLED=true" in command
-    assert "export SPLATBOT_SILHOUETTE_CLEANUP_MAX_REMOVE_FRACTION=0.25" in command
+    assert "export SPLATBOT_SILHOUETTE_CLEANUP_MAX_REMOVE_FRACTION=0.6" in command
+    assert "export SPLATBOT_OBJECT_MASK_QA_ENABLED=true" in command
+    assert "export SPLATBOT_GAUSSIAN_CLEANUP_ENABLED=true" in command
+    assert "export SPLATBOT_SPATIAL_CLEANUP_ENABLED=true" in command
+    assert "export SPLATBOT_POSTPROCESS_VALIDATION_ENABLED=true" in command
     assert "export SPLATBOT_TRAIN_MAX_ITERATIONS=10000" in command
     assert "export SPLATBOT_COLMAP_USE_GPU=false" in command
     assert "export SPLATBOT_REMBG_REQUIRE_GPU=false" in command

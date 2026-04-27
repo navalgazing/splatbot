@@ -11,8 +11,11 @@ from splatbot.models import JobStatus, MediaItem, MediaKind
 from splatbot.pipeline import (
     FrameQuality,
     ScanPipeline,
+    apply_object_mask_qa,
+    clean_gaussian_properties,
     clean_exported_ply,
     clean_ply,
+    clean_spatial_outliers,
     format_fps,
     inspect_processed_dataset,
     latest_nerfstudio_config,
@@ -23,6 +26,7 @@ from splatbot.pipeline import (
     replace_processed_images_with_object_images,
     select_video_frames,
     validate_colmap_quality,
+    write_processed_training_masks,
 )
 
 
@@ -311,6 +315,134 @@ def test_silhouette_cleanup_skips_when_remove_fraction_is_too_high(tmp_path) -> 
     assert cleanup["silhouette"]["applied"] is False
     assert cleanup["silhouette"]["reason"] == "max_remove_fraction_exceeded"
     assert b"element vertex 2" in dest.read_bytes().split(b"end_header", 1)[0]
+
+
+def test_object_mask_qa_filters_bad_masks(tmp_path) -> None:
+    original = tmp_path / "images"
+    object_images = tmp_path / "object_images"
+    original.mkdir()
+    object_images.mkdir()
+    for idx in range(3):
+        (original / f"frame_{idx + 1:05d}.jpg").write_bytes(b"image")
+
+    valid_alpha = [0] * 100
+    for idx in (44, 45, 54, 55):
+        valid_alpha[idx] = 255
+    write_rgba_png(object_images / "frame_00001.png", 10, 10, valid_alpha)
+    write_rgba_png(object_images / "frame_00002.png", 10, 10, [255] * 100)
+    write_rgba_png(object_images / "frame_00003.png", 10, 10, valid_alpha)
+
+    result = apply_object_mask_qa(
+        original,
+        object_images,
+        tmp_path,
+        Settings(
+            data_dir=tmp_path,
+            object_mask_min_keep_frames=2,
+            object_mask_min_keep_ratio=0.5,
+            object_mask_max_area_ratio=0.5,
+            object_mask_max_edge_touch_ratio=1.0,
+        ),
+        Settings(data_dir=tmp_path).preset_config("fast"),
+    )
+
+    assert result["applied"] is True
+    assert result["rejected_by_reason"]["too_large"] == 1
+    assert sorted(path.name for path in Path(result["object_images_dir"]).iterdir()) == [
+        "frame_00001.png",
+        "frame_00003.png",
+    ]
+    assert sorted(path.name for path in Path(result["original_images_dir"]).iterdir()) == [
+        "frame_00001.jpg",
+        "frame_00003.jpg",
+    ]
+
+
+def test_write_processed_training_masks_adds_mask_paths(tmp_path) -> None:
+    processed = tmp_path / "processed"
+    images = processed / "images"
+    images.mkdir(parents=True)
+    alpha = [0, 255, 32, 8]
+    write_rgba_png(images / "frame_00001.png", 2, 2, alpha)
+    (processed / "transforms.json").write_text(
+        json.dumps({"frames": [{"file_path": "images/frame_00001.png"}]}) + "\n",
+        encoding="utf-8",
+    )
+
+    written = write_processed_training_masks(processed, alpha_threshold=16)
+
+    data = json.loads((processed / "transforms.json").read_text(encoding="utf-8"))
+    assert written == 1
+    assert data["frames"][0]["mask_path"] == "masks/frame_00001.png"
+    assert (processed / "masks" / "frame_00001.png").read_bytes().startswith(b"\x89PNG")
+
+
+def test_gaussian_cleanup_removes_low_quality_gaussians(tmp_path) -> None:
+    src = tmp_path / "raw.ply"
+    dest = tmp_path / "clean.ply"
+    src.write_text(
+        "\n".join(
+            [
+                "ply",
+                "format ascii 1.0",
+                "element vertex 4",
+                "property float x",
+                "property float y",
+                "property float z",
+                "property float opacity",
+                "property float scale_0",
+                "property float scale_1",
+                "property float scale_2",
+                "end_header",
+                "0 0 0 0 0 0 0",
+                "0.1 0 0 0 0 0 0",
+                "0.2 0 0 0 0 0 0",
+                "5 5 5 0 5 0 0",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    cleanup = clean_gaussian_properties(
+        src,
+        dest,
+        Settings(
+            data_dir=tmp_path,
+            gaussian_cleanup_max_scale_ratio=2.0,
+            gaussian_cleanup_max_anisotropy=2.0,
+            gaussian_cleanup_max_remove_fraction=0.5,
+        ),
+    )
+
+    assert cleanup["applied"] is True
+    assert cleanup["filtered_vertices_removed"] == 1
+    assert "element vertex 3" in dest.read_text(encoding="utf-8")
+
+
+def test_spatial_cleanup_removes_isolated_points(tmp_path) -> None:
+    src = tmp_path / "raw.ply"
+    dest = tmp_path / "clean.ply"
+    cluster = [(idx * 0.01, 0.0, 0.0) for idx in range(6)]
+    isolated = [(10.0, 10.0, 10.0), (10.1, 10.0, 10.0)]
+    write_binary_xyz_ply(src, cluster + isolated)
+
+    cleanup = clean_spatial_outliers(
+        src,
+        dest,
+        Settings(
+            data_dir=tmp_path,
+            spatial_outlier_radius_fraction=0.02,
+            spatial_outlier_min_neighbors=2,
+            spatial_component_min_vertices=3,
+            spatial_component_min_fraction=0.0,
+            spatial_cleanup_max_remove_fraction=0.5,
+        ),
+    )
+
+    assert cleanup["applied"] is True
+    assert cleanup["filtered_vertices_removed"] == 2
+    assert b"element vertex 6" in dest.read_bytes().split(b"end_header", 1)[0]
 
 
 async def test_pipeline_builds_expected_commands(tmp_path) -> None:

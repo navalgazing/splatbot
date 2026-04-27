@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import math
+import shlex
 import shutil
 import struct
 import time
 import zlib
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from statistics import median
@@ -44,6 +46,21 @@ class FrameQuality:
 class FrameSelectionResult:
     selected_count: int
     metrics: dict
+
+
+@dataclass(frozen=True)
+class ObjectMaskProfile:
+    path: Path
+    stem: str
+    width: int
+    height: int
+    foreground_pixels: int
+    area_ratio: float
+    edge_touch_ratio: float
+    bbox_fill_ratio: float | None
+    center_x: float | None
+    center_y: float | None
+    reject_reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -97,6 +114,7 @@ class SilhouetteEvaluator:
     padding_px: int
     outside_ratio: float
     max_inside_views: int
+    max_inside_ratio: float
     min_views: int
     checked_points: int = 0
     removed_points: int = 0
@@ -132,7 +150,9 @@ class SilhouetteEvaluator:
         if observed < self.min_views:
             return True
         outside_fraction = outside / observed
-        remove = outside_fraction >= self.outside_ratio and inside <= self.max_inside_views
+        inside_fraction = inside / observed
+        inside_is_low = inside <= self.max_inside_views or inside_fraction <= self.max_inside_ratio
+        remove = outside_fraction >= self.outside_ratio and inside_is_low
         if remove:
             self.removed_points += 1
         return not remove
@@ -189,12 +209,21 @@ class ScanPipeline:
                 "duplicate_frame_threshold": self.settings.duplicate_frame_threshold,
                 "colmap_retry_frame_counts": parse_int_list(self.settings.colmap_retry_frame_counts),
                 "colmap_retry_matching_methods": parse_csv_list(self.settings.colmap_retry_matching_methods),
+                "object_mask_backend": self.settings.object_mask_backend,
+                "object_mask_qa_enabled": self.settings.object_mask_qa_enabled,
+                "object_mask_refine_enabled": self.settings.object_mask_refine_enabled,
                 "train_method": preset_config.train_method,
                 "train_max_iterations": preset_config.train_max_iterations,
                 "train_steps_per_save": preset_config.train_steps_per_save,
                 "train_extra_args": list(preset_config.train_extra_args),
                 "colmap_use_gpu": self.settings.colmap_use_gpu,
                 "colmap_bin": self.settings.colmap_bin,
+                "silhouette_cleanup": {
+                    "max_views": self.settings.silhouette_cleanup_max_views,
+                    "outside_ratio": self.settings.silhouette_cleanup_outside_ratio,
+                    "max_inside_views": self.settings.silhouette_cleanup_max_inside_views,
+                    "max_inside_ratio": self.settings.silhouette_cleanup_max_inside_ratio,
+                },
             },
         )
         for path in (images_dir, candidate_dir, processed_dir, ns_dir, export_dir, render_dir):
@@ -224,9 +253,27 @@ class ScanPipeline:
             object_dir.mkdir(parents=True, exist_ok=True)
             stage_start = time.perf_counter()
             await self.remove_backgrounds(images_dir, object_dir)
+            refinement = refine_object_masks(object_dir, self.settings)
             record_stage(metrics, "rembg", stage_start)
             input_images_dir = object_dir
             metrics["frames"]["object"] = count_files(object_dir)
+            if refinement:
+                metrics.setdefault("masks", {})["refinement"] = refinement
+            mask_qa = apply_object_mask_qa(
+                images_dir,
+                object_dir,
+                job_dir,
+                self.settings,
+                preset_config,
+            )
+            metrics.setdefault("masks", {})["qa"] = mask_qa
+            if mask_qa.get("applied"):
+                images_dir = Path(str(mask_qa["original_images_dir"]))
+                object_dir = Path(str(mask_qa["object_images_dir"]))
+                input_images_dir = object_dir
+                metrics["frames"]["pre_mask_qa_selected"] = metrics["frames"]["selected"]
+                metrics["frames"]["selected"] = count_files(images_dir)
+                metrics["frames"]["object"] = count_files(object_dir)
             write_json(metrics_path, metrics)
             log_directory_summary("object images", object_dir)
 
@@ -245,6 +292,12 @@ class ScanPipeline:
             object_images_dir=object_dir,
         )
         record_stage(metrics, "colmap", stage_start)
+        if mode == ScanMode.OBJECT:
+            mask_paths = write_processed_training_masks(
+                processed_dir,
+                alpha_threshold=self.settings.object_mask_training_alpha_threshold,
+            )
+            metrics.setdefault("masks", {})["training_mask_paths"] = mask_paths
         write_json(metrics_path, metrics)
         log_directory_summary("processed data", processed_dir)
         if on_status:
@@ -419,9 +472,29 @@ class ScanPipeline:
             dest.symlink_to(src)
 
     async def remove_backgrounds(self, images_dir: Path, object_dir: Path) -> None:
-        await self.runner.run(
-            [self.settings.rembg_bin, "p", str(images_dir), str(object_dir)]
-        )
+        backend = self.settings.object_mask_backend.strip().lower()
+        if backend in {"", "rembg"}:
+            await self.runner.run(
+                [self.settings.rembg_bin, "p", str(images_dir), str(object_dir)]
+            )
+            return
+
+        if backend in {"external", "sam2", "sam2-video"}:
+            if not self.settings.object_mask_command.strip():
+                raise ValueError(
+                    "SPLATBOT_OBJECT_MASK_COMMAND is required when SPLATBOT_OBJECT_MASK_BACKEND "
+                    f"is {self.settings.object_mask_backend!r}"
+                )
+            rendered = self.settings.object_mask_command.format(
+                images_dir=shlex.quote(str(images_dir)),
+                object_dir=shlex.quote(str(object_dir)),
+                input_dir=shlex.quote(str(images_dir)),
+                output_dir=shlex.quote(str(object_dir)),
+            )
+            await self.runner.run(shlex.split(rendered))
+            return
+
+        raise ValueError(f"unsupported object mask backend: {self.settings.object_mask_backend}")
 
     async def process_data(
         self,
@@ -768,6 +841,219 @@ def select_video_frames(
     )
 
 
+def refine_object_masks(object_dir: Path, settings: Settings) -> dict:
+    """Tighten alpha masks after background removal when OpenCV is available."""
+    if not settings.object_mask_refine_enabled:
+        return {"applied": False, "reason": "disabled"}
+    try:
+        import cv2  # type: ignore[import-not-found]
+        import numpy as np  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        return {"applied": False, "reason": "opencv_unavailable", "error": str(exc)}
+
+    changed = 0
+    skipped = 0
+    kernel = np.ones((3, 3), np.uint8)
+    for image_path in sorted(object_dir.iterdir()):
+        if not image_path.is_file() or image_path.suffix.lower() != ".png":
+            continue
+        image = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
+        if image is None or len(image.shape) < 3 or image.shape[2] < 4:
+            skipped += 1
+            continue
+        alpha = image[:, :, 3]
+        _, binary = cv2.threshold(alpha, settings.object_mask_training_alpha_threshold, 255, cv2.THRESH_BINARY)
+        components, labels, stats, _ = cv2.connectedComponentsWithStats(binary, 8)
+        if components <= 1:
+            skipped += 1
+            continue
+        largest = 1 + max(range(components - 1), key=lambda idx: stats[idx + 1, cv2.CC_STAT_AREA])
+        refined = np.where(labels == largest, alpha, 0).astype(np.uint8)
+        refined = cv2.morphologyEx(refined, cv2.MORPH_CLOSE, kernel, iterations=1)
+        if not np.array_equal(alpha, refined):
+            image[:, :, 3] = refined
+            cv2.imwrite(str(image_path), image)
+            changed += 1
+    return {"applied": True, "changed": changed, "skipped": skipped}
+
+
+def apply_object_mask_qa(
+    original_images_dir: Path,
+    object_images_dir: Path,
+    job_dir: Path,
+    settings: Settings,
+    preset: ScanPresetConfig,
+) -> dict:
+    profiles = analyze_object_masks(object_images_dir, settings)
+    metrics = summarize_object_mask_profiles(profiles)
+    if not settings.object_mask_qa_enabled:
+        return {**metrics, "applied": False, "reason": "disabled"}
+    accepted = [profile for profile in profiles if not profile.reject_reasons]
+    rejected = len(profiles) - len(accepted)
+    if not profiles:
+        return {**metrics, "applied": False, "reason": "no_masks"}
+    if rejected == 0:
+        return {**metrics, "applied": False, "reason": "all_masks_accepted"}
+
+    min_keep = min(
+        preset.max_video_frames,
+        max(1, min(settings.min_selected_video_frames, settings.object_mask_min_keep_frames)),
+    )
+    keep_ratio = len(accepted) / len(profiles)
+    if len(accepted) < min_keep or keep_ratio < settings.object_mask_min_keep_ratio:
+        return {
+            **metrics,
+            "applied": False,
+            "reason": "too_few_accepted_masks",
+            "min_keep_frames": min_keep,
+            "min_keep_ratio": settings.object_mask_min_keep_ratio,
+        }
+
+    filtered_original = job_dir / "images_maskqa"
+    filtered_object = job_dir / "object_images_maskqa"
+    for directory in (filtered_original, filtered_object):
+        if directory.exists():
+            shutil.rmtree(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+
+    accepted_stems = {profile.stem for profile in accepted}
+    copy_matching_stems(original_images_dir, filtered_original, accepted_stems)
+    copy_matching_stems(object_images_dir, filtered_object, accepted_stems)
+    return {
+        **metrics,
+        "applied": True,
+        "reason": "rejected_low_quality_masks",
+        "original_images_dir": str(filtered_original),
+        "object_images_dir": str(filtered_object),
+        "kept_frames": count_files(filtered_object),
+        "dropped_frames": rejected,
+    }
+
+
+def copy_matching_stems(source_dir: Path, dest_dir: Path, stems: set[str]) -> int:
+    copied = 0
+    for path in sorted(source_dir.iterdir()):
+        if path.is_file() and path.stem in stems:
+            shutil.copy2(path, dest_dir / path.name)
+            copied += 1
+    return copied
+
+
+def analyze_object_masks(object_images_dir: Path, settings: Settings) -> list[ObjectMaskProfile]:
+    profiles: list[ObjectMaskProfile] = []
+    previous_area: float | None = None
+    for path in sorted(object_images_dir.iterdir()):
+        if not path.is_file() or path.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
+            continue
+        profile = profile_object_mask(path, settings)
+        reasons = list(profile.reject_reasons)
+        if previous_area is not None and previous_area > 0 and profile.foreground_pixels > 0:
+            area_jump = abs(profile.area_ratio - previous_area) / max(previous_area, 1e-6)
+            if area_jump > settings.object_mask_max_area_jump:
+                reasons.append("area_jump")
+        if reasons:
+            profile = ObjectMaskProfile(
+                path=profile.path,
+                stem=profile.stem,
+                width=profile.width,
+                height=profile.height,
+                foreground_pixels=profile.foreground_pixels,
+                area_ratio=profile.area_ratio,
+                edge_touch_ratio=profile.edge_touch_ratio,
+                bbox_fill_ratio=profile.bbox_fill_ratio,
+                center_x=profile.center_x,
+                center_y=profile.center_y,
+                reject_reasons=tuple(sorted(set(reasons))),
+            )
+        profiles.append(profile)
+        if not profile.reject_reasons:
+            previous_area = profile.area_ratio
+    return profiles
+
+
+def profile_object_mask(path: Path, settings: Settings) -> ObjectMaskProfile:
+    mask = load_alpha_mask(path)
+    if mask is None:
+        return ObjectMaskProfile(path, path.stem, 0, 0, 0, 0.0, 0.0, None, None, None, ("missing_alpha",))
+    threshold = settings.object_mask_training_alpha_threshold
+    foreground = 0
+    edge = 0
+    min_x = mask.width
+    min_y = mask.height
+    max_x = -1
+    max_y = -1
+    edge_margin = 2
+    for y in range(mask.height):
+        row = y * mask.width
+        for x in range(mask.width):
+            if mask.alpha[row + x] < threshold:
+                continue
+            foreground += 1
+            if x < edge_margin or y < edge_margin or x >= mask.width - edge_margin or y >= mask.height - edge_margin:
+                edge += 1
+            min_x = min(min_x, x)
+            min_y = min(min_y, y)
+            max_x = max(max_x, x)
+            max_y = max(max_y, y)
+    pixels = max(1, mask.width * mask.height)
+    area_ratio = foreground / pixels
+    bbox_fill_ratio = None
+    center_x = center_y = None
+    if foreground > 0 and max_x >= min_x and max_y >= min_y:
+        bbox_area = max(1, (max_x - min_x + 1) * (max_y - min_y + 1))
+        bbox_fill_ratio = foreground / bbox_area
+        center_x = ((min_x + max_x) / 2.0) / max(1, mask.width)
+        center_y = ((min_y + max_y) / 2.0) / max(1, mask.height)
+
+    reasons: list[str] = []
+    if foreground == 0:
+        reasons.append("empty")
+    if area_ratio < settings.object_mask_min_area_ratio:
+        reasons.append("too_small")
+    if area_ratio > settings.object_mask_max_area_ratio:
+        reasons.append("too_large")
+    edge_touch_ratio = edge / foreground if foreground else 0.0
+    if edge_touch_ratio > settings.object_mask_max_edge_touch_ratio:
+        reasons.append("touches_frame_edge")
+
+    return ObjectMaskProfile(
+        path=path,
+        stem=path.stem,
+        width=mask.width,
+        height=mask.height,
+        foreground_pixels=foreground,
+        area_ratio=area_ratio,
+        edge_touch_ratio=edge_touch_ratio,
+        bbox_fill_ratio=bbox_fill_ratio,
+        center_x=center_x,
+        center_y=center_y,
+        reject_reasons=tuple(reasons),
+    )
+
+
+def summarize_object_mask_profiles(profiles: list[ObjectMaskProfile]) -> dict:
+    accepted = [profile for profile in profiles if not profile.reject_reasons]
+    return {
+        "total_masks": len(profiles),
+        "accepted_masks": len(accepted),
+        "rejected_masks": len(profiles) - len(accepted),
+        "rejected_by_reason": object_mask_rejected_reason_counts(profiles),
+        "area_ratio": summarize_numbers([profile.area_ratio for profile in profiles if profile.width and profile.height]),
+        "edge_touch_ratio": summarize_numbers([profile.edge_touch_ratio for profile in profiles if profile.width and profile.height]),
+        "bbox_fill_ratio": summarize_numbers(
+            [profile.bbox_fill_ratio for profile in profiles if profile.bbox_fill_ratio is not None]
+        ),
+    }
+
+
+def object_mask_rejected_reason_counts(profiles: list[ObjectMaskProfile]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for profile in profiles:
+        for reason in profile.reject_reasons:
+            counts[reason] = counts.get(reason, 0) + 1
+    return counts
+
+
 def quality_aware_sample(profiles: list[FrameQuality], count: int) -> list[FrameQuality]:
     if count >= len(profiles):
         return sorted(profiles, key=lambda profile: profile.index)
@@ -918,16 +1204,20 @@ def rejected_reason_counts(profiles: list[FrameQuality]) -> dict[str, int]:
     return counts
 
 
-def summarize_profile_values(profiles: list[FrameQuality], field: str) -> dict[str, float | None]:
-    values = [getattr(profile, field) for profile in profiles]
-    numbers = [float(value) for value in values if value is not None]
-    if not numbers:
+def summarize_numbers(numbers: list[float | None]) -> dict[str, float | None]:
+    values = [float(value) for value in numbers if value is not None]
+    if not values:
         return {"min": None, "median": None, "max": None}
     return {
-        "min": round(min(numbers), 3),
-        "median": round(float(median(numbers)), 3),
-        "max": round(max(numbers), 3),
+        "min": round(min(values), 3),
+        "median": round(float(median(values)), 3),
+        "max": round(max(values), 3),
     }
+
+
+def summarize_profile_values(profiles: list[FrameQuality], field: str) -> dict[str, float | None]:
+    values = [getattr(profile, field) for profile in profiles]
+    return summarize_numbers(values)
 
 
 def frame_difference(previous: Path | None, current: Path) -> float | None:
@@ -1131,6 +1421,64 @@ def replace_processed_images_with_object_images(
         raise ValueError(f"could not match object images to COLMAP transforms; missing {sample}")
     write_json(transforms_path, data)
     return rewritten
+
+
+def write_processed_training_masks(processed_dir: Path, alpha_threshold: int = 16) -> int:
+    transforms_path = processed_dir / "transforms.json"
+    if not transforms_path.exists():
+        return 0
+    try:
+        data = json.loads(transforms_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    frames = data.get("frames")
+    if not isinstance(frames, list):
+        return 0
+
+    masks_dir = processed_dir / "masks"
+    written = 0
+    for frame in frames:
+        if not isinstance(frame, dict):
+            continue
+        file_path = frame.get("file_path")
+        if not isinstance(file_path, str) or not file_path:
+            continue
+        image_path = processed_dir / PurePosixPath(file_path.lstrip("./")).as_posix()
+        mask = load_alpha_mask(image_path)
+        if mask is None:
+            continue
+        masks_dir.mkdir(parents=True, exist_ok=True)
+        mask_name = f"{Path(PurePosixPath(file_path).name).stem}.png"
+        mask_path = masks_dir / mask_name
+        pixels = bytes(255 if value >= alpha_threshold else 0 for value in mask.alpha)
+        write_grayscale_png(mask_path, mask.width, mask.height, pixels)
+        frame["mask_path"] = (PurePosixPath("masks") / mask_name).as_posix()
+        written += 1
+
+    if written:
+        write_json(transforms_path, data)
+    return written
+
+
+def write_grayscale_png(path: Path, width: int, height: int, pixels: bytes) -> None:
+    if len(pixels) != width * height:
+        raise ValueError("grayscale PNG pixel buffer has the wrong size")
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        checksum = zlib.crc32(kind + data) & 0xFFFFFFFF
+        return len(data).to_bytes(4, "big") + kind + data + checksum.to_bytes(4, "big")
+
+    rows = bytearray()
+    for y in range(height):
+        rows.append(0)
+        start = y * width
+        rows.extend(pixels[start : start + width])
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", width.to_bytes(4, "big") + height.to_bytes(4, "big") + bytes([8, 0, 0, 0, 0]))
+        + chunk(b"IDAT", zlib.compress(bytes(rows)))
+        + chunk(b"IEND", b"")
+    )
 
 
 def inspect_ply(path: Path) -> dict:
@@ -1374,6 +1722,8 @@ def clean_exported_ply(
         return cleanup
 
     frames = load_silhouette_frames(processed_dir, settings)
+    stage_metrics: dict = {}
+    intermediates: list[Path] = []
     if len(frames) < settings.silhouette_cleanup_min_views:
         cleanup = clean_ply(src, dest)
         cleanup["silhouette"] = {
@@ -1381,47 +1731,87 @@ def clean_exported_ply(
             "reason": "not_enough_alpha_masks",
             "mask_views": len(frames),
         }
-        return cleanup
+        current = dest
+    else:
+        current = src
+        silhouette_dest = dest.with_suffix(dest.suffix + ".silhouette.tmp")
+        evaluator = SilhouetteEvaluator(
+            frames=frames,
+            alpha_threshold=settings.silhouette_cleanup_alpha_threshold,
+            padding_px=settings.silhouette_cleanup_padding_px,
+            outside_ratio=settings.silhouette_cleanup_outside_ratio,
+            max_inside_views=settings.silhouette_cleanup_max_inside_views,
+            max_inside_ratio=settings.silhouette_cleanup_max_inside_ratio,
+            min_views=settings.silhouette_cleanup_min_views,
+        )
+        cleanup = clean_ply(current, silhouette_dest, row_filter=evaluator.keep)
+        input_vertices = cleanup.get("input_vertices") or 0
+        removed_fraction = evaluator.removed_points / input_vertices if input_vertices else 0.0
+        if removed_fraction > settings.silhouette_cleanup_max_remove_fraction:
+            if silhouette_dest.exists():
+                silhouette_dest.unlink()
+            cleanup = clean_ply(current, dest)
+            cleanup["silhouette"] = {
+                "applied": False,
+                "reason": "max_remove_fraction_exceeded",
+                "candidate_removed": evaluator.removed_points,
+                "candidate_removed_fraction": round(removed_fraction, 6),
+                "max_remove_fraction": settings.silhouette_cleanup_max_remove_fraction,
+                "mask_views": len(frames),
+            }
+            current = dest
+        else:
+            current = silhouette_dest
+            intermediates.append(silhouette_dest)
+            cleanup["silhouette"] = {
+                "applied": True,
+                "mask_views": len(frames),
+                "checked_points": evaluator.checked_points,
+                "removed_points": evaluator.removed_points,
+                "removed_fraction": round(removed_fraction, 6),
+                "total_observations": evaluator.total_observations,
+                "outside_ratio": settings.silhouette_cleanup_outside_ratio,
+                "max_inside_views": settings.silhouette_cleanup_max_inside_views,
+                "max_inside_ratio": settings.silhouette_cleanup_max_inside_ratio,
+                "padding_px": settings.silhouette_cleanup_padding_px,
+                "alpha_threshold": settings.silhouette_cleanup_alpha_threshold,
+            }
 
-    evaluator = SilhouetteEvaluator(
-        frames=frames,
-        alpha_threshold=settings.silhouette_cleanup_alpha_threshold,
-        padding_px=settings.silhouette_cleanup_padding_px,
-        outside_ratio=settings.silhouette_cleanup_outside_ratio,
-        max_inside_views=settings.silhouette_cleanup_max_inside_views,
-        min_views=settings.silhouette_cleanup_min_views,
-    )
-    temp = dest.with_suffix(dest.suffix + ".silhouette.tmp")
-    cleanup = clean_ply(src, temp, row_filter=evaluator.keep)
-    input_vertices = cleanup.get("input_vertices") or 0
-    removed_fraction = evaluator.removed_points / input_vertices if input_vertices else 0.0
-    if removed_fraction > settings.silhouette_cleanup_max_remove_fraction:
-        if temp.exists():
+    gaussian_dest = dest.with_suffix(dest.suffix + ".gaussian.tmp")
+    gaussian_cleanup = clean_gaussian_properties(current, gaussian_dest, settings)
+    stage_metrics["gaussian"] = gaussian_cleanup
+    if gaussian_cleanup.get("applied"):
+        current = gaussian_dest
+        intermediates.append(gaussian_dest)
+    elif gaussian_dest.exists():
+        gaussian_dest.unlink()
+
+    spatial_dest = dest.with_suffix(dest.suffix + ".spatial.tmp")
+    spatial_cleanup = clean_spatial_outliers(current, spatial_dest, settings)
+    stage_metrics["spatial"] = spatial_cleanup
+    if spatial_cleanup.get("applied"):
+        current = spatial_dest
+        intermediates.append(spatial_dest)
+    elif spatial_dest.exists():
+        spatial_dest.unlink()
+
+    if current != dest:
+        shutil.copy2(current, dest)
+    for temp in intermediates:
+        if temp.exists() and temp != dest:
             temp.unlink()
-        fallback = clean_ply(src, dest)
-        fallback["silhouette"] = {
-            "applied": False,
-            "reason": "max_remove_fraction_exceeded",
-            "candidate_removed": evaluator.removed_points,
-            "candidate_removed_fraction": round(removed_fraction, 6),
-            "max_remove_fraction": settings.silhouette_cleanup_max_remove_fraction,
-            "mask_views": len(frames),
-        }
-        return fallback
-
-    temp.replace(dest)
-    cleanup["silhouette"] = {
-        "applied": True,
-        "mask_views": len(frames),
-        "checked_points": evaluator.checked_points,
-        "removed_points": evaluator.removed_points,
-        "removed_fraction": round(removed_fraction, 6),
-        "total_observations": evaluator.total_observations,
-        "outside_ratio": settings.silhouette_cleanup_outside_ratio,
-        "max_inside_views": settings.silhouette_cleanup_max_inside_views,
-        "padding_px": settings.silhouette_cleanup_padding_px,
-        "alpha_threshold": settings.silhouette_cleanup_alpha_threshold,
-    }
+    cleanup["stages"] = stage_metrics
+    cleanup["validation"] = validate_postprocess_against_masks(dest, frames, settings)
+    final_summary = clean_ply(dest, dest.with_suffix(dest.suffix + ".validated.tmp"))
+    validated = dest.with_suffix(dest.suffix + ".validated.tmp")
+    if validated.exists():
+        validated.replace(dest)
+    cleanup["output_vertices"] = final_summary.get("output_vertices", cleanup.get("output_vertices"))
+    cleanup["filtered_vertices_removed"] = (
+        (cleanup.get("filtered_vertices_removed") or 0)
+        + (gaussian_cleanup.get("filtered_vertices_removed") or 0)
+        + (spatial_cleanup.get("filtered_vertices_removed") or 0)
+    )
     return cleanup
 
 
@@ -1441,6 +1831,171 @@ def clean_ply(src: Path, dest: Path, row_filter: Callable[[tuple[float, ...]], b
         "output_vertices": layout.vertex_count,
         "invalid_vertices_removed": 0,
         "unsupported_format": layout.format,
+    }
+
+
+def clean_gaussian_properties(src: Path, dest: Path, settings: Settings) -> dict:
+    if not settings.gaussian_cleanup_enabled:
+        return {"applied": False, "reason": "disabled"}
+    layout = read_ply_layout(src)
+    if layout is None:
+        return {"applied": False, "reason": "missing_layout"}
+    property_index = {name: idx for idx, (_, name) in enumerate(layout.properties)}
+    opacity_idx = property_index.get("opacity")
+    scale_indices = [property_index[name] for name in ("scale_0", "scale_1", "scale_2") if name in property_index]
+    if opacity_idx is None and len(scale_indices) < 3:
+        return {"applied": False, "reason": "no_gaussian_properties"}
+
+    scale_max_values = [
+        max(values[idx] for idx in scale_indices)
+        for values in iter_ply_vertex_values(src, layout)
+        if len(scale_indices) == 3 and all(math.isfinite(values[idx]) for idx in scale_indices)
+    ]
+    median_scale = float(median(scale_max_values)) if scale_max_values else None
+    max_scale_delta = math.log(max(settings.gaussian_cleanup_max_scale_ratio, 1.001))
+    max_anisotropy_delta = math.log(max(settings.gaussian_cleanup_max_anisotropy, 1.001))
+
+    def keep(values: tuple[float, ...]) -> bool:
+        if opacity_idx is not None and values[opacity_idx] < settings.gaussian_cleanup_min_opacity:
+            return False
+        if len(scale_indices) == 3:
+            scales = [values[idx] for idx in scale_indices]
+            if not all(math.isfinite(value) for value in scales):
+                return False
+            if max(scales) - min(scales) > max_anisotropy_delta:
+                return False
+            if median_scale is not None and max(scales) - median_scale > max_scale_delta:
+                return False
+        return True
+
+    cleanup = clean_ply(src, dest, row_filter=keep)
+    input_vertices = cleanup.get("input_vertices") or 0
+    filtered = cleanup.get("filtered_vertices_removed") or 0
+    removed_fraction = filtered / input_vertices if input_vertices else 0.0
+    if removed_fraction > settings.gaussian_cleanup_max_remove_fraction:
+        if dest.exists():
+            dest.unlink()
+        return {
+            "applied": False,
+            "reason": "max_remove_fraction_exceeded",
+            "candidate_removed": filtered,
+            "candidate_removed_fraction": round(removed_fraction, 6),
+            "max_remove_fraction": settings.gaussian_cleanup_max_remove_fraction,
+        }
+    cleanup.update(
+        {
+            "applied": filtered > 0,
+            "removed_fraction": round(removed_fraction, 6),
+            "min_opacity": settings.gaussian_cleanup_min_opacity,
+            "max_scale_ratio": settings.gaussian_cleanup_max_scale_ratio,
+            "max_anisotropy": settings.gaussian_cleanup_max_anisotropy,
+            "median_scale": round(median_scale, 6) if median_scale is not None else None,
+        }
+    )
+    return cleanup
+
+
+def clean_spatial_outliers(src: Path, dest: Path, settings: Settings) -> dict:
+    if not settings.spatial_cleanup_enabled:
+        return {"applied": False, "reason": "disabled"}
+    layout = read_ply_layout(src)
+    if layout is None:
+        return {"applied": False, "reason": "missing_layout"}
+    points = [values[:3] for values in iter_ply_vertex_values(src, layout) if len(values) >= 3]
+    if len(points) < 5:
+        return {"applied": False, "reason": "too_few_points", "points": len(points)}
+    bounds = xyz_bounds(points)
+    if bounds is None:
+        return {"applied": False, "reason": "invalid_bounds"}
+    diagonal = math.sqrt(sum((bounds[1][idx] - bounds[0][idx]) ** 2 for idx in range(3)))
+    if diagonal <= 0:
+        return {"applied": False, "reason": "zero_extent"}
+
+    remove_indices: set[int] = set()
+    outlier_indices = spatial_radius_outlier_indices(
+        points,
+        radius=max(diagonal * settings.spatial_outlier_radius_fraction, 1e-6),
+        min_neighbors=settings.spatial_outlier_min_neighbors,
+    )
+    remove_indices.update(outlier_indices)
+    component_indices = spatial_small_component_indices(
+        points,
+        voxel_size=max(diagonal * settings.spatial_component_voxel_fraction, 1e-6),
+        min_vertices=max(
+            settings.spatial_component_min_vertices,
+            int(len(points) * settings.spatial_component_min_fraction),
+        ),
+    )
+    remove_indices.update(component_indices)
+    if not remove_indices:
+        return {
+            "applied": False,
+            "reason": "no_spatial_outliers",
+            "points": len(points),
+            "radius_outliers": len(outlier_indices),
+            "small_component_points": len(component_indices),
+        }
+
+    removed_fraction = len(remove_indices) / len(points)
+    if removed_fraction > settings.spatial_cleanup_max_remove_fraction:
+        return {
+            "applied": False,
+            "reason": "max_remove_fraction_exceeded",
+            "candidate_removed": len(remove_indices),
+            "candidate_removed_fraction": round(removed_fraction, 6),
+            "max_remove_fraction": settings.spatial_cleanup_max_remove_fraction,
+            "radius_outliers": len(outlier_indices),
+            "small_component_points": len(component_indices),
+        }
+
+    remove_xyz = {points[idx] for idx in remove_indices}
+    cleanup = clean_ply(src, dest, row_filter=lambda values: values[:3] not in remove_xyz)
+    cleanup.update(
+        {
+            "applied": True,
+            "removed_fraction": round(removed_fraction, 6),
+            "radius_outliers": len(outlier_indices),
+            "small_component_points": len(component_indices),
+            "radius_fraction": settings.spatial_outlier_radius_fraction,
+            "component_voxel_fraction": settings.spatial_component_voxel_fraction,
+        }
+    )
+    return cleanup
+
+
+def validate_postprocess_against_masks(
+    ply_path: Path,
+    frames: list[SilhouetteFrame],
+    settings: Settings,
+) -> dict:
+    if not settings.postprocess_validation_enabled:
+        return {"applied": False, "reason": "disabled"}
+    if len(frames) < settings.silhouette_cleanup_min_views:
+        return {"applied": False, "reason": "not_enough_alpha_masks", "mask_views": len(frames)}
+    layout = read_ply_layout(ply_path)
+    if layout is None:
+        return {"applied": False, "reason": "missing_layout"}
+    evaluator = SilhouetteEvaluator(
+        frames=frames,
+        alpha_threshold=settings.silhouette_cleanup_alpha_threshold,
+        padding_px=settings.silhouette_cleanup_padding_px,
+        outside_ratio=settings.silhouette_cleanup_outside_ratio,
+        max_inside_views=settings.silhouette_cleanup_max_inside_views,
+        max_inside_ratio=settings.silhouette_cleanup_max_inside_ratio,
+        min_views=settings.silhouette_cleanup_min_views,
+    )
+    for values in iter_ply_vertex_values(ply_path, layout):
+        evaluator.keep(values)
+    outside_fraction = evaluator.removed_points / evaluator.checked_points if evaluator.checked_points else 0.0
+    return {
+        "applied": True,
+        "mask_views": len(frames),
+        "checked_points": evaluator.checked_points,
+        "outside_candidate_points": evaluator.removed_points,
+        "outside_candidate_fraction": round(outside_fraction, 6),
+        "total_observations": evaluator.total_observations,
+        "passed": outside_fraction <= settings.postprocess_validation_max_outside_fraction,
+        "max_outside_fraction": settings.postprocess_validation_max_outside_fraction,
     }
 
 
@@ -1493,6 +2048,130 @@ def read_ply_layout(path: Path) -> PlyLayout | None:
         properties=properties,
         row_size=row_size,
     )
+
+
+def iter_ply_vertex_values(path: Path, layout: PlyLayout | None = None):
+    layout = layout or read_ply_layout(path)
+    if layout is None:
+        return
+    if layout.format == "format ascii 1.0":
+        raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        try:
+            end_header_idx = raw.index("end_header")
+        except ValueError:
+            return
+        for line in raw[end_header_idx + 1 : end_header_idx + 1 + layout.vertex_count]:
+            try:
+                values = tuple(float(part) for part in line.split())
+            except ValueError:
+                continue
+            if len(values) >= len(layout.properties) and all(math.isfinite(value) for value in values):
+                yield values
+        return
+    if layout.format == "format binary_little_endian 1.0" and layout.row_size:
+        struct_format = "<" + "".join(ply_struct_code(kind) for kind, _ in layout.properties)
+        with path.open("rb") as handle:
+            handle.seek(layout.header_bytes)
+            for _ in range(layout.vertex_count):
+                row = handle.read(layout.row_size)
+                if len(row) != layout.row_size:
+                    return
+                values = tuple(float(value) for value in struct.unpack(struct_format, row))
+                if all(math.isfinite(value) for value in values):
+                    yield values
+
+
+def xyz_bounds(points: list[tuple[float, float, float]]) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
+    if not points:
+        return None
+    mins = [min(point[idx] for point in points) for idx in range(3)]
+    maxs = [max(point[idx] for point in points) for idx in range(3)]
+    return (mins[0], mins[1], mins[2]), (maxs[0], maxs[1], maxs[2])
+
+
+def voxel_key(point: tuple[float, float, float], cell_size: float) -> tuple[int, int, int]:
+    return (
+        math.floor(point[0] / cell_size),
+        math.floor(point[1] / cell_size),
+        math.floor(point[2] / cell_size),
+    )
+
+
+def neighbor_voxel_keys(key: tuple[int, int, int]):
+    x, y, z = key
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                yield x + dx, y + dy, z + dz
+
+
+def spatial_radius_outlier_indices(
+    points: list[tuple[float, float, float]],
+    radius: float,
+    min_neighbors: int,
+) -> set[int]:
+    if min_neighbors <= 0:
+        return set()
+    cells: dict[tuple[int, int, int], list[int]] = defaultdict(list)
+    for idx, point in enumerate(points):
+        cells[voxel_key(point, radius)].append(idx)
+    radius_sq = radius * radius
+    outliers: set[int] = set()
+    for idx, point in enumerate(points):
+        count = 0
+        for key in neighbor_voxel_keys(voxel_key(point, radius)):
+            for other_idx in cells.get(key, []):
+                if other_idx == idx:
+                    continue
+                other = points[other_idx]
+                distance_sq = (
+                    (point[0] - other[0]) ** 2
+                    + (point[1] - other[1]) ** 2
+                    + (point[2] - other[2]) ** 2
+                )
+                if distance_sq <= radius_sq:
+                    count += 1
+                    if count >= min_neighbors:
+                        break
+            if count >= min_neighbors:
+                break
+        if count < min_neighbors:
+            outliers.add(idx)
+    return outliers
+
+
+def spatial_small_component_indices(
+    points: list[tuple[float, float, float]],
+    voxel_size: float,
+    min_vertices: int,
+) -> set[int]:
+    if min_vertices <= 1:
+        return set()
+    cells: dict[tuple[int, int, int], list[int]] = defaultdict(list)
+    for idx, point in enumerate(points):
+        cells[voxel_key(point, voxel_size)].append(idx)
+    occupied = set(cells)
+    visited: set[tuple[int, int, int]] = set()
+    remove: set[int] = set()
+    for start in occupied:
+        if start in visited:
+            continue
+        queue = deque([start])
+        visited.add(start)
+        component_cells: list[tuple[int, int, int]] = []
+        component_count = 0
+        while queue:
+            key = queue.popleft()
+            component_cells.append(key)
+            component_count += len(cells[key])
+            for neighbor in neighbor_voxel_keys(key):
+                if neighbor in occupied and neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+        if component_count < min_vertices:
+            for key in component_cells:
+                remove.update(cells[key])
+    return remove
 
 
 def clean_ascii_ply(
