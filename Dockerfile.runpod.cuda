@@ -1,4 +1,5 @@
 ARG RUNPOD_BASE=runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04
+ARG SPLATBOT_STABLE_IMAGE=ghcr.io/navalgazing/splatbot-runpod:latest
 
 FROM ${RUNPOD_BASE} AS colmap-builder
 
@@ -46,64 +47,11 @@ RUN git clone --branch "${COLMAP_VERSION}" --depth 1 https://github.com/colmap/c
     && cmake --build /tmp/colmap/build --target install --parallel "$(nproc)" \
     && rm -rf /tmp/colmap
 
-FROM ${RUNPOD_BASE}
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV SPLATBOT_RUNPOD_VENV=/opt/splatbot/venv
-ENV CUDA_HOME=/usr/local/cuda
-ENV PATH=/opt/splatbot/venv/bin:/usr/local/cuda/bin:$PATH
-ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
-ENV TORCH_CUDA_ARCH_LIST=8.9
-ENV TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
-ENV TORCH_EXTENSIONS_DIR=/workspace/torch_extensions
-ENV TORCHINDUCTOR_CACHE_DIR=/workspace/torch_inductor
-ENV TRITON_CACHE_DIR=/workspace/triton_cache
-ENV CUDA_CACHE_PATH=/workspace/cuda_cache
-ENV XDG_CACHE_HOME=/workspace/.cache
-ENV TORCH_HOME=/workspace/.cache/torch
-ENV U2NET_HOME=/root/.u2net
-ENV QT_QPA_PLATFORM=offscreen
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-      build-essential \
-      ca-certificates \
-      curl \
-      ffmpeg \
-      libboost-filesystem1.74.0 \
-      libboost-graph1.74.0 \
-      libboost-program-options1.74.0 \
-      libboost-system1.74.0 \
-      libceres2 \
-      libflann1.9 \
-      libfreeimage3 \
-      libgl1 \
-      libglew2.2 \
-      libgomp1 \
-      libgoogle-glog0v5 \
-      liblz4-1 \
-      libmetis5 \
-      libsqlite3-0 \
-      openssh-client \
-      python3 \
-      python3-pip \
-      python3-venv \
-      rsync \
-    && rm -rf /var/lib/apt/lists/*
+FROM ${SPLATBOT_STABLE_IMAGE}
 
 COPY --from=colmap-builder /opt/colmap-cuda/ /usr/local/
 
 RUN ldconfig \
-    && python3 -m venv --system-site-packages /opt/splatbot/venv \
-    && /opt/splatbot/venv/bin/pip install --upgrade pip \
-    && /opt/splatbot/venv/bin/pip install \
-      aiosqlite \
-      boto3 \
-      nerfstudio \
-      pydantic-settings \
-      python-dotenv \
-      python-telegram-bot \
-      'rembg[cpu,cli]' \
     && command -v ffmpeg \
     && command -v ffprobe \
     && command -v colmap \
@@ -115,11 +63,7 @@ RUN ldconfig \
     && command -v rembg \
     && colmap -h | tee /tmp/colmap-help.txt \
     && grep -q "with CUDA" /tmp/colmap-help.txt \
-    && colmap feature_extractor -h | grep -q "SiftExtraction.use_gpu" \
-    && mkdir -p /root/.u2net \
-    && curl -fsSL \
-      https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx \
-      -o /root/.u2net/u2net.onnx
+    && colmap feature_extractor -h | grep -q "SiftExtraction.use_gpu"
 
 RUN /opt/splatbot/venv/bin/python - <<'PY'
 import importlib.metadata as metadata
