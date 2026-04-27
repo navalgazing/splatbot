@@ -7,7 +7,7 @@ import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .config import ScanMode, Settings
+from .config import ScanMode, ScanPreset, Settings
 from .media import classify_path
 from .models import MediaItem
 from .pipeline import ScanPipeline
@@ -33,13 +33,15 @@ def media_items(media_dir: Path) -> list[MediaItem]:
     return items
 
 
-async def run(job_id: str, mode: ScanMode, media_dir: Path, output_dir: Path) -> None:
+async def run(job_id: str, mode: ScanMode, preset: ScanPreset, media_dir: Path, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     settings = Settings(data_dir=Path("/workspace/splatbot-data"))
-    outputs = await ScanPipeline(settings).run(job_id, mode, media_items(media_dir), report_status)
+    outputs = await ScanPipeline(settings).run(job_id, mode, media_items(media_dir), report_status, preset)
     shutil.copy2(outputs.cleaned_ply, output_dir / "cleaned_splat.ply")
     if outputs.preview_mp4 is not None and outputs.preview_mp4.exists():
         shutil.copy2(outputs.preview_mp4, output_dir / "turntable.mp4")
+    if outputs.metrics_path is not None and outputs.metrics_path.exists():
+        shutil.copy2(outputs.metrics_path, output_dir / "metrics.json")
 
 
 async def report_status(job_id: str, status: JobStatus) -> None:
@@ -56,10 +58,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run a Splatbot job from a media directory.")
     parser.add_argument("job_id")
     parser.add_argument("mode", choices=[mode.value for mode in ScanMode])
+    parser.add_argument("--preset", choices=[preset.value for preset in ScanPreset], default=None)
     parser.add_argument("media_dir", type=Path)
     parser.add_argument("output_dir", type=Path)
     args = parser.parse_args()
-    asyncio.run(run(args.job_id, ScanMode(args.mode), args.media_dir, args.output_dir))
+    settings = Settings()
+    asyncio.run(
+        run(
+            args.job_id,
+            ScanMode(args.mode),
+            ScanPreset(args.preset or settings.default_scan_preset),
+            args.media_dir,
+            args.output_dir,
+        )
+    )
 
 
 if __name__ == "__main__":

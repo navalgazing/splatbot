@@ -7,7 +7,7 @@ import shutil
 import uuid
 from pathlib import Path
 
-from splatbot.config import ScanMode, Settings
+from splatbot.config import ScanMode, ScanPreset, Settings
 from splatbot.media import classify_path
 from splatbot.models import JobStatus, MediaKind, ScanJob, utcnow
 from splatbot.runpod_backend import RunPodClient, RunPodLauncher
@@ -20,8 +20,9 @@ async def create_preparing_job(
     source: Path,
     telegram_user_id: int,
     mode: ScanMode,
+    preset: ScanPreset,
 ) -> ScanJob:
-    session = await store.create_session(telegram_user_id, mode)
+    session = await store.create_session(telegram_user_id, mode, preset)
     session_dir = settings.data_dir / "sessions" / session.id
     session_dir.mkdir(parents=True, exist_ok=True)
     dest = session_dir / source.name
@@ -41,15 +42,16 @@ async def create_preparing_job(
         )
         await db.execute(
             """
-            INSERT INTO jobs (id, session_id, telegram_user_id, mode, status, error, created_at, updated_at,
+            INSERT INTO jobs (id, session_id, telegram_user_id, mode, preset, status, error, created_at, updated_at,
                               claimed_at, heartbeat_at)
-            VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
             """,
             (
                 job_id,
                 session.id,
                 telegram_user_id,
                 mode.value,
+                preset.value,
                 JobStatus.PREPARING.value,
                 now,
                 now,
@@ -69,6 +71,7 @@ def main() -> None:
     parser.add_argument("--image", required=True)
     parser.add_argument("--telegram-user-id", required=True, type=int)
     parser.add_argument("--mode", choices=[mode.value for mode in ScanMode], default=ScanMode.OBJECT.value)
+    parser.add_argument("--preset", choices=[preset.value for preset in ScanPreset], default=ScanPreset.BALANCED.value)
     parser.add_argument("--colmap-use-gpu", action="store_true")
     parser.add_argument("--colmap-bin", default="colmap")
     args = parser.parse_args()
@@ -90,6 +93,7 @@ def main() -> None:
             args.source,
             args.telegram_user_id,
             ScanMode(args.mode),
+            ScanPreset(args.preset),
         )
     )
     print(f"created controlled job {job.id} session={job.session_id}", flush=True)

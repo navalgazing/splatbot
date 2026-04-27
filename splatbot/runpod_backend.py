@@ -282,9 +282,19 @@ def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str, 
         f"export {name}={shlex.quote(str(value))}"
         for name, value in {
             "SPLATBOT_MAX_IMAGES": settings.max_images,
+            "SPLATBOT_DEFAULT_SCAN_PRESET": job.preset.value,
+            "SPLATBOT_SCAN_PRESET": job.preset.value,
             "SPLATBOT_MAX_VIDEO_FRAMES": settings.max_video_frames,
             "SPLATBOT_MAX_VIDEO_SECONDS": settings.max_video_seconds,
             "SPLATBOT_MAX_VIDEO_SAMPLE_FPS": settings.max_video_sample_fps,
+            "SPLATBOT_ADAPTIVE_FRAME_SELECTION": str(settings.adaptive_frame_selection).lower(),
+            "SPLATBOT_CANDIDATE_FRAME_MULTIPLIER": settings.candidate_frame_multiplier,
+            "SPLATBOT_BLUR_REJECT_THRESHOLD": settings.blur_reject_threshold,
+            "SPLATBOT_DUPLICATE_FRAME_THRESHOLD": settings.duplicate_frame_threshold,
+            "SPLATBOT_MIN_SELECTED_VIDEO_FRAMES": settings.min_selected_video_frames,
+            "SPLATBOT_MIN_COLMAP_REGISTERED_RATIO": settings.min_colmap_registered_ratio,
+            "SPLATBOT_MIN_SPLAT_VERTICES": settings.min_splat_vertices,
+            "SPLATBOT_MAX_FLATTENED_AXIS_RATIO": settings.max_flattened_axis_ratio,
             "SPLATBOT_FFMPEG_BIN": settings.ffmpeg_bin,
             "SPLATBOT_FFPROBE_BIN": settings.ffprobe_bin,
             "SPLATBOT_COLMAP_BIN": settings.colmap_bin,
@@ -296,8 +306,20 @@ def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str, 
             "SPLATBOT_COLMAP_USE_GPU": str(settings.colmap_use_gpu).lower(),
             "SPLATBOT_COMMAND_TIMEOUT_SECONDS": settings.command_timeout_seconds,
             "SPLATBOT_COMMAND_TAIL_BYTES": settings.command_tail_bytes,
+            "SPLATBOT_TRAIN_METHOD": settings.train_method,
+            "SPLATBOT_TRAIN_EXTRA_ARGS": settings.train_extra_args,
             "SPLATBOT_TRAIN_MAX_ITERATIONS": settings.train_max_iterations,
             "SPLATBOT_TRAIN_STEPS_PER_SAVE": settings.train_steps_per_save,
+            "SPLATBOT_FAST_MAX_VIDEO_FRAMES": settings.fast_max_video_frames,
+            "SPLATBOT_FAST_TRAIN_METHOD": settings.fast_train_method,
+            "SPLATBOT_FAST_TRAIN_EXTRA_ARGS": settings.fast_train_extra_args,
+            "SPLATBOT_FAST_TRAIN_MAX_ITERATIONS": settings.fast_train_max_iterations,
+            "SPLATBOT_FAST_TRAIN_STEPS_PER_SAVE": settings.fast_train_steps_per_save,
+            "SPLATBOT_BEST_MAX_VIDEO_FRAMES": settings.best_max_video_frames,
+            "SPLATBOT_BEST_TRAIN_METHOD": settings.best_train_method,
+            "SPLATBOT_BEST_TRAIN_EXTRA_ARGS": settings.best_train_extra_args,
+            "SPLATBOT_BEST_TRAIN_MAX_ITERATIONS": settings.best_train_max_iterations,
+            "SPLATBOT_BEST_TRAIN_STEPS_PER_SAVE": settings.best_train_steps_per_save,
             "SPLATBOT_RENDER_PREVIEW": str(settings.render_preview).lower(),
             "SPLATBOT_LOG_COMMAND_OUTPUT": "true",
         }.items()
@@ -320,8 +342,6 @@ chmod +x /workspace/splatbot-app/scripts/runpod_worker.sh
 export SPLATBOT_JOB_ID={shlex.quote(job.id)}
 export SPLATBOT_SESSION_ID={shlex.quote(job.session_id)}
 export SPLATBOT_SCAN_MODE={shlex.quote(job.mode.value)}
-export SPLATBOT_RUNPOD_API_KEY={shlex.quote(settings.runpod_api_key)}
-export RUNPOD_POD_ID={shlex.quote(pod_id)}
 export SPLATBOT_VPS_HOST={host}
 export SPLATBOT_VPS_USER={user}
 {venv_export}

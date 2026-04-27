@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shlex
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
@@ -10,6 +12,23 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class ScanMode(StrEnum):
     SCENE = "scene"
     OBJECT = "object"
+
+
+class ScanPreset(StrEnum):
+    FAST = "fast"
+    BALANCED = "balanced"
+    BEST = "best"
+
+
+@dataclass(frozen=True)
+class ScanPresetConfig:
+    preset: ScanPreset
+    max_video_frames: int
+    train_method: str
+    train_max_iterations: int
+    train_steps_per_save: int
+    train_extra_args: tuple[str, ...]
+    adaptive_frame_selection: bool
 
 
 class TelegramMode(StrEnum):
@@ -52,10 +71,11 @@ class Settings(BaseSettings):
     max_images: int = 300
     max_video_frames: int = 140
     max_video_seconds: int = 60
-    max_video_sample_fps: float = 10.0
+    max_video_sample_fps: float = 12.0
     max_upload_bytes: int = 1024 * 1024 * 1024
     interrupted_job_grace_seconds: int = 10 * 60
     default_scan_mode: ScanMode = ScanMode.SCENE
+    default_scan_preset: ScanPreset = ScanPreset.BALANCED
     job_retention_days: int = 14
 
     ffmpeg_bin: str = "ffmpeg"
@@ -71,7 +91,33 @@ class Settings(BaseSettings):
     command_tail_bytes: int = 64 * 1024
     train_max_iterations: int = 10000
     train_steps_per_save: int = 10000
+    train_method: str = "splatfacto"
+    train_extra_args: str = ""
     render_preview: bool = False
+    adaptive_frame_selection: bool = True
+    candidate_frame_multiplier: int = 3
+    blur_reject_threshold: float = 20.0
+    duplicate_frame_threshold: float = 3.0
+    min_selected_video_frames: int = 60
+    min_colmap_registered_ratio: float = 0.35
+    min_splat_vertices: int = 10000
+    max_flattened_axis_ratio: float = 0.015
+
+    fast_max_video_frames: int = 90
+    fast_train_max_iterations: int = 7000
+    fast_train_steps_per_save: int = 7000
+    fast_train_method: str = "splatfacto"
+    fast_train_extra_args: str = ""
+
+    best_max_video_frames: int = 180
+    best_train_max_iterations: int = 14000
+    best_train_steps_per_save: int = 14000
+    best_train_method: str = "splatfacto-big"
+    best_train_extra_args: str = (
+        "--pipeline.model.cull_alpha_thresh=0.005 "
+        "--pipeline.model.continue_cull_post_densification=False "
+        "--pipeline.model.use_scale_regularization=True"
+    )
 
     worker_backend: WorkerBackend = WorkerBackend.LOCAL
 
@@ -99,8 +145,8 @@ class Settings(BaseSettings):
     runpod_venv: str = ""
     runpod_runtime_cache_version: str = "splatbot-runtime-2026-04-26-v1"
     runpod_runtime_cache_marker: str = "/workspace/.splatbot-runtime-cache-version"
-    runpod_bootstrap_command: str = "apt-get update && apt-get install -y openssh-client rsync curl ffmpeg colmap python3 python3-venv python3-pip build-essential"
-    runpod_setup_command: str = "/workspace/venv/bin/pip install aiosqlite boto3 nerfstudio pydantic-settings python-dotenv python-telegram-bot 'rembg[cpu,cli]'"
+    runpod_bootstrap_command: str = ""
+    runpod_setup_command: str = ""
 
     @field_validator("allowed_telegram_ids", mode="before")
     @classmethod
@@ -120,6 +166,38 @@ class Settings(BaseSettings):
     def require_telegram(self) -> None:
         if not self.telegram_token:
             raise ValueError("SPLATBOT_TELEGRAM_TOKEN is required")
+
+    def preset_config(self, preset: ScanPreset | str | None = None) -> ScanPresetConfig:
+        selected = ScanPreset(preset or self.default_scan_preset)
+        if selected == ScanPreset.FAST:
+            return ScanPresetConfig(
+                preset=selected,
+                max_video_frames=self.fast_max_video_frames,
+                train_method=self.fast_train_method,
+                train_max_iterations=self.fast_train_max_iterations,
+                train_steps_per_save=self.fast_train_steps_per_save,
+                train_extra_args=tuple(shlex.split(self.fast_train_extra_args)),
+                adaptive_frame_selection=self.adaptive_frame_selection,
+            )
+        if selected == ScanPreset.BEST:
+            return ScanPresetConfig(
+                preset=selected,
+                max_video_frames=self.best_max_video_frames,
+                train_method=self.best_train_method,
+                train_max_iterations=self.best_train_max_iterations,
+                train_steps_per_save=self.best_train_steps_per_save,
+                train_extra_args=tuple(shlex.split(self.best_train_extra_args)),
+                adaptive_frame_selection=self.adaptive_frame_selection,
+            )
+        return ScanPresetConfig(
+            preset=selected,
+            max_video_frames=self.max_video_frames,
+            train_method=self.train_method,
+            train_max_iterations=self.train_max_iterations,
+            train_steps_per_save=self.train_steps_per_save,
+            train_extra_args=tuple(shlex.split(self.train_extra_args)),
+            adaptive_frame_selection=self.adaptive_frame_selection,
+        )
 
     def job_dir(self, job_id: str) -> Path:
         return self.data_dir / "jobs" / job_id

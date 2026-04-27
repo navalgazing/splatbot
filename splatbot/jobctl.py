@@ -42,11 +42,12 @@ async def complete(job_id: str, notify: bool) -> None:
     ply = settings.job_dir(job_id) / "export" / "cleaned_splat.ply"
     preview = settings.job_dir(job_id) / "renders" / "turntable.mp4"
     preview_output = preview if preview.exists() else None
+    metrics = settings.job_dir(job_id) / "metrics.json"
     artifacts = await publish_job_artifacts(
         settings,
         store,
         job,
-        PipelineOutputs(ply, preview_output),
+        PipelineOutputs(ply, preview_output, metrics if metrics.exists() else None),
     )
     await store.set_job_status(job_id, JobStatus.DONE)
     updated = await store.get_job(job_id)

@@ -4,6 +4,7 @@ set -euo pipefail
 : "${SPLATBOT_JOB_ID:?}"
 : "${SPLATBOT_SESSION_ID:?}"
 : "${SPLATBOT_SCAN_MODE:?}"
+: "${SPLATBOT_SCAN_PRESET:=balanced}"
 : "${SPLATBOT_VPS_HOST:?}"
 : "${SPLATBOT_VPS_USER:=root}"
 
@@ -85,7 +86,7 @@ check_colmap_cuda() {
 
 print_runtime_diagnostics() {
   echo "runtime diagnostics:"
-  echo "  job=$SPLATBOT_JOB_ID mode=$SPLATBOT_SCAN_MODE"
+  echo "  job=$SPLATBOT_JOB_ID mode=$SPLATBOT_SCAN_MODE preset=$SPLATBOT_SCAN_PRESET"
   echo "  venv=$VENV_DIR cache_enabled=$RUNTIME_CACHE_ENABLED cache_ready=$RUNTIME_CACHE_READY cache_marker=$CACHE_MARKER"
   echo "  python=$(command -v python || true)"
   echo "  colmap=$(command -v colmap || true)"
@@ -192,7 +193,7 @@ rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
   /workspace/input-media/
 find /workspace/input-media -maxdepth 1 -type f -printf 'input media: %f %s bytes\n' | sort
 
-if "$VENV_DIR/bin/splatbot-run-job-dir" "$SPLATBOT_JOB_ID" "$SPLATBOT_SCAN_MODE" /workspace/input-media /workspace/results; then
+if "$VENV_DIR/bin/splatbot-run-job-dir" "$SPLATBOT_JOB_ID" "$SPLATBOT_SCAN_MODE" --preset "$SPLATBOT_SCAN_PRESET" /workspace/input-media /workspace/results; then
   if [ -f /workspace/results/cleaned_splat.ply ]; then
     "$VENV_DIR/bin/python" - <<'PY'
 from pathlib import Path
@@ -221,6 +222,11 @@ PY
       /workspace/results/turntable.mp4 \
       "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/renders/turntable.mp4"
   fi
+  if [ -f /workspace/results/metrics.json ]; then
+    rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
+      /workspace/results/metrics.json \
+      "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/metrics.json"
+  fi
   ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
     "$VPS_JOBCTL complete $SPLATBOT_JOB_ID --notify"
 else
@@ -228,10 +234,4 @@ else
   ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
     "$VPS_JOBCTL fail $SPLATBOT_JOB_ID --error 'RunPod worker failed with exit code $rc' --notify"
   exit "$rc"
-fi
-
-if [ -n "${RUNPOD_POD_ID:-}" ] && [ -n "${SPLATBOT_RUNPOD_API_KEY:-}" ]; then
-  curl -fsS --request DELETE \
-    --header "Authorization: Bearer $SPLATBOT_RUNPOD_API_KEY" \
-    "https://rest.runpod.io/v1/pods/$RUNPOD_POD_ID" || true
 fi

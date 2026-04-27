@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from .config import ScanMode
+from .config import ScanMode, ScanPreset
 
 
 class JobStatus(StrEnum):
@@ -40,6 +40,7 @@ class UploadSession:
     status: JobStatus
     created_at: datetime
     updated_at: datetime
+    preset: ScanPreset = ScanPreset.BALANCED
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,7 @@ class ScanJob:
     runpod_pod_id: str | None = None
     claimed_at: datetime | None = None
     heartbeat_at: datetime | None = None
+    preset: ScanPreset = ScanPreset.BALANCED
 
 
 @dataclass(frozen=True)

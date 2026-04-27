@@ -16,13 +16,19 @@ from telegram.ext import (
     filters,
 )
 
-from .config import ScanMode, Settings, TelegramMode
+from .config import ScanMode, ScanPreset, Settings, TelegramMode
 from .logging_config import configure_logging
 from .media import MediaValidationError, classify_path, validate_submission
 from .models import JobArtifact, JobStatus, MediaKind, ScanJob
 from .storage import Store
 
 LOGGER = logging.getLogger(__name__)
+
+PRESET_LABELS = {
+    ScanPreset.FAST: "Fast",
+    ScanPreset.BALANCED: "Balanced",
+    ScanPreset.BEST: "Best",
+}
 
 
 def _allowed(settings: Settings, user_id: int | None) -> bool:
@@ -56,6 +62,7 @@ def _session_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("Submit scan", callback_data="submit")],
+            [InlineKeyboardButton("Change preset", callback_data="preset_menu")],
             [
                 InlineKeyboardButton("Status", callback_data="status"),
                 InlineKeyboardButton("Cancel", callback_data="cancel"),
@@ -64,29 +71,53 @@ def _session_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def _preset_keyboard(mode: ScanMode, prefix: str = "preset") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Fast", callback_data=f"{prefix}:{mode.value}:fast")],
+            [InlineKeyboardButton("Balanced", callback_data=f"{prefix}:{mode.value}:balanced")],
+            [InlineKeyboardButton("Best", callback_data=f"{prefix}:{mode.value}:best")],
+        ]
+    )
+
+
+def _preset_summary(settings: Settings, preset: ScanPreset) -> str:
+    config = settings.preset_config(preset)
+    extra = "adaptive frames" if config.adaptive_frame_selection else "uniform frames"
+    return (
+        f"{PRESET_LABELS[preset]}: up to {config.max_video_frames} video frames, "
+        f"{config.train_method}, {config.train_max_iterations} iterations, {extra}"
+    )
+
+
 def _help_text(settings: Settings) -> str:
     return (
         "Splatbot turns a short object/scene capture into an interactive 3D Gaussian splat.\n\n"
         "Flow:\n"
         "1. Choose object or scene.\n"
-        "2. Upload one video, or upload photos.\n"
-        "3. Press Submit scan.\n\n"
+        "2. Choose Fast, Balanced, or Best.\n"
+        "3. Upload one video, or upload photos.\n"
+        "4. Press Submit scan.\n\n"
         f"Photos: {settings.min_images}-{settings.max_images} images.\n"
-        f"Video: up to {settings.max_video_seconds}s sampled to {settings.max_video_frames} frames.\n\n"
+        f"Video: up to {settings.max_video_seconds}s.\n"
+        f"{_preset_summary(settings, ScanPreset.FAST)}\n"
+        f"{_preset_summary(settings, ScanPreset.BALANCED)}\n"
+        f"{_preset_summary(settings, ScanPreset.BEST)}\n\n"
         "Commands:\n"
         "/start - open the guided menu\n"
         "/help - show this help text\n"
         "/new - choose scan type\n"
         "/mode scene|object - change current scan type\n"
+        "/preset fast|balanced|best - change current speed/quality preset\n"
         "/submit - queue uploaded media\n"
         "/status - show upload/job status\n"
         "/cancel - cancel current upload"
     )
 
 
-def _upload_hint(count: int, mode: ScanMode, settings: Settings) -> str:
+def _upload_hint(count: int, mode: ScanMode, preset: ScanPreset, settings: Settings) -> str:
     return (
-        f"Received {count} file(s) for a {mode.value} scan.\n\n"
+        f"Received {count} file(s) for a {mode.value} scan using {PRESET_LABELS[preset]}.\n\n"
         "When upload is complete, press Submit scan.\n"
         f"Use one video or {settings.min_images}-{settings.max_images} photos."
     )
@@ -147,6 +178,7 @@ async def create_session(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     mode: ScanMode,
+    preset: ScanPreset,
 ) -> None:
     settings = _settings(context)
     store = _store(context)
@@ -155,13 +187,25 @@ async def create_session(
     if existing:
         await store.set_session_status(existing.id, JobStatus.CANCELLED)
         shutil.rmtree(settings.data_dir / "sessions" / existing.id, ignore_errors=True)
-    session = await store.create_session(user_id, mode)
+    session = await store.create_session(user_id, mode, preset)
     session_dir = settings.data_dir / "sessions" / session.id
     session_dir.mkdir(parents=True, exist_ok=True)
     await update.effective_message.reply_text(
-        f"New {mode.value} scan started.\n\n"
+        f"New {mode.value} scan started.\n"
+        f"{_preset_summary(settings, preset)}\n\n"
         "Upload one video, or upload photos. I will remind you to submit after media arrives.",
         reply_markup=_session_keyboard(),
+    )
+
+
+async def ask_preset(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: ScanMode) -> None:
+    settings = _settings(context)
+    await update.effective_message.reply_text(
+        f"Choose speed/quality preset for this {mode.value} scan.\n\n"
+        f"{_preset_summary(settings, ScanPreset.FAST)}\n"
+        f"{_preset_summary(settings, ScanPreset.BALANCED)}\n"
+        f"{_preset_summary(settings, ScanPreset.BEST)}",
+        reply_markup=_preset_keyboard(mode),
     )
 
 
@@ -174,10 +218,33 @@ async def set_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     store = _store(context)
     session = await store.get_active_session(update.effective_user.id)
     if session is None:
-        session = await store.create_session(update.effective_user.id, ScanMode(context.args[0]))
+        session = await store.create_session(
+            update.effective_user.id,
+            ScanMode(context.args[0]),
+            _settings(context).default_scan_preset,
+        )
     else:
         await store.set_session_mode(session.id, ScanMode(context.args[0]))
     await update.effective_message.reply_text(f"Mode set to {context.args[0]}.", reply_markup=_session_keyboard())
+
+
+async def set_preset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _guard(update, context):
+        return
+    if not context.args or context.args[0] not in {preset.value for preset in ScanPreset}:
+        await update.effective_message.reply_text("Use /preset fast, /preset balanced, or /preset best.")
+        return
+    store = _store(context)
+    session = await store.get_active_session(update.effective_user.id)
+    if session is None:
+        await update.effective_message.reply_text("No active scan. Send /new first.")
+        return
+    preset = ScanPreset(context.args[0])
+    await store.set_session_preset(session.id, preset)
+    await update.effective_message.reply_text(
+        f"Preset set to {PRESET_LABELS[preset]}.\n{_preset_summary(_settings(context), preset)}",
+        reply_markup=_session_keyboard(),
+    )
 
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -196,12 +263,42 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await submit(update, context)
     elif data == "cancel":
         await cancel(update, context)
+    elif data == "preset_menu":
+        session = await _store(context).get_active_session(update.effective_user.id)
+        if session is None:
+            await query.message.reply_text("No active scan. Send /new first.", reply_markup=_main_keyboard())
+            return
+        await query.message.reply_text(
+            "Choose a speed/quality preset.",
+            reply_markup=_preset_keyboard(session.mode, prefix="setpreset"),
+        )
     elif data.startswith("new:"):
         _, mode_value = data.split(":", 1)
         if mode_value not in {ScanMode.SCENE.value, ScanMode.OBJECT.value}:
             await query.message.reply_text("Unknown scan type.", reply_markup=_main_keyboard())
             return
-        await create_session(update, context, ScanMode(mode_value))
+        await ask_preset(update, context, ScanMode(mode_value))
+    elif data.startswith("preset:"):
+        _, mode_value, preset_value = data.split(":", 2)
+        if mode_value not in {mode.value for mode in ScanMode} or preset_value not in {preset.value for preset in ScanPreset}:
+            await query.message.reply_text("Unknown scan settings.", reply_markup=_main_keyboard())
+            return
+        await create_session(update, context, ScanMode(mode_value), ScanPreset(preset_value))
+    elif data.startswith("setpreset:"):
+        _, _mode_value, preset_value = data.split(":", 2)
+        if preset_value not in {preset.value for preset in ScanPreset}:
+            await query.message.reply_text("Unknown preset.", reply_markup=_session_keyboard())
+            return
+        session = await _store(context).get_active_session(update.effective_user.id)
+        if session is None:
+            await query.message.reply_text("No active scan. Send /new first.", reply_markup=_main_keyboard())
+            return
+        preset = ScanPreset(preset_value)
+        await _store(context).set_session_preset(session.id, preset)
+        await query.message.reply_text(
+            f"Preset set to {PRESET_LABELS[preset]}.\n{_preset_summary(_settings(context), preset)}",
+            reply_markup=_session_keyboard(),
+        )
 
 
 async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -282,7 +379,7 @@ async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     count = len(items)
     if count == 1 or count % 10 == 0 or kind == MediaKind.VIDEO:
         await update.effective_message.reply_text(
-            _upload_hint(count, session.mode, settings),
+            _upload_hint(count, session.mode, session.preset, settings),
             reply_markup=_session_keyboard(),
         )
 
@@ -303,8 +400,12 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_message.reply_text(str(exc), reply_markup=_session_keyboard())
         return
     job = await store.create_job(session)
+    preset_config = settings.preset_config(job.preset)
     await update.effective_message.reply_text(
-        f"Queued job {job.id}.\n\nI will send the viewer link when it is ready. Use /status for updates."
+        f"Queued job {job.id}.\n"
+        f"Mode: {job.mode.value}. Preset: {PRESET_LABELS[job.preset]} "
+        f"({preset_config.max_video_frames} frames, {preset_config.train_max_iterations} iterations).\n\n"
+        "I will send the viewer link when it is ready. Use /status for updates."
     )
 
 
@@ -314,7 +415,7 @@ def _artifact_label(artifact: JobArtifact) -> str:
 
 
 def _job_status_text(job: ScanJob, artifacts: list[JobArtifact]) -> str:
-    lines = [f"Job {job.id}: {job.status.value}, mode={job.mode.value}."]
+    lines = [f"Job {job.id}: {job.status.value}, mode={job.mode.value}, preset={job.preset.value}."]
     if job.error:
         lines.append(f"Error: {job.error}")
     if artifacts:
@@ -332,7 +433,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if session:
         items = await store.list_media(session.id)
         await update.effective_message.reply_text(
-            f"Collecting {len(items)} file(s), mode={session.mode.value}.\n\n"
+            f"Collecting {len(items)} file(s), mode={session.mode.value}, preset={session.preset.value}.\n\n"
             "When upload is complete, press Submit scan.",
             reply_markup=_session_keyboard(),
         )
@@ -379,6 +480,7 @@ async def amain() -> None:
             BotCommand("help", "Show commands and capture tips"),
             BotCommand("new", "Start a new scan"),
             BotCommand("mode", "Set scan type: scene or object"),
+            BotCommand("preset", "Set preset: fast, balanced, or best"),
             BotCommand("submit", "Submit uploaded media"),
             BotCommand("status", "Show current status"),
             BotCommand("cancel", "Cancel current upload"),
@@ -388,6 +490,7 @@ async def amain() -> None:
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("new", new_session))
     app.add_handler(CommandHandler("mode", set_mode))
+    app.add_handler(CommandHandler("preset", set_preset))
     app.add_handler(CommandHandler("submit", submit))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("cancel", cancel))

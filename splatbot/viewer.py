@@ -19,6 +19,8 @@ def publish_viewer(settings: Settings, job_id: str, outputs: PipelineOutputs) ->
     has_preview = outputs.preview_mp4 is not None and outputs.preview_mp4.exists()
     if has_preview and outputs.preview_mp4 is not None:
         shutil.copy2(outputs.preview_mp4, target / "turntable.mp4")
+    if outputs.metrics_path is not None and outputs.metrics_path.exists():
+        shutil.copy2(outputs.metrics_path, target / "metrics.json")
     (target / "index.html").write_text(render_viewer_html(job_id, has_preview=has_preview), encoding="utf-8")
     return target / "index.html"
 

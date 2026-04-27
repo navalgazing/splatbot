@@ -9,7 +9,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from .config import ScanMode
+from .config import ScanMode, ScanPreset
 from .models import (
     ArtifactKind,
     JobArtifact,
@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   telegram_user_id INTEGER NOT NULL,
   mode TEXT NOT NULL,
+  preset TEXT NOT NULL DEFAULT 'balanced',
   status TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -48,6 +49,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   telegram_user_id INTEGER NOT NULL,
   mode TEXT NOT NULL,
+  preset TEXT NOT NULL DEFAULT 'balanced',
   status TEXT NOT NULL,
   error TEXT,
   created_at TEXT NOT NULL,
@@ -85,6 +87,7 @@ def _session(row: sqlite3.Row) -> UploadSession:
         id=row["id"],
         telegram_user_id=row["telegram_user_id"],
         mode=ScanMode(row["mode"]),
+        preset=ScanPreset(row["preset"] if "preset" in row.keys() else ScanPreset.BALANCED.value),
         status=JobStatus(row["status"]),
         created_at=_dt(row["created_at"]),
         updated_at=_dt(row["updated_at"]),
@@ -108,6 +111,7 @@ def _job(row: sqlite3.Row) -> ScanJob:
         session_id=row["session_id"],
         telegram_user_id=row["telegram_user_id"],
         mode=ScanMode(row["mode"]),
+        preset=ScanPreset(row["preset"] if "preset" in row.keys() else ScanPreset.BALANCED.value),
         status=JobStatus(row["status"]),
         error=row["error"],
         created_at=_dt(row["created_at"]),
@@ -144,10 +148,16 @@ class Store:
 
     async def _migrate(self, db: aiosqlite.Connection) -> None:
         cursor = await db.execute("PRAGMA table_info(jobs)")
-        columns = {row[1] for row in await cursor.fetchall()}
+        job_columns = {row[1] for row in await cursor.fetchall()}
         for name in ("runpod_pod_id", "claimed_at", "heartbeat_at"):
-            if name not in columns:
+            if name not in job_columns:
                 await db.execute(f"ALTER TABLE jobs ADD COLUMN {name} TEXT")
+        if "preset" not in job_columns:
+            await db.execute("ALTER TABLE jobs ADD COLUMN preset TEXT NOT NULL DEFAULT 'balanced'")
+        cursor = await db.execute("PRAGMA table_info(sessions)")
+        session_columns = {row[1] for row in await cursor.fetchall()}
+        if "preset" not in session_columns:
+            await db.execute("ALTER TABLE sessions ADD COLUMN preset TEXT NOT NULL DEFAULT 'balanced'")
         await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_session_unique ON jobs(session_id)")
 
     @asynccontextmanager
@@ -161,16 +171,21 @@ class Store:
         finally:
             await db.close()
 
-    async def create_session(self, telegram_user_id: int, mode: ScanMode) -> UploadSession:
+    async def create_session(
+        self,
+        telegram_user_id: int,
+        mode: ScanMode,
+        preset: ScanPreset = ScanPreset.BALANCED,
+    ) -> UploadSession:
         now = utcnow().isoformat()
         session_id = uuid.uuid4().hex
         async with self._connect() as db:
             await db.execute(
                 """
-                INSERT INTO sessions (id, telegram_user_id, mode, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO sessions (id, telegram_user_id, mode, preset, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (session_id, telegram_user_id, mode.value, JobStatus.COLLECTING.value, now, now),
+                (session_id, telegram_user_id, mode.value, preset.value, JobStatus.COLLECTING.value, now, now),
             )
             await db.commit()
         session = await self.get_session(session_id)
@@ -209,6 +224,14 @@ class Store:
             await db.execute(
                 "UPDATE sessions SET mode = ?, updated_at = ? WHERE id = ?",
                 (mode.value, utcnow().isoformat(), session_id),
+            )
+            await db.commit()
+
+    async def set_session_preset(self, session_id: str, preset: ScanPreset) -> None:
+        async with self._connect() as db:
+            await db.execute(
+                "UPDATE sessions SET preset = ?, updated_at = ? WHERE id = ?",
+                (preset.value, utcnow().isoformat(), session_id),
             )
             await db.commit()
 
@@ -259,14 +282,15 @@ class Store:
                 raise RuntimeError("session is not collecting")
             await db.execute(
                 """
-                INSERT INTO jobs (id, session_id, telegram_user_id, mode, status, error, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+                INSERT INTO jobs (id, session_id, telegram_user_id, mode, preset, status, error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
                 """,
                 (
                     job_id,
                     session.id,
                     session.telegram_user_id,
                     session.mode.value,
+                    session.preset.value,
                     JobStatus.QUEUED.value,
                     now,
                     now,

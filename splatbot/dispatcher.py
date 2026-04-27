@@ -82,7 +82,7 @@ class Dispatcher:
             return True
         media = await self.store.list_media(job.session_id)
         try:
-            outputs = await self.pipeline.run(job.id, job.mode, media, self.store.set_job_status)
+            outputs = await self.pipeline.run(job.id, job.mode, media, self.store.set_job_status, job.preset)
             artifacts = await publish_job_artifacts(
                 self.settings,
                 self.store,

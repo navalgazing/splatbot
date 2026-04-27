@@ -5,11 +5,11 @@ Private Telegram bot and worker for turning a photo set or short video into a Ga
 ## Current MVP
 
 - Telegram intake for one private user list.
-- `/new`, `/mode scene|object`, media upload, `/submit`, `/status`, `/cancel`.
+- `/new`, `/mode scene|object`, `/preset fast|balanced|best`, media upload, `/submit`, `/status`, `/cancel`.
 - SQLite queue shared by the bot and worker.
 - Local worker/dispatcher that runs one GPU job at a time.
 - RunPod backend for launching ephemeral GPU pods from the VPS.
-- Nerfstudio `splatfacto` pipeline with optional object-background removal through `rembg`.
+- Preset-aware Nerfstudio `splatfacto` pipeline with adaptive video frame selection, optional object-background removal through `rembg`, and per-job metrics.
 - Artifact persistence for the cleaned `.ply` and preview `.mp4`.
 - Optional S3-compatible artifact upload with signed result URLs.
 - Telegram completion/failure notifications when the dispatcher has a bot token.
@@ -64,10 +64,17 @@ The dispatcher watches SQLite for queued jobs, runs the pipeline, records artifa
 ## Bot Flow
 
 1. Send `/new`.
-2. Optional: send `/mode scene` or `/mode object`.
-3. Upload either `SPLATBOT_MIN_IMAGES` to `SPLATBOT_MAX_IMAGES` photos, or one supported video.
-4. Send `/submit`.
-5. Use `/status` for collection progress, queued/running status, errors, and artifact locations.
+2. Choose Fast, Balanced, or Best, or send `/preset fast|balanced|best`.
+3. Optional: send `/mode scene` or `/mode object`.
+4. Upload either `SPLATBOT_MIN_IMAGES` to `SPLATBOT_MAX_IMAGES` photos, or one supported video.
+5. Send `/submit`.
+6. Use `/status` for collection progress, queued/running status, errors, and artifact locations.
+
+Presets control the target video frame count and training budget:
+
+- `fast`: fewer frames and iterations for cheaper previews.
+- `balanced`: production default, adaptive frame selection, current quality baseline.
+- `best`: more frames, higher iteration budget, and `splatfacto-big` for A/B quality trials.
 
 ## Artifact Storage
 
@@ -92,6 +99,7 @@ Completed jobs publish:
 
 - `index.html`
 - `cleaned_splat.ply`
+- `metrics.json`
 - `turntable.mp4` when preview rendering is enabled
 
 The viewer first loads the PLY with a browser Gaussian splat renderer. If that fails on the client, it falls back to a Three.js colored point preview with orbit, pan, and zoom controls. Telegram sends the viewer URL when available.
@@ -128,14 +136,26 @@ Keep `/opt/splatbot/app/.env` linked to `/etc/splatbot/splatbot.env` so those
 commands load the same public URL, Telegram token, database path, and retention
 settings as the systemd services.
 
-### RunPod Runtime Cache
+### RunPod Runtime
 
-The generic RunPod image works, but every job has to install COLMAP, ffmpeg,
-Nerfstudio, gsplat, and rembg before it can start GPU work. The fastest repeatable
-setup is a lean image for OS tools plus a RunPod network volume for the Python
-runtime cache. The image keeps `apt-get` out of each job and includes a
-CUDA-enabled headless COLMAP build; the network volume keeps the venv, rembg
-model, and compiled CUDA extensions across ephemeral pods.
+The normal production path is the baked CUDA image:
+
+```bash
+SPLATBOT_RUNPOD_IMAGE_NAME=ghcr.io/navalgazing/splatbot-runpod:cuda-colmap
+SPLATBOT_RUNPOD_VENV=/opt/splatbot/venv
+SPLATBOT_RUNPOD_BOOTSTRAP_COMMAND=
+SPLATBOT_RUNPOD_SETUP_COMMAND=
+SPLATBOT_COLMAP_BIN=splatbot-colmap-wrapper
+SPLATBOT_COLMAP_USE_GPU=true
+```
+
+The image keeps `apt-get` and bulk Python installs out of each job and includes
+a CUDA-enabled headless COLMAP build. A RunPod network volume is still useful for
+workspace caches and future large model caches, but the core runtime should not
+depend on warming a new venv for every pod.
+
+The older generic-image path works only if you explicitly configure bootstrap and
+setup commands. Prefer rebuilding the image instead of adding per-job installs.
 
 Example:
 
@@ -147,19 +167,16 @@ docker push ghcr.io/navalgazing/splatbot-runpod:latest
 Then set:
 
 ```bash
-SPLATBOT_RUNPOD_IMAGE_NAME=ghcr.io/navalgazing/splatbot-runpod:latest
+SPLATBOT_RUNPOD_IMAGE_NAME=ghcr.io/navalgazing/splatbot-runpod:cuda-colmap
 SPLATBOT_RUNPOD_NETWORK_VOLUME_ID=...
 SPLATBOT_RUNPOD_DATA_CENTER_IDS=EU-RO-1
-SPLATBOT_RUNPOD_VENV=/workspace/venv
+SPLATBOT_RUNPOD_VENV=/opt/splatbot/venv
 SPLATBOT_RUNPOD_BOOTSTRAP_COMMAND=
-SPLATBOT_RUNPOD_SETUP_COMMAND=/workspace/venv/bin/pip install aiosqlite boto3 nerfstudio pydantic-settings python-dotenv python-telegram-bot 'rembg[cpu,cli]'
+SPLATBOT_RUNPOD_SETUP_COMMAND=
 SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION=splatbot-runtime-2026-04-26-v1
 SPLATBOT_COLMAP_USE_GPU=true
 ```
 
-Keep the setup command populated even with the network volume: the worker skips it
-when the runtime cache marker matches, and uses it to self-heal a missing or
-outdated volume. Bump `SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION` when changing Python
-runtime dependencies. Only enable `SPLATBOT_COLMAP_USE_GPU=true` after the image
-smoke check or `scripts/warm_runpod_volume.py` confirms `colmap -h` reports a
-CUDA build.
+Bump `SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION` when changing cache-dependent runtime
+behavior. Only enable `SPLATBOT_COLMAP_USE_GPU=true` after the image smoke check
+or `scripts/warm_runpod_volume.py` confirms `colmap -h` reports a CUDA build.

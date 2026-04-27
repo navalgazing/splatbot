@@ -17,7 +17,7 @@ from splatbot.storage import Store
 
 
 class FakePipeline:
-    async def run(self, job_id: str, mode: ScanMode, media: list[MediaItem], on_status=None) -> PipelineOutputs:
+    async def run(self, job_id: str, mode: ScanMode, media: list[MediaItem], on_status=None, preset=None) -> PipelineOutputs:
         if on_status:
             await on_status(job_id, JobStatus.TRAINING)
         root = Path(media[0].local_path).parent
@@ -66,7 +66,7 @@ class TerminalRacePipeline:
     def __init__(self, store: Store) -> None:
         self.store = store
 
-    async def run(self, job_id: str, mode: ScanMode, media: list[MediaItem], on_status=None) -> PipelineOutputs:
+    async def run(self, job_id: str, mode: ScanMode, media: list[MediaItem], on_status=None, preset=None) -> PipelineOutputs:
         root = Path(media[0].local_path).parent
         ply = root / "clean.ply"
         ply.write_text(

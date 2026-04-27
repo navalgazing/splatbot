@@ -1,4 +1,4 @@
-from splatbot.config import ScanMode, Settings
+from splatbot.config import ScanMode, ScanPreset, Settings
 from splatbot.telegram_app import _help_text, _main_keyboard, _upload_hint
 
 
@@ -6,18 +6,22 @@ def test_help_text_lists_flow_and_commands() -> None:
     text = _help_text(Settings(min_images=20, max_images=80, max_video_seconds=45, max_video_frames=90))
 
     assert "Choose object or scene" in text
+    assert "Choose Fast, Balanced, or Best" in text
     assert "Press Submit scan" in text
     assert "Photos: 20-80 images" in text
-    assert "Video: up to 45s sampled to 90 frames" in text
+    assert "Video: up to 45s" in text
+    assert "Balanced: up to 90 video frames" in text
+    assert "/preset" in text
     assert "/help" in text
     assert "/submit" in text
 
 
 def test_upload_hint_makes_submit_action_explicit() -> None:
-    text = _upload_hint(1, ScanMode.OBJECT, Settings(min_images=20, max_images=80))
+    text = _upload_hint(1, ScanMode.OBJECT, ScanPreset.BALANCED, Settings(min_images=20, max_images=80))
 
     assert "Received 1 file(s)" in text
     assert "object scan" in text
+    assert "Balanced" in text
     assert "press Submit scan" in text
 
 

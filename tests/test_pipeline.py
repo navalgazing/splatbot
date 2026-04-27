@@ -9,8 +9,11 @@ from splatbot.pipeline import (
     ScanPipeline,
     clean_ply,
     format_fps,
+    inspect_processed_dataset,
     latest_nerfstudio_config,
     parse_ffprobe_duration,
+    select_video_frames,
+    validate_colmap_quality,
 )
 
 
@@ -109,7 +112,7 @@ def test_clean_ply_leaves_binary_ply_unchanged(tmp_path) -> None:
 async def test_pipeline_builds_expected_commands(tmp_path) -> None:
     image = tmp_path / "input.jpg"
     image.write_text("fake", encoding="utf-8")
-    settings = Settings(data_dir=tmp_path, max_images=300)
+    settings = Settings(data_dir=tmp_path, max_images=300, min_splat_vertices=1)
     runner = FakeRunner()
     pipeline = ScanPipeline(settings, runner=runner)
 
@@ -168,7 +171,7 @@ async def test_pipeline_builds_expected_commands(tmp_path) -> None:
 async def test_pipeline_uses_video_speedups(tmp_path) -> None:
     video = tmp_path / "scan.mov"
     video.write_text("fake", encoding="utf-8")
-    settings = Settings(data_dir=tmp_path)
+    settings = Settings(data_dir=tmp_path, adaptive_frame_selection=False, min_splat_vertices=1)
     runner = FakeRunner()
 
     await ScanPipeline(settings, runner=runner).run(
@@ -268,7 +271,7 @@ def test_format_fps() -> None:
 async def test_pipeline_can_render_preview_when_enabled(tmp_path) -> None:
     image = tmp_path / "input.jpg"
     image.write_text("fake", encoding="utf-8")
-    settings = Settings(data_dir=tmp_path, render_preview=True)
+    settings = Settings(data_dir=tmp_path, render_preview=True, min_splat_vertices=1)
     runner = FakeRunner()
 
     outputs = await ScanPipeline(settings, runner=runner).run("job1", ScanMode.SCENE, [media(image)])
@@ -288,3 +291,46 @@ def test_latest_nerfstudio_config_selects_newest(tmp_path) -> None:
     os.utime(new, (2, 2))
 
     assert latest_nerfstudio_config(tmp_path) == new
+
+
+def test_select_video_frames_falls_back_to_even_sampling(tmp_path) -> None:
+    candidates = []
+    for idx in range(1, 7):
+        path = tmp_path / f"candidate_{idx:05d}.jpg"
+        path.write_bytes(b"x" * idx)
+        candidates.append(path)
+    images = tmp_path / "images"
+    images.mkdir()
+
+    selected = select_video_frames(
+        candidates,
+        images,
+        target_count=3,
+        min_count=3,
+        blur_threshold=20.0,
+        duplicate_threshold=3.0,
+    )
+
+    assert selected == 3
+    assert [path.name for path in sorted(images.iterdir())] == [
+        "frame_00001.jpg",
+        "frame_00002.jpg",
+        "frame_00003.jpg",
+    ]
+
+
+def test_colmap_quality_gate_rejects_low_active_sparse_model(tmp_path) -> None:
+    processed = tmp_path / "processed" / "colmap" / "sparse" / "0"
+    processed.mkdir(parents=True)
+    (processed / "images.bin").write_text("images=2", encoding="utf-8")
+    metrics = {
+        "frames": {"selected": 140},
+        "colmap": inspect_processed_dataset(tmp_path / "processed"),
+    }
+
+    try:
+        validate_colmap_quality(metrics, 140, Settings())
+    except ValueError as exc:
+        assert "registered only 2/140" in str(exc)
+    else:
+        raise AssertionError("expected COLMAP quality gate to reject low registration")
