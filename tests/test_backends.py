@@ -146,6 +146,22 @@ def test_segment_rembg_delegates_to_rembg_command(monkeypatch, tmp_path) -> None
     assert calls == [["rembg-test", "p", str(input_dir), str(output_dir)]]
 
 
+def test_segment_backend_self_test_skips_input_output(monkeypatch) -> None:
+    monkeypatch.setitem(__import__("sys").modules, "rembg", ModuleType("rembg"))
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            "sys.argv",
+            [
+                "splatbot-segment",
+                "--backend",
+                "rembg",
+                "--self-test",
+            ],
+        )
+        backends.segment_main()
+
+
 def test_sam2_bootstrap_sampling_covers_video_span(tmp_path) -> None:
     items = []
     for idx in range(10):

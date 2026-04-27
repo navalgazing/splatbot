@@ -11,8 +11,10 @@ from splatbot.commands import CommandResult
 from splatbot.config import ScanMode, Settings
 from splatbot.models import JobStatus, MediaItem, MediaKind
 from splatbot.pipeline import (
+    AlphaMask,
     FrameQuality,
     ScanPipeline,
+    SilhouetteFrame,
     apply_object_mask_qa,
     clean_gaussian_properties,
     clean_exported_ply,
@@ -32,6 +34,7 @@ from splatbot.pipeline import (
     configured_segmentation_backends,
     configured_train_backends,
     validate_colmap_quality,
+    validate_postprocess_against_masks,
     validate_ply_quality,
     write_processed_training_masks,
 )
@@ -45,6 +48,11 @@ class FakeRunner:
         self.calls.append(argv)
         if argv[0] == "ffprobe":
             return CommandResult(argv=argv, returncode=0, stdout="21.0\n", stderr="")
+        if argv[0] == "ffmpeg":
+            pattern = Path(argv[-1])
+            pattern.parent.mkdir(parents=True, exist_ok=True)
+            for idx in range(1, 4):
+                (pattern.parent / f"frame_{idx:05d}.jpg").write_bytes(b"frame")
         if argv[0] == "ns-train":
             output_dir = Path(argv[argv.index("--output-dir") + 1])
             config_dir = output_dir / "processed" / "splatfacto" / "2026-04-25_120000"
@@ -61,10 +69,11 @@ class FakeRunner:
                         "element vertex 2",
                         "property float x",
                         "property float y",
+                        "property float z",
                         "property float opacity",
                         "end_header",
-                        "0 1 0.5",
-                        "nan 2 0.1",
+                        "0 1 2 0.5",
+                        "nan 2 3 0.1",
                     ]
                 )
                 + "\n",
@@ -206,12 +215,32 @@ def test_clean_ply_preserves_header_and_removes_invalid_rows(tmp_path) -> None:
 def test_clean_ply_leaves_binary_ply_unchanged(tmp_path) -> None:
     src = tmp_path / "raw.ply"
     dest = tmp_path / "clean.ply"
-    data = b"ply\nformat binary_little_endian 1.0\nend_header\n\x00\x01\x02"
+    data = b"".join(
+        [
+            b"ply\n",
+            b"format binary_little_endian 1.0\n",
+            b"element vertex 1\n",
+            b"property float x\n",
+            b"property float y\n",
+            b"property float z\n",
+            b"end_header\n",
+            struct.pack("<fff", 1.0, 2.0, 3.0),
+        ]
+    )
     src.write_bytes(data)
 
     clean_ply(src, dest)
 
     assert dest.read_bytes() == data
+
+
+def test_clean_ply_rejects_malformed_ply(tmp_path) -> None:
+    src = tmp_path / "raw.ply"
+    dest = tmp_path / "clean.ply"
+    src.write_text("not a ply\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Invalid or unparseable PLY"):
+        clean_ply(src, dest)
 
 
 def test_object_silhouette_cleanup_culls_points_outside_alpha_mask(tmp_path) -> None:
@@ -327,7 +356,13 @@ def test_silhouette_cleanup_skips_when_remove_fraction_is_too_high(tmp_path) -> 
 def test_validate_ply_quality_rejects_failed_mask_validation(tmp_path) -> None:
     metrics = {
         "ply": {
-            "cleaned": {"vertices": 50_000, "flat_axis_ratio": 0.25},
+            "cleaned": {
+                "parseable": True,
+                "format": "format binary_little_endian 1.0",
+                "vertices": 50_000,
+                "has_xyz": True,
+                "flat_axis_ratio": 0.25,
+            },
             "cleanup": {
                 "validation": {
                     "applied": True,
@@ -340,6 +375,13 @@ def test_validate_ply_quality_rejects_failed_mask_validation(tmp_path) -> None:
     }
 
     with pytest.raises(ValueError, match="object-mask validation"):
+        validate_ply_quality(metrics, Settings(data_dir=tmp_path, min_splat_vertices=1))
+
+
+def test_validate_ply_quality_rejects_unparseable_summary(tmp_path) -> None:
+    metrics = {"ply": {"cleaned": {"parseable": False}}}
+
+    with pytest.raises(ValueError, match="parseable PLY"):
         validate_ply_quality(metrics, Settings(data_dir=tmp_path, min_splat_vertices=1))
 
 
@@ -904,3 +946,44 @@ def test_colmap_quality_gate_rejects_low_active_sparse_model(tmp_path) -> None:
         assert "registered only 2/140" in str(exc)
     else:
         raise AssertionError("expected COLMAP quality gate to reject low registration")
+
+
+def test_colmap_quality_gate_rejects_unknown_registration(tmp_path) -> None:
+    metrics = {"frames": {"selected": 140}, "colmap": {}}
+
+    with pytest.raises(ValueError, match="registration count is unknown"):
+        validate_colmap_quality(metrics, 140, Settings())
+
+
+def test_postprocess_validation_rejects_unobserved_points(tmp_path) -> None:
+    ply_path = tmp_path / "splat.ply"
+    write_binary_xyz_ply(ply_path, [(0.0, 0.0, 1.0), (1.0, 1.0, 1.0)])
+    frames = [
+        SilhouetteFrame(
+            mask=AlphaMask(width=4, height=4, alpha=bytes([255] * 16)),
+            world_to_camera=[
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+            ],
+            fl_x=1.0,
+            fl_y=1.0,
+            cx=2.0,
+            cy=2.0,
+        )
+    ]
+
+    result = validate_postprocess_against_masks(
+        ply_path,
+        frames,
+        Settings(
+            data_dir=tmp_path,
+            silhouette_cleanup_min_views=1,
+            postprocess_validation_min_checked_points=1,
+            postprocess_validation_max_unobserved_fraction=0.5,
+        ),
+    )
+
+    assert result["checked_points"] == 0
+    assert result["unobserved_fraction"] == 1.0
+    assert result["passed"] is False

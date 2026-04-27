@@ -194,6 +194,7 @@ command -v splatbot-mesh >/dev/null
 for cmd in splatbot-segment splatbot-pose splatbot-train splatbot-mesh; do
   "$cmd" --help >/tmp/"$cmd"-help.txt
 done
+splatbot-segment --backend sam2 --self-test
 command -v nvcc >/dev/null
 check_colmap_cuda
 check_rembg_cuda

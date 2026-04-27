@@ -136,6 +136,7 @@ RUN /opt/splatbot/venv/bin/python - <<'PY'
 import importlib.metadata as metadata
 import importlib
 import importlib.util
+import os
 import onnxruntime as ort
 import torch
 
@@ -163,6 +164,15 @@ print(f"onnxruntime_device={ort.get_device()}")
 print(f"onnxruntime_providers={ort.get_available_providers()}")
 require_import("sam2")
 optional_import("sam3")
+try:
+    from sam2.build_sam import build_sam2_video_predictor
+
+    build_sam2_video_predictor(
+        os.environ["SPLATBOT_SAM2_CONFIG"],
+        os.environ["SPLATBOT_SAM2_CHECKPOINT"],
+    )
+except Exception as exc:
+    raise SystemExit(f"SAM2 predictor self-test failed: {exc}") from exc
 if "CUDAExecutionProvider" not in ort.get_available_providers():
     raise SystemExit("onnxruntime-gpu did not expose CUDAExecutionProvider")
 PY

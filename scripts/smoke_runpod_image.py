@@ -66,6 +66,14 @@ for cmd in splatbot-segment splatbot-pose splatbot-train splatbot-mesh; do
   command -v "$cmd"
   "$cmd" --help >/tmp/"$cmd"-help.txt
 done
+splatbot-segment --backend sam2 --self-test
+if /opt/splatbot/venv/bin/python - <<'PY'
+import importlib.util
+raise SystemExit(0 if importlib.util.find_spec("sam3") is not None else 1)
+PY
+then
+  splatbot-segment --backend sam3 --self-test
+fi
 """
 
 

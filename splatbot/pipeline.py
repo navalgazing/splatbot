@@ -258,7 +258,7 @@ class ScanPipeline:
             object_dir = job_dir / "object_images"
             object_dir.mkdir(parents=True, exist_ok=True)
             stage_start = time.perf_counter()
-            mask_backend = await self.remove_backgrounds(images_dir, object_dir, preset_config)
+            mask_backend = await self.remove_backgrounds(images_dir, object_dir, job_dir, preset_config)
             refinement = refine_object_masks(object_dir, self.settings)
             record_stage(metrics, "rembg", stage_start)
             input_images_dir = object_dir
@@ -266,7 +266,7 @@ class ScanPipeline:
             metrics.setdefault("masks", {})["backend"] = mask_backend
             if refinement:
                 metrics.setdefault("masks", {})["refinement"] = refinement
-            mask_qa = apply_object_mask_qa(
+            mask_qa = mask_backend.get("qa") or apply_object_mask_qa(
                 images_dir,
                 object_dir,
                 job_dir,
@@ -500,7 +500,13 @@ class ScanPipeline:
                 dest.unlink()
             dest.symlink_to(src)
 
-    async def remove_backgrounds(self, images_dir: Path, object_dir: Path, preset: ScanPresetConfig | None = None) -> dict:
+    async def remove_backgrounds(
+        self,
+        images_dir: Path,
+        object_dir: Path,
+        job_dir: Path,
+        preset: ScanPresetConfig,
+    ) -> dict:
         attempts: list[dict] = []
         for backend in configured_segmentation_backends(self.settings, preset):
             if object_dir.exists():
@@ -513,9 +519,21 @@ class ScanPipeline:
                     continue
                 await self.runner.run(command)
                 output_count = count_files(object_dir)
-                attempts.append({"backend": backend, "applied": True, "output_files": output_count})
+                attempt = {"backend": backend, "applied": True, "output_files": output_count}
+                attempts.append(attempt)
                 if output_count > 0:
-                    return {"selected": backend, "attempts": attempts}
+                    qa = apply_object_mask_qa(images_dir, object_dir, job_dir, self.settings, preset)
+                    attempt["qa"] = {
+                        "applied": qa.get("applied"),
+                        "reason": qa.get("reason"),
+                        "accepted_masks": qa.get("accepted_masks"),
+                        "total_masks": qa.get("total_masks"),
+                    }
+                    if qa.get("reason") in {"no_masks", "too_few_accepted_masks"}:
+                        attempt["applied"] = False
+                        attempt["reason"] = qa.get("reason")
+                        continue
+                    return {"selected": backend, "attempts": attempts, "qa": qa}
             except Exception as exc:  # noqa: BLE001
                 attempts.append({"backend": backend, "applied": False, "error": str(exc)})
         detail = "; ".join(
@@ -1654,7 +1672,10 @@ def validate_colmap_quality(metrics: dict, target_frames: int, settings: Setting
     if registered is None:
         registered = colmap.get("transforms_frames")
     if registered is None:
-        return
+        raise ValueError(
+            f"COLMAP registration count is unknown for {selected_frames} selected frame(s). "
+            "This run cannot be quality-gated safely."
+        )
     minimum = max(2, int(selected_frames * settings.min_colmap_registered_ratio))
     if registered < minimum:
         best = colmap.get("best_registered_images")
@@ -1833,29 +1854,33 @@ def inspect_ply(path: Path) -> dict:
     summary: dict = {"size_bytes": path.stat().st_size if path.exists() else None}
     if not path.exists():
         return summary
-    try:
-        with path.open("rb") as handle:
-            header_lines: list[str] = []
-            header_bytes = 0
-            while True:
-                raw = handle.readline()
-                if not raw:
-                    break
-                header_bytes += len(raw)
-                line = raw.decode("ascii", errors="ignore").strip()
-                header_lines.append(line)
-                if line == "end_header":
-                    break
-            fmt = next((line for line in header_lines if line.startswith("format ")), None)
-            vertex_line = next((line for line in header_lines if line.startswith("element vertex ")), None)
-            vertices = int(vertex_line.rsplit(" ", 1)[-1]) if vertex_line else None
-            summary.update({"format": fmt, "vertices": vertices})
-            if vertices:
-                bounds = read_ply_xyz_bounds(handle, header_lines, header_bytes, vertices, path)
-                if bounds:
-                    summary.update(bounds)
-    except (KeyError, OSError, ValueError, struct.error):
+    layout = read_ply_layout(path)
+    summary["parseable"] = layout is not None
+    if layout is None:
         return summary
+    names = [name for _, name in layout.properties]
+    summary.update(
+        {
+            "format": layout.format,
+            "vertices": layout.vertex_count,
+            "properties": names,
+            "has_xyz": {"x", "y", "z"}.issubset(names),
+        }
+    )
+    if layout.vertex_count:
+        try:
+            with path.open("rb") as handle:
+                bounds = read_ply_xyz_bounds(
+                    handle,
+                    layout.header_lines,
+                    layout.header_bytes,
+                    layout.vertex_count,
+                    path,
+                )
+            if bounds:
+                summary.update(bounds)
+        except (KeyError, OSError, ValueError, struct.error):
+            return summary
     return summary
 
 
@@ -1958,6 +1983,14 @@ def update_bounds(mins: list[float], maxs: list[float], xyz: list[float]) -> Non
 def validate_ply_quality(metrics: dict, settings: Settings) -> None:
     cleaned = metrics.get("ply", {}).get("cleaned", {})
     vertices = cleaned.get("vertices")
+    if cleaned.get("parseable") is not True:
+        raise ValueError("Exported splat is not a parseable PLY file.")
+    if cleaned.get("format") not in {"format ascii 1.0", "format binary_little_endian 1.0"}:
+        raise ValueError(f"Exported splat has unsupported PLY format: {cleaned.get('format')}.")
+    if vertices is None:
+        raise ValueError("Exported splat PLY does not declare a vertex count.")
+    if not cleaned.get("has_xyz"):
+        raise ValueError("Exported splat PLY does not contain x/y/z vertex properties.")
     if vertices is not None and vertices < settings.min_splat_vertices:
         raise ValueError(
             f"Exported splat has only {vertices} vertices; expected at least {settings.min_splat_vertices}."
@@ -1976,9 +2009,10 @@ def validate_ply_quality(metrics: dict, settings: Settings) -> None:
     if validation.get("applied") and validation.get("passed") is False:
         outside = validation.get("outside_candidate_fraction")
         low_support = validation.get("low_support_fraction")
+        unobserved = validation.get("unobserved_fraction")
         raise ValueError(
             "Exported splat failed object-mask validation "
-            f"(outside={outside}, low_support={low_support})."
+            f"(outside={outside}, low_support={low_support}, unobserved={unobserved})."
         )
 
 
@@ -2185,19 +2219,12 @@ def clean_ply(src: Path, dest: Path, row_filter: Callable[[tuple[float, ...]], b
     """Remove invalid vertex rows while preserving PLY properties and binary layout."""
     layout = read_ply_layout(src)
     if layout is None:
-        shutil.copy2(src, dest)
-        return {"input_vertices": None, "output_vertices": None, "invalid_vertices_removed": 0}
+        raise ValueError(f"Invalid or unparseable PLY file: {src}")
     if layout.format == "format ascii 1.0":
         return clean_ascii_ply(src, dest, layout, row_filter)
     if layout.format == "format binary_little_endian 1.0" and layout.row_size:
         return clean_binary_ply(src, dest, layout, row_filter)
-    shutil.copy2(src, dest)
-    return {
-        "input_vertices": layout.vertex_count,
-        "output_vertices": layout.vertex_count,
-        "invalid_vertices_removed": 0,
-        "unsupported_format": layout.format,
-    }
+    raise ValueError(f"Unsupported PLY format or vertex layout: {layout.format}")
 
 
 def clean_mask_support_outliers(
@@ -2446,7 +2473,9 @@ def validate_postprocess_against_masks(
     low_support_fraction = low_support_points / checked_points if checked_points else 0.0
     unobserved_fraction = unobserved_points / sampled_points if sampled_points else 0.0
     passed = (
-        outside_fraction <= settings.postprocess_validation_max_outside_fraction
+        checked_points >= settings.postprocess_validation_min_checked_points
+        and unobserved_fraction <= settings.postprocess_validation_max_unobserved_fraction
+        and outside_fraction <= settings.postprocess_validation_max_outside_fraction
         and low_support_fraction <= settings.postprocess_validation_max_low_support_fraction
     )
     return {
@@ -2464,6 +2493,8 @@ def validate_postprocess_against_masks(
         "passed": passed,
         "max_outside_fraction": settings.postprocess_validation_max_outside_fraction,
         "max_low_support_fraction": settings.postprocess_validation_max_low_support_fraction,
+        "min_checked_points": settings.postprocess_validation_min_checked_points,
+        "max_unobserved_fraction": settings.postprocess_validation_max_unobserved_fraction,
         "min_inside_views": settings.postprocess_validation_min_inside_views,
         "min_inside_ratio": settings.postprocess_validation_min_inside_ratio,
     }

@@ -113,6 +113,36 @@ def segment_with_sam3(input_dir: Path, output_dir: Path, prompt: str) -> None:
     ensure_output_files(output_dir)
 
 
+def segment_backend_self_test(backend: str) -> None:
+    if backend == "sam3":
+        try:
+            from sam3.model.sam3_image_processor import Sam3Processor  # noqa: F401
+            from sam3.model_builder import build_sam3_image_model  # noqa: F401
+        except Exception as exc:  # noqa: BLE001
+            raise SystemExit(f"SAM3 self-test failed: {exc}") from exc
+        return
+    if backend == "sam2":
+        checkpoint = os.environ.get("SPLATBOT_SAM2_CHECKPOINT", "")
+        config = os.environ.get("SPLATBOT_SAM2_CONFIG", "configs/sam2.1/sam2.1_hiera_l.yaml")
+        if not checkpoint:
+            raise SystemExit("SAM2 self-test failed: SPLATBOT_SAM2_CHECKPOINT is required")
+        checkpoint_path = Path(checkpoint)
+        if not checkpoint_path.exists() or checkpoint_path.stat().st_size <= 0:
+            raise SystemExit(f"SAM2 self-test failed: checkpoint is missing: {checkpoint_path}")
+        try:
+            build_sam2_predictor(config, checkpoint)
+        except Exception as exc:  # noqa: BLE001
+            raise SystemExit(f"SAM2 self-test failed: {exc}") from exc
+        return
+    if backend == "rembg":
+        try:
+            import rembg  # noqa: F401
+        except Exception as exc:  # noqa: BLE001
+            raise SystemExit(f"rembg self-test failed: {exc}") from exc
+        return
+    raise SystemExit(f"unsupported segmentation backend for self-test: {backend}")
+
+
 def bbox_score(bbox: tuple[int, int, int, int], width: int, height: int) -> float:
     left, top, right, bottom = bbox
     area = max(0, right - left) * max(0, bottom - top)
@@ -272,10 +302,16 @@ def segment_with_sam2(input_dir: Path, output_dir: Path) -> None:
 def segment_main() -> None:
     parser = argparse.ArgumentParser(description="Run Splatbot segmentation backends.")
     parser.add_argument("--backend", required=True, choices=["sam3", "sam2", "rembg"])
-    parser.add_argument("--input", required=True, type=Path)
-    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--input", type=Path)
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--prompt", default=os.environ.get("SPLATBOT_OBJECT_MASK_PROMPT", "main object"))
+    parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+    if args.self_test:
+        segment_backend_self_test(args.backend)
+        return
+    if args.input is None or args.output is None:
+        parser.error("--input and --output are required unless --self-test is used")
     args.output.mkdir(parents=True, exist_ok=True)
     if args.backend == "sam3":
         segment_with_sam3(args.input, args.output, args.prompt)

@@ -160,6 +160,8 @@ class Settings(BaseSettings):
     postprocess_validation_min_inside_views: int = 1
     postprocess_validation_min_inside_ratio: float = 0.02
     postprocess_validation_max_low_support_fraction: float = 0.25
+    postprocess_validation_min_checked_points: int = 1
+    postprocess_validation_max_unobserved_fraction: float = 0.75
     postprocess_validation_sample_limit: int = 200_000
     render_validation_command: str = ""
     quality_report_enabled: bool = True
