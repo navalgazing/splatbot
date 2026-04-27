@@ -28,13 +28,13 @@ import onnxruntime as ort
 import torch
 
 print("torch_cuda_available=" + str(torch.cuda.is_available()))
-for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "onnxruntime-gpu", "dn-splatter"):
+for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "onnxruntime-gpu"):
     try:
         version = metadata.version(package)
     except metadata.PackageNotFoundError:
         version = "missing"
     print(f"{package}={version}")
-for module in ("sam2", "dn_splatter"):
+for module in ("sam2",):
     if importlib.util.find_spec(module) is None:
         raise SystemExit(f"{module} is not importable")
 print("sam3_available=" + str(importlib.util.find_spec("sam3") is not None))

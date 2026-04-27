@@ -115,9 +115,13 @@ SPLATBOT_MESH_EXPORT_COMMAND='splatbot-mesh --backend {backend} --ns-dir {ns_dir
 
 Backends are attempted in order. In `best` mode, the default object chain is
 SAM3, SAM2, then rembg; pose is COLMAP global mapper when available, then normal
-COLMAP; training is DN-Splatter-big, then `splatfacto-big`. SAM3 needs access to
+COLMAP; training is DN-Splatter-big when the runtime has a compatible
+DN-Splatter/Nerfstudio stack, then `splatfacto-big`. SAM3 needs access to
 Meta/Hugging Face checkpoints in the RunPod runtime, so deployments without that
-token fall back to SAM2/rembg.
+token fall back to SAM2/rembg. The CUDA RunPod image intentionally excludes
+DN-Splatter for now because current upstream DN-Splatter imports an older
+`gsplat` API; the adapter remains available for a future pinned or patched
+runtime.
 
 Object-mode postprocessing now includes a mask-support cleanup pass and a
 publish-time validation gate. If the cleaned splat still has too many points
