@@ -21,6 +21,7 @@ from splatbot.pipeline import (
     format_fps,
     inspect_processed_dataset,
     latest_nerfstudio_config,
+    object_mask_command_for_backend,
     parse_ffprobe_duration,
     parse_ffprobe_frame_rate,
     parse_int_list,
@@ -349,6 +350,26 @@ def test_best_preset_enables_sota_backend_chain_by_default(tmp_path) -> None:
     assert configured_segmentation_backends(settings, best) == ["sam3", "sam2", "rembg"]
     assert configured_pose_backends(settings, best) == ["colmap-global", "colmap"]
     assert configured_train_backends(settings, best) == ["dn-splatter-big", "splatfacto-big"]
+
+
+def test_sota_object_mask_command_renders_adapter_cli(tmp_path) -> None:
+    settings = Settings(data_dir=tmp_path)
+    argv = object_mask_command_for_backend(
+        settings,
+        "sam2",
+        tmp_path / "images",
+        tmp_path / "object",
+    )
+
+    assert argv == [
+        "splatbot-segment",
+        "--backend",
+        "sam2",
+        "--input",
+        str(tmp_path / "images"),
+        "--output",
+        str(tmp_path / "object"),
+    ]
 
 
 def test_balanced_preset_keeps_stable_default_backend_chain(tmp_path) -> None:

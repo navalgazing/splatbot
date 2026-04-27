@@ -1097,14 +1097,14 @@ def object_mask_command_for_backend(
     command = (command or settings.object_mask_command).strip()
     if not command:
         return None
-        rendered = command.format(
-            backend=shlex.quote(backend),
-            images_dir=shlex.quote(str(images_dir)),
-            object_dir=shlex.quote(str(object_dir)),
-            input_dir=shlex.quote(str(images_dir)),
-            output_dir=shlex.quote(str(object_dir)),
-            prompt=shlex.quote(settings.object_mask_prompt),
-        )
+    rendered = command.format(
+        backend=shlex.quote(backend),
+        images_dir=shlex.quote(str(images_dir)),
+        object_dir=shlex.quote(str(object_dir)),
+        input_dir=shlex.quote(str(images_dir)),
+        output_dir=shlex.quote(str(object_dir)),
+        prompt=shlex.quote(settings.object_mask_prompt),
+    )
     return shlex.split(rendered)
 
 
