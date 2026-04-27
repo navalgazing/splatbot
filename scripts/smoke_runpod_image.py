@@ -22,11 +22,20 @@ colmap feature_extractor -h > /tmp/feature-help.txt 2>&1
 grep -m1 'SiftExtraction.use_gpu' /tmp/feature-help.txt
 /opt/splatbot/venv/bin/python - <<'PY'
 import importlib.metadata as metadata
+import onnxruntime as ort
 import torch
 
 print("torch_cuda_available=" + str(torch.cuda.is_available()))
-for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime"):
-    print(f"{package}=" + metadata.version(package))
+for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "onnxruntime-gpu"):
+    try:
+        version = metadata.version(package)
+    except metadata.PackageNotFoundError:
+        version = "missing"
+    print(f"{package}={version}")
+print("onnxruntime_device=" + ort.get_device())
+print("onnxruntime_providers=" + str(ort.get_available_providers()))
+if "CUDAExecutionProvider" not in ort.get_available_providers():
+    raise SystemExit("onnxruntime CUDAExecutionProvider is not available")
 PY
 """
 

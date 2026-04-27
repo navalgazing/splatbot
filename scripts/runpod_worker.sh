@@ -84,6 +84,40 @@ check_colmap_cuda() {
   fi
 }
 
+check_rembg_cuda() {
+  "$VENV_DIR/bin/python" - <<'PY'
+import os
+
+import torch  # Preload CUDA/cuDNN libraries before ONNX Runtime initializes.
+import onnxruntime as ort
+
+if hasattr(ort, "preload_dlls"):
+    ort.preload_dlls()
+
+providers = ort.get_available_providers()
+device = ort.get_device()
+print(f"  onnxruntime_device={device}")
+print(f"  onnxruntime_providers={providers}")
+
+require_gpu = os.getenv("SPLATBOT_REMBG_REQUIRE_GPU", "").lower() in {"1", "true", "yes", "on"}
+if not require_gpu:
+    raise SystemExit(0)
+
+if "CUDAExecutionProvider" not in providers:
+    raise SystemExit("SPLATBOT_REMBG_REQUIRE_GPU=true but ONNX Runtime has no CUDAExecutionProvider")
+
+from rembg import new_session
+
+session = new_session("u2net")
+active_providers = session.inner_session.get_providers()
+print(f"  rembg_session_providers={active_providers}")
+if "CUDAExecutionProvider" not in active_providers:
+    raise SystemExit(
+        "SPLATBOT_REMBG_REQUIRE_GPU=true but rembg did not create a CUDAExecutionProvider session"
+    )
+PY
+}
+
 print_runtime_diagnostics() {
   echo "runtime diagnostics:"
   echo "  job=$SPLATBOT_JOB_ID mode=$SPLATBOT_SCAN_MODE preset=$SPLATBOT_SCAN_PRESET"
@@ -96,7 +130,7 @@ print_runtime_diagnostics() {
 import importlib.metadata as metadata
 import torch
 
-for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "torch", "numpy", "opencv-python"):
+for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "onnxruntime-gpu", "torch", "numpy", "opencv-python"):
     try:
         version = metadata.version(package)
     except metadata.PackageNotFoundError:
@@ -148,6 +182,7 @@ command -v colmap >/dev/null
 command -v rembg >/dev/null
 command -v nvcc >/dev/null
 check_colmap_cuda
+check_rembg_cuda
 "$VENV_DIR/bin/python" - <<'PY'
 import torch
 

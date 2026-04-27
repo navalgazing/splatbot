@@ -147,12 +147,14 @@ SPLATBOT_RUNPOD_BOOTSTRAP_COMMAND=
 SPLATBOT_RUNPOD_SETUP_COMMAND=
 SPLATBOT_COLMAP_BIN=splatbot-colmap-wrapper
 SPLATBOT_COLMAP_USE_GPU=true
+SPLATBOT_REMBG_REQUIRE_GPU=true
 ```
 
 The image keeps `apt-get` and bulk Python installs out of each job and includes
-a CUDA-enabled headless COLMAP build. A RunPod network volume is still useful for
-workspace caches and future large model caches, but the core runtime should not
-depend on warming a new venv for every pod.
+a CUDA-enabled headless COLMAP build plus GPU ONNX Runtime for `rembg`. A RunPod
+network volume is still useful for workspace caches and future large model
+caches, but the core runtime should not depend on warming a new venv for every
+pod.
 
 The older generic-image path works only if you explicitly configure bootstrap and
 setup commands. Prefer rebuilding the image instead of adding per-job installs.
@@ -175,8 +177,12 @@ SPLATBOT_RUNPOD_BOOTSTRAP_COMMAND=
 SPLATBOT_RUNPOD_SETUP_COMMAND=
 SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION=splatbot-runtime-2026-04-26-v1
 SPLATBOT_COLMAP_USE_GPU=true
+SPLATBOT_REMBG_REQUIRE_GPU=true
 ```
 
 Bump `SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION` when changing cache-dependent runtime
 behavior. Only enable `SPLATBOT_COLMAP_USE_GPU=true` after the image smoke check
 or `scripts/warm_runpod_volume.py` confirms `colmap -h` reports a CUDA build.
+Keep `SPLATBOT_REMBG_REQUIRE_GPU=true` with the production CUDA image so a broken
+image fails loudly instead of silently falling back to slow CPU background
+removal.

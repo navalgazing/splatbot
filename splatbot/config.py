@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     ns_export_bin: str = "ns-export"
     ns_render_bin: str = "ns-render"
     rembg_bin: str = "rembg"
+    rembg_require_gpu: bool = False
     colmap_use_gpu: bool = False
     command_timeout_seconds: int = 6 * 60 * 60
     command_tail_bytes: int = 64 * 1024
@@ -115,7 +116,6 @@ class Settings(BaseSettings):
     best_train_method: str = "splatfacto-big"
     best_train_extra_args: str = (
         "--pipeline.model.cull_alpha_thresh=0.005 "
-        "--pipeline.model.continue_cull_post_densification=False "
         "--pipeline.model.use_scale_regularization=True"
     )
 

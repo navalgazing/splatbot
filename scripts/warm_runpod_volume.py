@@ -52,6 +52,7 @@ export U2NET_HOME="${{U2NET_HOME:-/workspace/.u2net}}"
 {shell_export("BOOTSTRAP_COMMAND", settings.runpod_bootstrap_command.strip())}
 {shell_export("SETUP_COMMAND", settings.runpod_setup_command.strip())}
 {shell_export("SPLATBOT_COLMAP_USE_GPU", str(settings.colmap_use_gpu).lower())}
+{shell_export("SPLATBOT_REMBG_REQUIRE_GPU", str(settings.rembg_require_gpu).lower())}
 
 echo "warming runtime cache version: $CACHE_VERSION"
 echo "venv: $VENV_DIR"
@@ -126,7 +127,10 @@ if truthy "$SPLATBOT_COLMAP_USE_GPU" && ! printf '%s\n' "$COLMAP_HELP" | grep -q
 fi
 
 python - <<'PY'
+import os
+
 import torch
+import onnxruntime as ort
 
 print(f"torch={{torch.__version__}} cuda_available={{torch.cuda.is_available()}}")
 if not torch.cuda.is_available():
@@ -137,6 +141,12 @@ from gsplat.cuda import _backend
 print(f"gsplat_backend={{_backend._C is not None}}")
 if _backend._C is None:
     raise SystemExit("gsplat CUDA extension is not available")
+
+providers = ort.get_available_providers()
+print(f"onnxruntime_device={{ort.get_device()}} providers={{providers}}")
+require_rembg_gpu = os.getenv("SPLATBOT_REMBG_REQUIRE_GPU", "").lower() in {"1", "true", "yes", "on"}
+if require_rembg_gpu and "CUDAExecutionProvider" not in providers:
+    raise SystemExit("SPLATBOT_REMBG_REQUIRE_GPU=true but ONNX Runtime has no CUDAExecutionProvider")
 PY
 
 if [ -n "$CACHE_VERSION" ]; then
