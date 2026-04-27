@@ -15,6 +15,7 @@ from splatbot.runpod_backend import RunPodClient, RunPodLauncher
 SMOKE_SCRIPT = r"""
 set -euo pipefail
 export LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
+export PATH=/opt/splatbot/venv/bin:/usr/local/cuda/bin:$PATH
 echo image smoke
 command -v colmap
 colmap -h > /tmp/colmap-help.txt 2>&1
