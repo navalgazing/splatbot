@@ -767,6 +767,41 @@ async def test_pipeline_can_render_preview_when_enabled(tmp_path) -> None:
     assert runner.calls[-1][0:2] == ["ns-render", "spiral"]
 
 
+async def test_external_train_backend_preserves_extra_arg_boundaries(tmp_path) -> None:
+    settings = Settings(
+        data_dir=tmp_path,
+        best_train_extra_args="--pipeline.model.cull_alpha_thresh=0.005 --note 'two words'",
+    )
+    runner = FakeRunner()
+    pipeline = ScanPipeline(settings, runner=runner)
+
+    await pipeline.train_external_backend(
+        "dn-splatter-big",
+        tmp_path / "processed",
+        tmp_path / "nerfstudio",
+        settings.preset_config("best"),
+    )
+
+    assert runner.calls == [
+        [
+            "splatbot-train",
+            "--backend",
+            "dn-splatter-big",
+            "--data",
+            str(tmp_path / "processed"),
+            "--output",
+            str(tmp_path / "nerfstudio"),
+            "--max-iterations",
+            "14000",
+            "--steps-per-save",
+            "14000",
+            "--pipeline.model.cull_alpha_thresh=0.005",
+            "--note",
+            "two words",
+        ]
+    ]
+
+
 def test_latest_nerfstudio_config_selects_newest(tmp_path) -> None:
     old = tmp_path / "old" / "config.yml"
     new = tmp_path / "new" / "config.yml"

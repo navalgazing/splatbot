@@ -888,7 +888,7 @@ class ScanPipeline:
             output_dir=shlex.quote(str(ns_dir)),
             max_iterations=shlex.quote(str(preset.train_max_iterations)),
             steps_per_save=shlex.quote(str(preset.train_steps_per_save)),
-            extra_args=shlex.quote(" ".join(preset.train_extra_args)),
+            extra_args=shell_join(preset.train_extra_args),
         )
         await self.runner.run(shlex.split(rendered))
 
@@ -991,6 +991,10 @@ def write_json(path: Path, data: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(path)
+
+
+def shell_join(argv: tuple[str, ...] | list[str]) -> str:
+    return " ".join(shlex.quote(arg) for arg in argv)
 
 
 def build_quality_report(metrics: dict, settings: Settings) -> dict:
