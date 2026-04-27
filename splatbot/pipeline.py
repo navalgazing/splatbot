@@ -745,10 +745,12 @@ class ScanPipeline:
             object_images_dir,
             allowed_stems=processed_frame_stems(processed_dir),
         )
+        sparse_cleanup = clear_colmap_sparse_points(processed_dir)
         metrics["colmap_fallback"] = {
             **metrics["colmap_fallback"],
             "applied": True,
             "training_image_paths_rewritten": replaced,
+            "sparse_points_removed": sparse_cleanup,
         }
         write_json(metrics_path, metrics)
 
@@ -825,10 +827,12 @@ class ScanPipeline:
                         final_object_images_dir,
                         allowed_stems=processed_frame_stems(processed_dir),
                     )
+                    sparse_cleanup = clear_colmap_sparse_points(processed_dir)
                     metrics["colmap_fallback"] = {
                         **metrics.get("colmap_fallback", {}),
                         "applied": True,
                         "training_image_paths_rewritten": replaced,
+                        "sparse_points_removed": sparse_cleanup,
                     }
                 write_json(metrics_path, metrics)
                 return True
@@ -1790,6 +1794,33 @@ def replace_processed_images_with_object_images(
         raise ValueError(f"could not match object images to COLMAP transforms; missing {sample}")
     write_json(transforms_path, data)
     return rewritten
+
+
+def clear_colmap_sparse_points(processed_dir: Path) -> dict:
+    """Keep COLMAP cameras/poses but remove sparse 3D points that can seed background Gaussians."""
+    cleared = 0
+    total_bytes = 0
+    for points_path in sorted(processed_dir.rglob("points3D.bin")):
+        if not points_path.is_file():
+            continue
+        original_size = points_path.stat().st_size
+        backup_path = points_path.with_suffix(points_path.suffix + ".splatbot-original")
+        if not backup_path.exists():
+            shutil.copy2(points_path, backup_path)
+        points_path.write_bytes(struct.pack("<Q", 0))
+        cleared += 1
+        total_bytes += original_size
+    for points_path in sorted(processed_dir.rglob("points3D.txt")):
+        if not points_path.is_file():
+            continue
+        original_size = points_path.stat().st_size
+        backup_path = points_path.with_suffix(points_path.suffix + ".splatbot-original")
+        if not backup_path.exists():
+            shutil.copy2(points_path, backup_path)
+        points_path.write_text("# Splatbot removed original-frame sparse points for object training\n", encoding="utf-8")
+        cleared += 1
+        total_bytes += original_size
+    return {"applied": cleared > 0, "files": cleared, "original_bytes": total_bytes}
 
 
 def write_processed_training_masks(processed_dir: Path, alpha_threshold: int = 16) -> int:

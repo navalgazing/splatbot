@@ -20,6 +20,7 @@ from splatbot.pipeline import (
     clean_exported_ply,
     clean_ply,
     clean_spatial_outliers,
+    clear_colmap_sparse_points,
     format_fps,
     inspect_processed_dataset,
     latest_nerfstudio_config,
@@ -102,6 +103,7 @@ class ColmapFallbackRunner:
             sparse.mkdir(parents=True, exist_ok=True)
             registered = 2 if self.process_calls == 1 else 100
             (sparse / "images.bin").write_text(f"images={registered}", encoding="utf-8")
+            (sparse / "points3D.bin").write_bytes(b"background-points")
         return CommandResult(argv=argv, returncode=0, stdout="", stderr="")
 
 
@@ -729,8 +731,25 @@ async def test_object_colmap_fallback_uses_original_poses_and_object_images(tmp_
     assert metrics["colmap_masked"]["active_registered_images"] == 2
     assert metrics["colmap"]["active_registered_images"] == 100
     assert metrics["colmap_fallback"]["applied"] is True
+    assert metrics["colmap_fallback"]["sparse_points_removed"]["applied"] is True
     assert (processed / "images" / "frame_00001.png").read_bytes() == b"object"
     assert "frame_00001.png" in (processed / "transforms.json").read_text(encoding="utf-8")
+    assert (processed / "colmap" / "sparse" / "0" / "points3D.bin").read_bytes() == struct.pack("<Q", 0)
+    assert (processed / "colmap" / "sparse" / "0" / "points3D.bin.splatbot-original").read_bytes() == b"background-points"
+
+
+def test_clear_colmap_sparse_points_replaces_background_seed_cloud(tmp_path) -> None:
+    sparse = tmp_path / "processed" / "colmap" / "sparse" / "0"
+    sparse.mkdir(parents=True)
+    (sparse / "points3D.bin").write_bytes(b"not-empty")
+    (sparse / "points3D.txt").write_text("1 0 0 0\n", encoding="utf-8")
+
+    result = clear_colmap_sparse_points(tmp_path / "processed")
+
+    assert result == {"applied": True, "files": 2, "original_bytes": 17}
+    assert (sparse / "points3D.bin").read_bytes() == struct.pack("<Q", 0)
+    assert (sparse / "points3D.bin.splatbot-original").read_bytes() == b"not-empty"
+    assert "removed original-frame sparse points" in (sparse / "points3D.txt").read_text(encoding="utf-8")
 
 
 async def test_colmap_retry_uses_smaller_subset_when_full_set_fails(tmp_path) -> None:
