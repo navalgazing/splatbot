@@ -28,6 +28,7 @@ splatbot-worker = "splatbot.worker:main"
 splatbot-dispatcher = "splatbot.dispatcher:main"
 splatbot-jobctl = "splatbot.jobctl:main"
 splatbot-run-job-dir = "splatbot.run_job_dir:main"
+splatbot-colmap-wrapper = "splatbot.colmap_wrapper:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

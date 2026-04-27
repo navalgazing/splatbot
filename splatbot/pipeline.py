@@ -154,6 +154,8 @@ class ScanPipeline:
         ]
         if matching_method:
             argv.extend(["--matching-method", matching_method])
+        if self.settings.colmap_bin != "colmap":
+            argv.extend(["--colmap-cmd", self.settings.colmap_bin])
         if not self.settings.colmap_use_gpu:
             argv.append("--no-gpu")
         await self.runner.run(argv)

@@ -70,6 +70,7 @@ def main() -> None:
     parser.add_argument("--telegram-user-id", required=True, type=int)
     parser.add_argument("--mode", choices=[mode.value for mode in ScanMode], default=ScanMode.OBJECT.value)
     parser.add_argument("--colmap-use-gpu", action="store_true")
+    parser.add_argument("--colmap-bin", default="colmap")
     args = parser.parse_args()
 
     settings = Settings()
@@ -78,6 +79,7 @@ def main() -> None:
     settings.runpod_bootstrap_command = ""
     settings.runpod_setup_command = ""
     settings.colmap_use_gpu = args.colmap_use_gpu
+    settings.colmap_bin = args.colmap_bin
 
     store = Store(settings.database_path)
     asyncio.run(store.init())

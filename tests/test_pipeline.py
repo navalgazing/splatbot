@@ -231,6 +231,28 @@ async def test_process_data_uses_colmap_gpu_when_enabled(tmp_path) -> None:
     ]
 
 
+async def test_process_data_can_use_custom_colmap_command(tmp_path) -> None:
+    settings = Settings(data_dir=tmp_path, colmap_bin="splatbot-colmap-wrapper")
+    runner = FakeRunner()
+    pipeline = ScanPipeline(settings, runner=runner)
+
+    await pipeline.process_data(tmp_path / "images", tmp_path / "processed")
+
+    assert runner.calls == [
+        [
+            "ns-process-data",
+            "images",
+            "--data",
+            str(tmp_path / "images"),
+            "--output-dir",
+            str(tmp_path / "processed"),
+            "--colmap-cmd",
+            "splatbot-colmap-wrapper",
+            "--no-gpu",
+        ]
+    ]
+
+
 def test_parse_ffprobe_duration() -> None:
     assert parse_ffprobe_duration("21.25\n") == 21.25
     assert parse_ffprobe_duration("N/A\n") is None
