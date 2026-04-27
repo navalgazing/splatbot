@@ -55,19 +55,30 @@ FROM ${SPLATBOT_STABLE_IMAGE}
 
 COPY --from=colmap-builder /opt/colmap-cuda/ /usr/local/
 
-RUN ldconfig \
-    && command -v ffmpeg \
-    && command -v ffprobe \
-    && command -v colmap \
-    && command -v nvcc \
-    && command -v ns-process-data \
-    && command -v ns-train \
-    && command -v ns-export \
-    && command -v ns-render \
-    && command -v rembg \
-    && colmap -h | tee /tmp/colmap-help.txt \
-    && grep -q "with CUDA" /tmp/colmap-help.txt \
-    && colmap feature_extractor -h | grep -q "SiftExtraction.use_gpu"
+RUN set -eu; \
+    ldconfig; \
+    for cmd in ffmpeg ffprobe colmap nvcc ns-process-data ns-train ns-export ns-render rembg; do \
+      path="$(command -v "$cmd" || true)"; \
+      if [ -z "$path" ]; then \
+        echo "missing command: $cmd"; \
+        exit 1; \
+      fi; \
+      echo "$cmd=$path"; \
+    done; \
+    colmap -h > /tmp/colmap-help.txt 2>&1 || { echo "colmap -h failed"; cat /tmp/colmap-help.txt; exit 1; }; \
+    sed -n '1,4p' /tmp/colmap-help.txt; \
+    if ! grep -q "with CUDA" /tmp/colmap-help.txt; then \
+      echo "COLMAP help did not report CUDA support"; \
+      sed -n '1,12p' /tmp/colmap-help.txt; \
+      exit 1; \
+    fi; \
+    colmap feature_extractor -h > /tmp/colmap-feature-extractor-help.txt 2>&1 \
+      || { echo "colmap feature_extractor -h failed"; cat /tmp/colmap-feature-extractor-help.txt; exit 1; }; \
+    if ! grep -q "SiftExtraction.use_gpu" /tmp/colmap-feature-extractor-help.txt; then \
+      echo "feature_extractor help did not list SiftExtraction.use_gpu"; \
+      tail -n 40 /tmp/colmap-feature-extractor-help.txt; \
+      exit 1; \
+    fi
 
 RUN /opt/splatbot/venv/bin/python - <<'PY'
 import importlib.metadata as metadata

@@ -43,7 +43,7 @@ jobs:
             . 2>&1 | tee /tmp/runpod-cuda-colmap-image-build.log
           rc="${PIPESTATUS[0]}"
           if [ "$rc" -ne 0 ]; then
-            tail="$(tail -n 120 /tmp/runpod-cuda-colmap-image-build.log)"
+            tail="$(tail -n 60 /tmp/runpod-cuda-colmap-image-build.log)"
             tail="${tail//'%'/'%25'}"
             tail="${tail//$'\n'/'%0A'}"
             tail="${tail//$'\r'/'%0D'}"
@@ -57,6 +57,6 @@ jobs:
             echo "### CUDA COLMAP Docker build failure"
             echo
             echo '```text'
-            tail -n 180 /tmp/runpod-cuda-colmap-image-build.log || true
+            tail -n 100 /tmp/runpod-cuda-colmap-image-build.log || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
