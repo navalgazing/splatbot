@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import shutil
 import subprocess
@@ -25,6 +26,24 @@ def latest_config(ns_dir: Path) -> Path:
 def ensure_output_files(output_dir: Path) -> None:
     if not any(path.is_file() for path in output_dir.iterdir()):
         raise SystemExit(f"backend produced no files under {output_dir}")
+
+
+def image_files(input_dir: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in input_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+    )
+
+
+def indexed_even_sample(items: list[Path], max_count: int) -> list[tuple[int, Path]]:
+    if max_count <= 0 or len(items) <= max_count:
+        return list(enumerate(items))
+    if max_count == 1:
+        idx = len(items) // 2
+        return [(idx, items[idx])]
+    indices = sorted({round(slot * (len(items) - 1) / (max_count - 1)) for slot in range(max_count)})
+    return [(idx, items[idx]) for idx in indices]
 
 
 def write_rgba_from_alpha(image_path: Path, alpha, output_path: Path) -> None:
@@ -81,11 +100,7 @@ def segment_with_sam3(input_dir: Path, output_dir: Path, prompt: str) -> None:
 
     model = build_sam3_image_model()
     processor = Sam3Processor(model)
-    images = sorted(
-        path
-        for path in input_dir.iterdir()
-        if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
-    )
+    images = image_files(input_dir)
     for image_path in images:
         image = Image.open(image_path).convert("RGB")
         state = processor.set_image(image)
@@ -97,73 +112,139 @@ def segment_with_sam3(input_dir: Path, output_dir: Path, prompt: str) -> None:
     ensure_output_files(output_dir)
 
 
-def rembg_box_for_first_frame(input_dir: Path) -> tuple[int, int, int, int] | None:
+def bbox_score(bbox: tuple[int, int, int, int], width: int, height: int) -> float:
+    left, top, right, bottom = bbox
+    area = max(0, right - left) * max(0, bottom - top)
+    pixels = max(1, width * height)
+    area_ratio = area / pixels
+    center_x = ((left + right) / 2.0) / max(1, width)
+    center_y = ((top + bottom) / 2.0) / max(1, height)
+    center_distance = ((center_x - 0.5) ** 2 + (center_y - 0.5) ** 2) ** 0.5
+    center_score = 1.0 - min(center_distance / 0.7072, 1.0)
+    if area_ratio <= 0:
+        area_score = 0.0
+    elif area_ratio < 0.02:
+        area_score = area_ratio / 0.02
+    elif area_ratio > 0.75:
+        area_score = max(0.0, 1.0 - ((area_ratio - 0.75) / 0.25))
+    else:
+        area_score = 1.0
+    edge_penalty = 0.25 if left <= 1 or top <= 1 or right >= width - 1 or bottom >= height - 1 else 0.0
+    return (0.65 * area_score) + (0.35 * center_score) - edge_penalty
+
+
+def rembg_bootstrap_box(input_dir: Path, max_samples: int = 12) -> tuple[int, tuple[int, int, int, int]] | None:
     import tempfile
 
     try:
         from PIL import Image
     except Exception as exc:  # noqa: BLE001
         raise SystemExit(f"Pillow is required for SAM2 box bootstrapping: {exc}") from exc
-    first = next(
-        (
-            path
-            for path in sorted(input_dir.iterdir())
-            if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
-        ),
-        None,
-    )
-    if first is None:
+    images = image_files(input_dir)
+    sampled = indexed_even_sample(images, max_samples)
+    if not sampled:
         return None
     with tempfile.TemporaryDirectory() as tmp:
         tmp_input = Path(tmp) / "input"
         tmp_output = Path(tmp) / "output"
         tmp_input.mkdir()
         tmp_output.mkdir()
-        shutil.copy2(first, tmp_input / first.name)
+        for _, image_path in sampled:
+            shutil.copy2(image_path, tmp_input / image_path.name)
         segment_with_rembg(tmp_input, tmp_output)
-        segmented = next(tmp_output.glob("*.png"), None)
-        if segmented is None:
+        candidates: list[tuple[float, int, tuple[int, int, int, int]]] = []
+        for frame_idx, image_path in sampled:
+            segmented = tmp_output / f"{image_path.stem}.png"
+            if not segmented.exists():
+                segmented = next(iter(sorted(tmp_output.glob(f"{image_path.stem}.*"))), None)
+            if segmented is None or not segmented.exists():
+                continue
+            alpha = Image.open(segmented).convert("RGBA").getchannel("A")
+            bbox = alpha.getbbox()
+            if bbox is None:
+                continue
+            candidates.append((bbox_score(bbox, alpha.width, alpha.height), frame_idx, bbox))
+        if not candidates:
             return None
-        alpha = Image.open(segmented).convert("RGBA").getchannel("A")
-        bbox = alpha.getbbox()
-        return bbox
+        _, frame_idx, bbox = max(candidates)
+        return frame_idx, bbox
+
+
+def build_sam2_predictor(config: str, checkpoint: str):
+    from sam2.build_sam import build_sam2_video_predictor
+
+    vos_optimized = os.environ.get("SPLATBOT_SAM2_VOS_OPTIMIZED", "").lower() in {"1", "true", "yes", "on"}
+    if vos_optimized:
+        try:
+            return build_sam2_video_predictor(config, checkpoint, vos_optimized=True)
+        except TypeError:
+            pass
+    return build_sam2_video_predictor(config, checkpoint)
+
+
+def write_sam2_mask(frame_idx: int, mask_logits, images: list[Path], output_dir: Path) -> None:
+    if frame_idx < 0 or frame_idx >= len(images):
+        return
+    try:
+        if len(mask_logits) == 0:
+            return
+        mask_source = mask_logits[0] > 0
+    except TypeError:
+        mask_source = mask_logits > 0
+    mask = best_mask(mask_source)
+    if mask is None:
+        return
+    write_rgba_from_alpha(images[frame_idx], mask, output_dir / images[frame_idx].with_suffix(".png").name)
+
+
+def has_object_ids(object_ids) -> bool:
+    if object_ids is None:
+        return False
+    try:
+        return len(object_ids) > 0
+    except TypeError:
+        return bool(object_ids)
 
 
 def segment_with_sam2(input_dir: Path, output_dir: Path) -> None:
     try:
         import numpy as np
-        from sam2.build_sam import build_sam2_video_predictor
+        import torch
     except Exception as exc:  # noqa: BLE001
         raise SystemExit(f"SAM2 is not installed or importable: {exc}") from exc
     checkpoint = os.environ.get("SPLATBOT_SAM2_CHECKPOINT", "")
     config = os.environ.get("SPLATBOT_SAM2_CONFIG", "configs/sam2.1/sam2.1_hiera_l.yaml")
     if not checkpoint:
         raise SystemExit("SPLATBOT_SAM2_CHECKPOINT is required for SAM2 segmentation")
-    box = rembg_box_for_first_frame(input_dir)
-    if box is None:
+    images = image_files(input_dir)
+    bootstrap = rembg_bootstrap_box(input_dir)
+    if bootstrap is None:
         raise SystemExit("could not bootstrap a SAM2 tracking box from rembg")
-    predictor = build_sam2_video_predictor(config, checkpoint)
-    state = predictor.init_state(video_path=str(input_dir))
-    predictor.add_new_points_or_box(
-        inference_state=state,
-        frame_idx=0,
-        obj_id=1,
-        box=np.array(box, dtype=np.float32),
+    bootstrap_idx, box = bootstrap
+    predictor = build_sam2_predictor(config, checkpoint)
+    autocast = (
+        torch.autocast("cuda", dtype=torch.bfloat16)
+        if torch.cuda.is_available()
+        else contextlib.nullcontext()
     )
-    images = sorted(
-        path
-        for path in input_dir.iterdir()
-        if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
-    )
-    for frame_idx, object_ids, mask_logits in predictor.propagate_in_video(state):
-        if frame_idx >= len(images):
-            continue
-        if not object_ids:
-            continue
-        mask = best_mask(mask_logits[0] > 0)
-        if mask is None:
-            continue
-        write_rgba_from_alpha(images[frame_idx], mask, output_dir / images[frame_idx].with_suffix(".png").name)
+    with torch.inference_mode(), autocast:
+        state = predictor.init_state(video_path=str(input_dir))
+        frame_idx, object_ids, mask_logits = predictor.add_new_points_or_box(
+            inference_state=state,
+            frame_idx=bootstrap_idx,
+            obj_id=1,
+            box=np.array(box, dtype=np.float32),
+        )
+        if has_object_ids(object_ids):
+            write_sam2_mask(frame_idx, mask_logits, images, output_dir)
+        for reverse in (False, True):
+            for frame_idx, object_ids, mask_logits in predictor.propagate_in_video(
+                state,
+                start_frame_idx=bootstrap_idx,
+                reverse=reverse,
+            ):
+                if has_object_ids(object_ids):
+                    write_sam2_mask(frame_idx, mask_logits, images, output_dir)
     ensure_output_files(output_dir)
 
 
@@ -291,4 +372,3 @@ def mesh_main() -> None:
     produced = candidates[-1]
     if produced != args.mesh_path:
         shutil.copy2(produced, args.mesh_path)
-

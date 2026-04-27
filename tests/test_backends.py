@@ -106,3 +106,22 @@ def test_segment_rembg_delegates_to_rembg_command(monkeypatch, tmp_path) -> None
         backends.segment_main()
 
     assert calls == [["rembg-test", "p", str(input_dir), str(output_dir)]]
+
+
+def test_sam2_bootstrap_sampling_covers_video_span(tmp_path) -> None:
+    items = []
+    for idx in range(10):
+        path = tmp_path / f"frame_{idx:05d}.jpg"
+        path.write_bytes(b"")
+        items.append(path)
+
+    sampled = backends.indexed_even_sample(items, 4)
+
+    assert [idx for idx, _ in sampled] == [0, 3, 6, 9]
+
+
+def test_bbox_score_prefers_centered_valid_mask() -> None:
+    centered = backends.bbox_score((30, 20, 70, 80), 100, 100)
+    edge_touching = backends.bbox_score((0, 0, 90, 90), 100, 100)
+
+    assert centered > edge_touching
