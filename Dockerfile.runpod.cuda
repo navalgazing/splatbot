@@ -86,6 +86,13 @@ RUN /opt/splatbot/venv/bin/pip uninstall -y onnxruntime onnxruntime-gpu || true 
 
 RUN /opt/splatbot/venv/bin/pip install --no-cache-dir \
       git+https://github.com/facebookresearch/sam2.git \
+      natsort \
+      PyMCubes==0.1.2 \
+      omnidata-tools \
+      geffnet \
+      rerun-sdk \
+      pyrender \
+      pytorch-lightning \
     && /opt/splatbot/venv/bin/pip install --no-cache-dir --no-deps \
       git+https://github.com/maturk/dn-splatter.git \
     && /opt/splatbot/venv/bin/ns-install-cli \
