@@ -107,6 +107,9 @@ command -v ns-train
 command -v ns-export
 command -v ns-render
 command -v rembg
+for cmd in ns-process-data ns-train ns-export ns-render rembg; do
+  "$cmd" --help >/tmp/"$cmd"-help.txt
+done
 
 truthy() {{
   case "${{1:-}}" in
@@ -127,10 +130,25 @@ if truthy "$SPLATBOT_COLMAP_USE_GPU" && ! printf '%s\n' "$COLMAP_HELP" | grep -q
 fi
 
 python - <<'PY'
+import importlib
+import importlib.util
 import os
 
 import torch
 import onnxruntime as ort
+
+def require_import(module: str) -> None:
+    try:
+        importlib.import_module(module)
+    except Exception as exc:
+        raise SystemExit(f"{{module}} is not importable: {{exc}}") from exc
+    print(f"{{module}}=importable")
+
+def optional_import(module: str) -> None:
+    if importlib.util.find_spec(module) is None:
+        print(f"{{module}}=missing")
+        return
+    require_import(module)
 
 print(f"torch={{torch.__version__}} cuda_available={{torch.cuda.is_available()}}")
 if not torch.cuda.is_available():
@@ -147,6 +165,8 @@ print(f"onnxruntime_device={{ort.get_device()}} providers={{providers}}")
 require_rembg_gpu = os.getenv("SPLATBOT_REMBG_REQUIRE_GPU", "").lower() in {"1", "true", "yes", "on"}
 if require_rembg_gpu and "CUDAExecutionProvider" not in providers:
     raise SystemExit("SPLATBOT_REMBG_REQUIRE_GPU=true but ONNX Runtime has no CUDAExecutionProvider")
+require_import("sam2")
+optional_import("sam3")
 PY
 
 if [ -n "$CACHE_VERSION" ]; then

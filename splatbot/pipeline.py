@@ -1076,7 +1076,7 @@ def configured_segmentation_backends(settings: Settings, preset: ScanPresetConfi
     if not backends:
         backends = parse_csv_list(settings.object_mask_backend) or ["rembg"]
     if preset is not None and preset.preset == ScanPreset.BEST and backends == ["rembg"]:
-        backends = ["sam3", "sam2", "rembg"]
+        backends = ["sam2", "rembg"]
     return list(dict.fromkeys(backends))
 
 

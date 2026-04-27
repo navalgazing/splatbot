@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -206,6 +207,21 @@ def has_object_ids(object_ids) -> bool:
         return bool(object_ids)
 
 
+def stage_sam2_video_frames(images: list[Path], video_dir: Path) -> None:
+    video_dir.mkdir(parents=True, exist_ok=True)
+    for idx, image_path in enumerate(images):
+        staged = video_dir / f"{idx}.jpg"
+        if image_path.suffix.lower() in {".jpg", ".jpeg"}:
+            try:
+                staged.symlink_to(image_path)
+            except OSError:
+                shutil.copy2(image_path, staged)
+            continue
+        from PIL import Image
+
+        Image.open(image_path).convert("RGB").save(staged, quality=95)
+
+
 def segment_with_sam2(input_dir: Path, output_dir: Path) -> None:
     try:
         import numpy as np
@@ -217,6 +233,8 @@ def segment_with_sam2(input_dir: Path, output_dir: Path) -> None:
     if not checkpoint:
         raise SystemExit("SPLATBOT_SAM2_CHECKPOINT is required for SAM2 segmentation")
     images = image_files(input_dir)
+    if not images:
+        raise SystemExit(f"no images found for SAM2 segmentation under {input_dir}")
     bootstrap = rembg_bootstrap_box(input_dir)
     if bootstrap is None:
         raise SystemExit("could not bootstrap a SAM2 tracking box from rembg")
@@ -227,24 +245,27 @@ def segment_with_sam2(input_dir: Path, output_dir: Path) -> None:
         if torch.cuda.is_available()
         else contextlib.nullcontext()
     )
-    with torch.inference_mode(), autocast:
-        state = predictor.init_state(video_path=str(input_dir))
-        frame_idx, object_ids, mask_logits = predictor.add_new_points_or_box(
-            inference_state=state,
-            frame_idx=bootstrap_idx,
-            obj_id=1,
-            box=np.array(box, dtype=np.float32),
-        )
-        if has_object_ids(object_ids):
-            write_sam2_mask(frame_idx, mask_logits, images, output_dir)
-        for reverse in (False, True):
-            for frame_idx, object_ids, mask_logits in predictor.propagate_in_video(
-                state,
-                start_frame_idx=bootstrap_idx,
-                reverse=reverse,
-            ):
-                if has_object_ids(object_ids):
-                    write_sam2_mask(frame_idx, mask_logits, images, output_dir)
+    with tempfile.TemporaryDirectory() as tmp:
+        video_dir = Path(tmp) / "sam2_frames"
+        stage_sam2_video_frames(images, video_dir)
+        with torch.inference_mode(), autocast:
+            state = predictor.init_state(video_path=str(video_dir))
+            frame_idx, object_ids, mask_logits = predictor.add_new_points_or_box(
+                inference_state=state,
+                frame_idx=bootstrap_idx,
+                obj_id=1,
+                box=np.array(box, dtype=np.float32),
+            )
+            if has_object_ids(object_ids):
+                write_sam2_mask(frame_idx, mask_logits, images, output_dir)
+            for reverse in (False, True):
+                for frame_idx, object_ids, mask_logits in predictor.propagate_in_video(
+                    state,
+                    start_frame_idx=bootstrap_idx,
+                    reverse=reverse,
+                ):
+                    if has_object_ids(object_ids):
+                        write_sam2_mask(frame_idx, mask_logits, images, output_dir)
     ensure_output_files(output_dir)
 
 

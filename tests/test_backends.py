@@ -158,6 +158,26 @@ def test_sam2_bootstrap_sampling_covers_video_span(tmp_path) -> None:
     assert [idx for idx, _ in sampled] == [0, 3, 6, 9]
 
 
+def test_sam2_stages_numeric_jpeg_frames_for_video_loader(tmp_path) -> None:
+    images = []
+    source = tmp_path / "source"
+    staged = tmp_path / "staged"
+    source.mkdir()
+    for idx in range(3):
+        path = source / f"frame_{idx + 1:05d}.jpg"
+        path.write_bytes(f"image-{idx}".encode())
+        images.append(path)
+
+    backends.stage_sam2_video_frames(images, staged)
+
+    assert [path.name for path in sorted(staged.iterdir())] == ["0.jpg", "1.jpg", "2.jpg"]
+    assert [(staged / f"{idx}.jpg").read_bytes() for idx in range(3)] == [
+        b"image-0",
+        b"image-1",
+        b"image-2",
+    ]
+
+
 def test_bbox_score_prefers_centered_valid_mask() -> None:
     centered = backends.bbox_score((30, 20, 70, 80), 100, 100)
     edge_touching = backends.bbox_score((0, 0, 90, 90), 100, 100)

@@ -347,7 +347,7 @@ def test_best_preset_enables_sota_backend_chain_by_default(tmp_path) -> None:
     settings = Settings(data_dir=tmp_path)
     best = settings.preset_config("best")
 
-    assert configured_segmentation_backends(settings, best) == ["sam3", "sam2", "rembg"]
+    assert configured_segmentation_backends(settings, best) == ["sam2", "rembg"]
     assert configured_pose_backends(settings, best) == ["colmap-global", "colmap"]
     assert configured_train_backends(settings, best) == ["dn-splatter-big", "splatfacto-big"]
 
