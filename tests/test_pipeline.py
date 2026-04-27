@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -6,12 +7,17 @@ from splatbot.commands import CommandResult
 from splatbot.config import ScanMode, Settings
 from splatbot.models import JobStatus, MediaItem, MediaKind
 from splatbot.pipeline import (
+    FrameQuality,
     ScanPipeline,
     clean_ply,
     format_fps,
     inspect_processed_dataset,
     latest_nerfstudio_config,
     parse_ffprobe_duration,
+    parse_ffprobe_frame_rate,
+    parse_int_list,
+    quality_aware_sample,
+    replace_processed_images_with_object_images,
     select_video_frames,
     validate_colmap_quality,
 )
@@ -50,6 +56,58 @@ class FakeRunner:
                 + "\n",
                 encoding="utf-8",
             )
+        return CommandResult(argv=argv, returncode=0, stdout="", stderr="")
+
+
+class ColmapFallbackRunner:
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+        self.process_calls = 0
+
+    async def run(self, argv: list[str], cwd: Path | None = None) -> CommandResult:
+        self.calls.append(argv)
+        if argv[0] == "ns-process-data":
+            self.process_calls += 1
+            output_dir = Path(argv[argv.index("--output-dir") + 1])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "images").mkdir(parents=True, exist_ok=True)
+            (output_dir / "transforms.json").write_text(
+                '{"frames": [{"file_path": "images/frame_00001.jpg"}]}\n',
+                encoding="utf-8",
+            )
+            sparse = output_dir / "colmap" / "sparse" / "0"
+            sparse.mkdir(parents=True, exist_ok=True)
+            registered = 2 if self.process_calls == 1 else 100
+            (sparse / "images.bin").write_text(f"images={registered}", encoding="utf-8")
+        return CommandResult(argv=argv, returncode=0, stdout="", stderr="")
+
+
+class ColmapRetryRunner:
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+        self.process_calls = 0
+
+    async def run(self, argv: list[str], cwd: Path | None = None) -> CommandResult:
+        self.calls.append(argv)
+        if argv[0] == "ns-process-data":
+            self.process_calls += 1
+            output_dir = Path(argv[argv.index("--output-dir") + 1])
+            data_dir = Path(argv[argv.index("--data") + 1])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            frames = [
+                {"file_path": f"images/{path.name}"}
+                for path in sorted(data_dir.iterdir())
+                if path.is_file()
+            ]
+            (output_dir / "images").mkdir(parents=True, exist_ok=True)
+            (output_dir / "transforms.json").write_text(
+                json.dumps({"frames": frames}) + "\n",
+                encoding="utf-8",
+            )
+            sparse = output_dir / "colmap" / "sparse" / "0"
+            sparse.mkdir(parents=True, exist_ok=True)
+            registered = 2 if self.process_calls == 1 else len(frames)
+            (sparse / "images.bin").write_text(f"images={registered}", encoding="utf-8")
         return CommandResult(argv=argv, returncode=0, stdout="", stderr="")
 
 
@@ -256,11 +314,97 @@ async def test_process_data_can_use_custom_colmap_command(tmp_path) -> None:
     ]
 
 
+async def test_object_colmap_fallback_uses_original_poses_and_object_images(tmp_path) -> None:
+    settings = Settings(data_dir=tmp_path)
+    runner = ColmapFallbackRunner()
+    pipeline = ScanPipeline(settings, runner=runner)
+    original = tmp_path / "images"
+    object_images = tmp_path / "object_images"
+    processed = tmp_path / "processed"
+    original.mkdir()
+    object_images.mkdir()
+    (original / "frame_00001.jpg").write_bytes(b"original")
+    (object_images / "frame_00001.png").write_bytes(b"object")
+    metrics = {"frames": {"selected": 100}, "colmap": {}}
+    metrics_path = tmp_path / "metrics.json"
+
+    await pipeline.process_data_with_quality_gate(
+        input_images_dir=object_images,
+        processed_dir=processed,
+        matching_method="sequential",
+        metrics=metrics,
+        metrics_path=metrics_path,
+        preset=settings.preset_config("balanced"),
+        mode=ScanMode.OBJECT,
+        original_images_dir=original,
+        object_images_dir=object_images,
+    )
+
+    assert [call[call.index("--data") + 1] for call in runner.calls] == [str(object_images), str(original)]
+    assert metrics["colmap_masked"]["active_registered_images"] == 2
+    assert metrics["colmap"]["active_registered_images"] == 100
+    assert metrics["colmap_fallback"]["applied"] is True
+    assert (processed / "images" / "frame_00001.png").read_bytes() == b"object"
+    assert "frame_00001.png" in (processed / "transforms.json").read_text(encoding="utf-8")
+
+
+async def test_colmap_retry_uses_smaller_subset_when_full_set_fails(tmp_path) -> None:
+    settings = Settings(
+        data_dir=tmp_path,
+        colmap_retry_frame_counts="120",
+        colmap_retry_matching_methods="sequential",
+    )
+    runner = ColmapRetryRunner()
+    pipeline = ScanPipeline(settings, runner=runner)
+    images = tmp_path / "images"
+    processed = tmp_path / "processed"
+    images.mkdir()
+    for idx in range(140):
+        (images / f"frame_{idx + 1:05d}.jpg").write_bytes(b"image")
+    metrics = {"frames": {"selected": 140}, "colmap": {}}
+    metrics_path = tmp_path / "metrics.json"
+
+    await pipeline.process_data_with_quality_gate(
+        input_images_dir=images,
+        processed_dir=processed,
+        matching_method="sequential",
+        metrics=metrics,
+        metrics_path=metrics_path,
+        preset=settings.preset_config("balanced"),
+        mode=ScanMode.SCENE,
+        original_images_dir=images,
+        object_images_dir=None,
+    )
+
+    assert len(runner.calls) == 2
+    assert runner.calls[0][runner.calls[0].index("--data") + 1] == str(images)
+    retry_input = Path(runner.calls[1][runner.calls[1].index("--data") + 1])
+    assert retry_input.name == "original_120"
+    assert len(list(retry_input.iterdir())) == 120
+    assert metrics["frames"]["selected_for_colmap"] == 120
+    assert metrics["colmap_recovery"] == {
+        "applied": True,
+        "source": "original",
+        "frame_count": 120,
+        "matching_method": "sequential",
+    }
+
+
 def test_parse_ffprobe_duration() -> None:
     assert parse_ffprobe_duration("21.25\n") == 21.25
     assert parse_ffprobe_duration("N/A\n") is None
     assert parse_ffprobe_duration("") is None
     assert parse_ffprobe_duration("-1\n") is None
+
+
+def test_parse_ffprobe_frame_rate() -> None:
+    assert parse_ffprobe_frame_rate("30000/1001\n30/1\n") == 29.97002997002997
+    assert parse_ffprobe_frame_rate("0/0\n24/1\n") == 24.0
+    assert parse_ffprobe_frame_rate("N/A\n") is None
+
+
+def test_parse_int_list_ignores_invalid_values() -> None:
+    assert parse_int_list("120, 80, nope,60") == [120, 80, 60]
 
 
 def test_format_fps() -> None:
@@ -307,16 +451,64 @@ def test_select_video_frames_falls_back_to_even_sampling(tmp_path) -> None:
         images,
         target_count=3,
         min_count=3,
+        quality_threshold=35.0,
         blur_threshold=20.0,
+        low_contrast_threshold=6.0,
+        overexposed_threshold=0.55,
+        underexposed_threshold=0.55,
         duplicate_threshold=3.0,
     )
 
-    assert selected == 3
+    assert selected.selected_count == 3
+    assert selected.metrics["candidate_frames"] == 6
+    assert selected.metrics["selected_frames"] == 3
     assert [path.name for path in sorted(images.iterdir())] == [
         "frame_00001.jpg",
         "frame_00002.jpg",
         "frame_00003.jpg",
     ]
+
+
+def test_quality_aware_sample_preserves_coverage_and_picks_best(tmp_path) -> None:
+    profiles = [
+        FrameQuality(path=tmp_path / f"{idx}.jpg", index=idx, score=score)
+        for idx, score in enumerate([10, 90, 20, 80, 30, 70])
+    ]
+
+    selected = quality_aware_sample(profiles, 3)
+
+    assert [profile.index for profile in selected] == [1, 3, 5]
+
+
+def test_replace_processed_images_with_object_images_updates_transforms(tmp_path) -> None:
+    processed = tmp_path / "processed"
+    object_images = tmp_path / "object_images"
+    (processed / "images").mkdir(parents=True)
+    object_images.mkdir()
+    (processed / "images" / "frame_00001.jpg").write_bytes(b"original")
+    (processed / "images" / "frame_00002.jpg").write_bytes(b"original")
+    (object_images / "frame_00001.png").write_bytes(b"object1")
+    (object_images / "frame_00002.png").write_bytes(b"object2")
+    (processed / "transforms.json").write_text(
+        """
+{
+  "frames": [
+    {"file_path": "images/frame_00001.jpg"},
+    {"file_path": "./images/frame_00002.jpg"}
+  ]
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    rewritten = replace_processed_images_with_object_images(processed, object_images)
+
+    assert rewritten == 2
+    assert (processed / "images" / "frame_00001.png").read_bytes() == b"object1"
+    assert (processed / "images" / "frame_00002.png").read_bytes() == b"object2"
+    assert '"images/frame_00001.png"' in (processed / "transforms.json").read_text(encoding="utf-8")
+    assert '"images/frame_00002.png"' in (processed / "transforms.json").read_text(encoding="utf-8")
 
 
 def test_colmap_quality_gate_rejects_low_active_sparse_model(tmp_path) -> None:

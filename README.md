@@ -9,7 +9,7 @@ Private Telegram bot and worker for turning a photo set or short video into a Ga
 - SQLite queue shared by the bot and worker.
 - Local worker/dispatcher that runs one GPU job at a time.
 - RunPod backend for launching ephemeral GPU pods from the VPS.
-- Preset-aware Nerfstudio `splatfacto` pipeline with adaptive video frame selection, optional object-background removal through `rembg`, and per-job metrics.
+- Preset-aware Nerfstudio `splatfacto` pipeline with adaptive video frame quality scoring, optional object-background removal through `rembg`, and per-job metrics.
 - Artifact persistence for the cleaned `.ply` and preview `.mp4`.
 - Optional S3-compatible artifact upload with signed result URLs.
 - Telegram completion/failure notifications when the dispatcher has a bot token.
@@ -75,6 +75,17 @@ Presets control the target video frame count and training budget:
 - `fast`: fewer frames and iterations for cheaper previews.
 - `balanced`: production default, adaptive frame selection, current quality baseline.
 - `best`: more frames, higher iteration budget, and `splatfacto-big` for A/B quality trials.
+
+For video uploads, adaptive selection extracts candidates up to
+`SPLATBOT_MAX_VIDEO_CANDIDATE_FPS`, scores frames for blur, contrast,
+over/underexposure, and duplicate content, drops frames below
+`SPLATBOT_FRAME_QUALITY_REJECT_THRESHOLD`, then samples the best surviving frames
+while preserving coverage through the clip. Object mode can fall back to solving
+COLMAP poses on the original frames while training on `rembg` object frames when
+background-removed frames are too unstable for registration. If COLMAP still
+registers too few frames, the pipeline retries smaller evenly sampled subsets
+from `SPLATBOT_COLMAP_RETRY_FRAME_COUNTS` with methods from
+`SPLATBOT_COLMAP_RETRY_MATCHING_METHODS` before failing the job.
 
 ## Artifact Storage
 

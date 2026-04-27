@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     max_video_frames: int = 140
     max_video_seconds: int = 60
     max_video_sample_fps: float = 12.0
+    max_video_candidate_fps: float = 30.0
     max_upload_bytes: int = 1024 * 1024 * 1024
     interrupted_job_grace_seconds: int = 10 * 60
     default_scan_mode: ScanMode = ScanMode.SCENE
@@ -96,11 +97,17 @@ class Settings(BaseSettings):
     train_extra_args: str = ""
     render_preview: bool = False
     adaptive_frame_selection: bool = True
-    candidate_frame_multiplier: int = 3
+    frame_quality_reject_threshold: float = 35.0
     blur_reject_threshold: float = 20.0
+    low_contrast_reject_threshold: float = 6.0
+    overexposed_reject_threshold: float = 0.55
+    underexposed_reject_threshold: float = 0.55
     duplicate_frame_threshold: float = 3.0
     min_selected_video_frames: int = 60
     min_colmap_registered_ratio: float = 0.35
+    object_colmap_original_pose_fallback: bool = True
+    colmap_retry_frame_counts: str = "120,80,60"
+    colmap_retry_matching_methods: str = "sequential,exhaustive"
     min_splat_vertices: int = 10000
     max_flattened_axis_ratio: float = 0.015
 

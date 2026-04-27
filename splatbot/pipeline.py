@@ -6,7 +6,8 @@ import shutil
 import struct
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from statistics import median
 from typing import Awaitable, Callable
 
 from .commands import CommandRunner
@@ -22,6 +23,26 @@ class PipelineOutputs:
     cleaned_ply: Path
     preview_mp4: Path | None
     metrics_path: Path | None = None
+
+
+@dataclass(frozen=True)
+class FrameQuality:
+    path: Path
+    index: int
+    score: float
+    blur: float | None = None
+    contrast: float | None = None
+    brightness: float | None = None
+    overexposed_ratio: float | None = None
+    underexposed_ratio: float | None = None
+    difference_from_previous: float | None = None
+    reject_reasons: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class FrameSelectionResult:
+    selected_count: int
+    metrics: dict
 
 
 class ScanPipeline:
@@ -65,7 +86,16 @@ class ScanPipeline:
                 "mode": mode.value,
                 "preset": preset_config.preset.value,
                 "max_video_frames": preset_config.max_video_frames,
+                "max_video_candidate_fps": self.settings.max_video_candidate_fps,
                 "adaptive_frame_selection": preset_config.adaptive_frame_selection,
+                "frame_quality_reject_threshold": self.settings.frame_quality_reject_threshold,
+                "blur_reject_threshold": self.settings.blur_reject_threshold,
+                "low_contrast_reject_threshold": self.settings.low_contrast_reject_threshold,
+                "overexposed_reject_threshold": self.settings.overexposed_reject_threshold,
+                "underexposed_reject_threshold": self.settings.underexposed_reject_threshold,
+                "duplicate_frame_threshold": self.settings.duplicate_frame_threshold,
+                "colmap_retry_frame_counts": parse_int_list(self.settings.colmap_retry_frame_counts),
+                "colmap_retry_matching_methods": parse_csv_list(self.settings.colmap_retry_matching_methods),
                 "train_method": preset_config.train_method,
                 "train_max_iterations": preset_config.train_max_iterations,
                 "train_steps_per_save": preset_config.train_steps_per_save,
@@ -95,6 +125,7 @@ class ScanPipeline:
         log_directory_summary("image frames", images_dir)
 
         input_images_dir = images_dir
+        object_dir: Path | None = None
         if mode == ScanMode.OBJECT:
             object_dir = job_dir / "object_images"
             object_dir.mkdir(parents=True, exist_ok=True)
@@ -109,15 +140,19 @@ class ScanPipeline:
         if on_status:
             await on_status(job_id, JobStatus.COLMAP)
         stage_start = time.perf_counter()
-        await self.process_data(
-            input_images_dir,
-            processed_dir,
+        await self.process_data_with_quality_gate(
+            input_images_dir=input_images_dir,
+            processed_dir=processed_dir,
             matching_method="sequential" if is_video else None,
+            metrics=metrics,
+            metrics_path=metrics_path,
+            preset=preset_config,
+            mode=mode,
+            original_images_dir=images_dir,
+            object_images_dir=object_dir,
         )
         record_stage(metrics, "colmap", stage_start)
-        metrics["colmap"] = inspect_processed_dataset(processed_dir)
         write_json(metrics_path, metrics)
-        validate_colmap_quality(metrics, preset_config.max_video_frames, self.settings)
         log_directory_summary("processed data", processed_dir)
         if on_status:
             await on_status(job_id, JobStatus.TRAINING)
@@ -160,20 +195,24 @@ class ScanPipeline:
         metrics: dict,
     ) -> None:
         if preset.adaptive_frame_selection:
-            await self.extract_candidate_video_frames(video, candidate_dir, preset)
-            selected = select_video_frames(
+            extraction_metrics = await self.extract_candidate_video_frames(video, candidate_dir)
+            selection = select_video_frames(
                 sorted(candidate_dir.glob("frame_*.jpg")),
                 images_dir,
                 target_count=preset.max_video_frames,
                 min_count=min(self.settings.min_selected_video_frames, preset.max_video_frames),
+                quality_threshold=self.settings.frame_quality_reject_threshold,
                 blur_threshold=self.settings.blur_reject_threshold,
+                low_contrast_threshold=self.settings.low_contrast_reject_threshold,
+                overexposed_threshold=self.settings.overexposed_reject_threshold,
+                underexposed_threshold=self.settings.underexposed_reject_threshold,
                 duplicate_threshold=self.settings.duplicate_frame_threshold,
             )
             metrics["video"] = {
                 **metrics.get("video", {}),
                 "adaptive_frame_selection": True,
-                "candidate_frames": count_files(candidate_dir),
-                "selected_frames": selected,
+                **extraction_metrics,
+                **selection.metrics,
             }
             return
         fps = await self.video_sample_fps(video, preset.max_video_frames)
@@ -201,29 +240,41 @@ class ScanPipeline:
         self,
         video: Path,
         candidate_dir: Path,
-        preset: ScanPresetConfig,
-    ) -> None:
-        fps = await self.video_sample_fps(
-            video,
-            min(
-                preset.max_video_frames * max(1, self.settings.candidate_frame_multiplier),
-                int(self.settings.max_video_seconds * self.settings.max_video_sample_fps),
-            ),
-        )
-        await self.runner.run(
+    ) -> dict:
+        source_fps = await self.video_frame_rate(video)
+        candidate_fps: float | None = None
+        sampling = "native"
+        if source_fps is None:
+            sampling = "capped_unknown_source_fps"
+            candidate_fps = self.settings.max_video_candidate_fps
+        elif source_fps > self.settings.max_video_candidate_fps:
+            sampling = "capped"
+            candidate_fps = self.settings.max_video_candidate_fps
+
+        argv = [
+            self.settings.ffmpeg_bin,
+            "-i",
+            str(video),
+            "-t",
+            str(self.settings.max_video_seconds),
+        ]
+        if candidate_fps is not None:
+            argv.extend(["-vf", f"fps={format_fps(candidate_fps)}"])
+        argv.extend(
             [
-                self.settings.ffmpeg_bin,
-                "-i",
-                str(video),
-                "-t",
-                str(self.settings.max_video_seconds),
-                "-vf",
-                f"fps={format_fps(fps)}",
                 "-q:v",
                 "2",
                 str(candidate_dir / "frame_%05d.jpg"),
             ]
         )
+        await self.runner.run(argv)
+        return {
+            "candidate_sampling": sampling,
+            "source_fps": round(source_fps, 3) if source_fps is not None else None,
+            "candidate_sample_fps": round(candidate_fps or source_fps, 3)
+            if (candidate_fps or source_fps) is not None
+            else None,
+        }
 
     async def video_sample_fps(self, video: Path, target_frames: int | None = None) -> float:
         result = await self.runner.run(
@@ -247,6 +298,23 @@ class ScanPipeline:
             target / sampled_seconds,
             self.settings.max_video_sample_fps,
         )
+
+    async def video_frame_rate(self, video: Path) -> float | None:
+        result = await self.runner.run(
+            [
+                self.settings.ffprobe_bin,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=avg_frame_rate,r_frame_rate",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(video),
+            ]
+        )
+        return parse_ffprobe_frame_rate(result.stdout)
 
     async def copy_or_link_images(self, media: list[MediaItem], images_dir: Path) -> None:
         for idx, item in enumerate(media, start=1):
@@ -282,6 +350,190 @@ class ScanPipeline:
         if not self.settings.colmap_use_gpu:
             argv.append("--no-gpu")
         await self.runner.run(argv)
+
+    async def process_data_with_quality_gate(
+        self,
+        input_images_dir: Path,
+        processed_dir: Path,
+        matching_method: str | None,
+        metrics: dict,
+        metrics_path: Path,
+        preset: ScanPresetConfig,
+        mode: ScanMode,
+        original_images_dir: Path,
+        object_images_dir: Path | None,
+    ) -> None:
+        await self.process_data(input_images_dir, processed_dir, matching_method=matching_method)
+        selected_frames = metrics.get("frames", {}).get("selected") or preset.max_video_frames
+        record_colmap_attempt(
+            metrics,
+            source="object" if mode == ScanMode.OBJECT and input_images_dir == object_images_dir else "original",
+            input_dir=input_images_dir,
+            frame_count=count_files(input_images_dir),
+            matching_method=matching_method,
+            result=inspect_processed_dataset(processed_dir),
+        )
+        metrics["colmap"] = metrics["colmap_attempts"][-1]["result"]
+        write_json(metrics_path, metrics)
+        masked_error_message = ""
+        try:
+            validate_colmap_quality(metrics, preset.max_video_frames, self.settings)
+            return
+        except ValueError as masked_error:
+            masked_error_message = str(masked_error)
+            if await self.retry_colmap_with_subsets(
+                source_images_dir=input_images_dir,
+                processed_dir=processed_dir,
+                matching_method=matching_method,
+                metrics=metrics,
+                metrics_path=metrics_path,
+                target_frames=preset.max_video_frames,
+                selected_frames=selected_frames,
+                source_label="object" if mode == ScanMode.OBJECT and input_images_dir == object_images_dir else "original",
+                final_object_images_dir=None,
+            ):
+                return
+            if (
+                mode != ScanMode.OBJECT
+                or object_images_dir is None
+                or input_images_dir != object_images_dir
+                or not self.settings.object_colmap_original_pose_fallback
+            ):
+                raise
+
+        metrics["colmap_masked"] = metrics["colmap"]
+        metrics["colmap_fallback"] = {
+            "reason": masked_error_message,
+            "pose_images": "original",
+            "training_images": "object",
+        }
+        write_json(metrics_path, metrics)
+
+        if processed_dir.exists():
+            shutil.rmtree(processed_dir)
+        processed_dir.mkdir(parents=True, exist_ok=True)
+        await self.process_data(original_images_dir, processed_dir, matching_method=matching_method)
+        record_colmap_attempt(
+            metrics,
+            source="original",
+            input_dir=original_images_dir,
+            frame_count=count_files(original_images_dir),
+            matching_method=matching_method,
+            result=inspect_processed_dataset(processed_dir),
+        )
+        metrics["colmap"] = metrics["colmap_attempts"][-1]["result"]
+        write_json(metrics_path, metrics)
+        try:
+            validate_colmap_quality(metrics, preset.max_video_frames, self.settings)
+        except ValueError as fallback_error:
+            if not await self.retry_colmap_with_subsets(
+                source_images_dir=original_images_dir,
+                processed_dir=processed_dir,
+                matching_method=matching_method,
+                metrics=metrics,
+                metrics_path=metrics_path,
+                target_frames=preset.max_video_frames,
+                selected_frames=selected_frames,
+                source_label="original",
+                final_object_images_dir=object_images_dir,
+            ):
+                raise ValueError(
+                    f"{masked_error_message} Original-frame pose fallback also failed: {fallback_error}"
+                ) from fallback_error
+            return
+        replaced = replace_processed_images_with_object_images(
+            processed_dir,
+            object_images_dir,
+            allowed_stems=processed_frame_stems(processed_dir),
+        )
+        metrics["colmap_fallback"] = {
+            **metrics["colmap_fallback"],
+            "applied": True,
+            "training_image_paths_rewritten": replaced,
+        }
+        write_json(metrics_path, metrics)
+
+    async def retry_colmap_with_subsets(
+        self,
+        source_images_dir: Path,
+        processed_dir: Path,
+        matching_method: str | None,
+        metrics: dict,
+        metrics_path: Path,
+        target_frames: int,
+        selected_frames: int,
+        source_label: str,
+        final_object_images_dir: Path | None,
+    ) -> bool:
+        image_files = sorted(
+            path
+            for path in source_images_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png"}
+        )
+        if not image_files:
+            return False
+        frame_counts = [
+            count
+            for count in parse_int_list(self.settings.colmap_retry_frame_counts)
+            if 10 <= count < len(image_files)
+        ]
+        matching_methods = parse_csv_list(self.settings.colmap_retry_matching_methods)
+        if not frame_counts or not matching_methods:
+            return False
+
+        attempt_root = processed_dir.parent / "colmap_retry_inputs"
+        for frame_count in frame_counts:
+            subset_dir = attempt_root / f"{source_label}_{frame_count:03d}"
+            build_even_subset(image_files, subset_dir, frame_count)
+            for retry_matching in matching_methods:
+                effective_matching = None if retry_matching == "default" else retry_matching
+                if effective_matching == matching_method and frame_count == len(image_files):
+                    continue
+                if processed_dir.exists():
+                    shutil.rmtree(processed_dir)
+                processed_dir.mkdir(parents=True, exist_ok=True)
+                await self.process_data(subset_dir, processed_dir, matching_method=effective_matching)
+                result = inspect_processed_dataset(processed_dir)
+                record_colmap_attempt(
+                    metrics,
+                    source=source_label,
+                    input_dir=subset_dir,
+                    frame_count=frame_count,
+                    matching_method=effective_matching,
+                    result=result,
+                    retry=True,
+                )
+                metrics["colmap"] = result
+                write_json(metrics_path, metrics)
+                try:
+                    validate_colmap_quality(
+                        {**metrics, "frames": {**metrics.get("frames", {}), "selected": frame_count}},
+                        target_frames,
+                        self.settings,
+                    )
+                except ValueError:
+                    continue
+                metrics["frames"]["selected_for_colmap"] = frame_count
+                metrics["colmap_recovery"] = {
+                    "applied": True,
+                    "source": source_label,
+                    "frame_count": frame_count,
+                    "matching_method": effective_matching or "default",
+                }
+                if final_object_images_dir is not None:
+                    replaced = replace_processed_images_with_object_images(
+                        processed_dir,
+                        final_object_images_dir,
+                        allowed_stems=processed_frame_stems(processed_dir),
+                    )
+                    metrics["colmap_fallback"] = {
+                        **metrics.get("colmap_fallback", {}),
+                        "applied": True,
+                        "training_image_paths_rewritten": replaced,
+                    }
+                write_json(metrics_path, metrics)
+                return True
+        return False
 
     async def train_splatfacto(self, processed_dir: Path, ns_dir: Path, preset: ScanPresetConfig) -> None:
         argv = [
@@ -365,55 +617,225 @@ def select_video_frames(
     images_dir: Path,
     target_count: int,
     min_count: int,
+    quality_threshold: float,
     blur_threshold: float,
+    low_contrast_threshold: float,
+    overexposed_threshold: float,
+    underexposed_threshold: float,
     duplicate_threshold: float,
-) -> int:
+) -> FrameSelectionResult:
     if not candidates:
         raise ValueError("video frame extraction produced no candidate frames")
-    accepted: list[Path] = []
-    previous: Path | None = None
-    for candidate in candidates:
-        blur = frame_blur_score(candidate)
-        if blur is not None and blur < blur_threshold:
-            continue
-        if previous is not None:
-            difference = frame_difference(previous, candidate)
-            if difference is not None and difference < duplicate_threshold:
-                continue
-        accepted.append(candidate)
-        previous = candidate
+    profiles = score_video_frames(
+        candidates,
+        quality_threshold=quality_threshold,
+        blur_threshold=blur_threshold,
+        low_contrast_threshold=low_contrast_threshold,
+        overexposed_threshold=overexposed_threshold,
+        underexposed_threshold=underexposed_threshold,
+        duplicate_threshold=duplicate_threshold,
+    )
+    accepted = [profile for profile in profiles if not profile.reject_reasons]
+    fallback_used = False
+    selection_pool = accepted
+    if len(selection_pool) < min_count:
+        fallback_used = True
+        top_up_count = min(max(min_count, len(selection_pool)), len(profiles))
+        top_profiles = sorted(profiles, key=lambda profile: profile.score, reverse=True)[:top_up_count]
+        by_index = {profile.index: profile for profile in selection_pool}
+        by_index.update({profile.index: profile for profile in top_profiles})
+        selection_pool = sorted(by_index.values(), key=lambda profile: profile.index)
 
-    if len(accepted) < min_count:
-        accepted = candidates
-    selected = evenly_sample(accepted, min(target_count, len(accepted)))
+    selected = quality_aware_sample(selection_pool, min(target_count, len(selection_pool)))
     for idx, src in enumerate(selected, start=1):
-        shutil.copy2(src, images_dir / f"frame_{idx:05d}.jpg")
-    return len(selected)
+        shutil.copy2(src.path, images_dir / f"frame_{idx:05d}.jpg")
+
+    return FrameSelectionResult(
+        selected_count=len(selected),
+        metrics={
+            "candidate_frames": len(candidates),
+            "selected_frames": len(selected),
+            "accepted_frame_candidates": len(accepted),
+            "quality_selection_fallback": fallback_used,
+            "quality_rejected_frames": len(profiles) - len(accepted),
+            "rejected_by_reason": rejected_reason_counts(profiles),
+            "quality_score": summarize_profile_values(profiles, "score"),
+            "selected_quality_score": summarize_profile_values(selected, "score"),
+            "blur_score": summarize_profile_values(profiles, "blur"),
+            "contrast": summarize_profile_values(profiles, "contrast"),
+            "brightness": summarize_profile_values(profiles, "brightness"),
+            "overexposed_ratio": summarize_profile_values(profiles, "overexposed_ratio"),
+            "underexposed_ratio": summarize_profile_values(profiles, "underexposed_ratio"),
+            "frame_difference": summarize_profile_values(profiles, "difference_from_previous"),
+        },
+    )
 
 
-def evenly_sample(items: list[Path], count: int) -> list[Path]:
-    if count >= len(items):
-        return list(items)
+def quality_aware_sample(profiles: list[FrameQuality], count: int) -> list[FrameQuality]:
+    if count >= len(profiles):
+        return sorted(profiles, key=lambda profile: profile.index)
     if count <= 0:
         return []
-    if count == 1:
-        return [items[len(items) // 2]]
-    step = (len(items) - 1) / (count - 1)
-    return [items[round(idx * step)] for idx in range(count)]
+    selected: dict[int, FrameQuality] = {}
+    total = len(profiles)
+    for slot in range(count):
+        start = math.floor(slot * total / count)
+        end = math.floor((slot + 1) * total / count)
+        bucket = profiles[start:max(end, start + 1)]
+        best = max(bucket, key=lambda profile: profile.score)
+        selected[best.index] = best
+    if len(selected) < count:
+        for profile in sorted(profiles, key=lambda item: item.score, reverse=True):
+            selected.setdefault(profile.index, profile)
+            if len(selected) >= count:
+                break
+    return sorted(selected.values(), key=lambda profile: profile.index)
 
 
-def frame_blur_score(path: Path) -> float | None:
+def score_video_frames(
+    candidates: list[Path],
+    quality_threshold: float,
+    blur_threshold: float,
+    low_contrast_threshold: float,
+    overexposed_threshold: float,
+    underexposed_threshold: float,
+    duplicate_threshold: float,
+) -> list[FrameQuality]:
     try:
         import cv2  # type: ignore[import-not-found]
     except Exception:  # noqa: BLE001
-        return None
-    image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-    if image is None:
-        return None
-    return float(cv2.Laplacian(image, cv2.CV_64F).var())
+        return score_video_frames_without_cv2(candidates, duplicate_threshold)
+
+    profiles: list[FrameQuality] = []
+    previous_small = None
+    for index, candidate in enumerate(candidates):
+        image = cv2.imread(str(candidate), cv2.IMREAD_GRAYSCALE)
+        if image is None:
+            profiles.append(FrameQuality(path=candidate, index=index, score=0.0, reject_reasons=("unreadable",)))
+            previous_small = None
+            continue
+        gray = resize_gray_for_metrics(cv2, image)
+        small = cv2.resize(gray, (32, 32))
+        blur = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        contrast = float(gray.std())
+        brightness = float(gray.mean())
+        overexposed = float((gray >= 245).mean())
+        underexposed = float((gray <= 10).mean())
+        difference = None
+        if previous_small is not None:
+            difference = float(abs(previous_small.astype("float32") - small.astype("float32")).mean())
+        previous_small = small
+
+        reasons: list[str] = []
+        if blur < blur_threshold:
+            reasons.append("blur")
+        if contrast < low_contrast_threshold:
+            reasons.append("low_contrast")
+        if overexposed > overexposed_threshold:
+            reasons.append("overexposed")
+        if underexposed > underexposed_threshold:
+            reasons.append("underexposed")
+        if difference is not None and difference < duplicate_threshold:
+            reasons.append("duplicate")
+        score = frame_quality_score(blur, contrast, brightness, overexposed, underexposed)
+        if score < quality_threshold:
+            reasons.append("low_quality")
+
+        profiles.append(
+            FrameQuality(
+                path=candidate,
+                index=index,
+                score=score,
+                blur=blur,
+                contrast=contrast,
+                brightness=brightness,
+                overexposed_ratio=overexposed,
+                underexposed_ratio=underexposed,
+                difference_from_previous=difference,
+                reject_reasons=tuple(reasons),
+            )
+        )
+    return profiles
 
 
-def frame_difference(previous: Path, current: Path) -> float | None:
+def score_video_frames_without_cv2(candidates: list[Path], duplicate_threshold: float) -> list[FrameQuality]:
+    profiles: list[FrameQuality] = []
+    previous: Path | None = None
+    for index, candidate in enumerate(candidates):
+        difference = frame_difference(previous, candidate) if previous is not None else None
+        reasons = ("duplicate",) if difference is not None and difference < duplicate_threshold else ()
+        profiles.append(
+            FrameQuality(
+                path=candidate,
+                index=index,
+                score=50.0,
+                difference_from_previous=difference,
+                reject_reasons=reasons,
+            )
+        )
+        previous = candidate
+    return profiles
+
+
+def resize_gray_for_metrics(cv2, image, max_side: int = 640):
+    height, width = image.shape[:2]
+    largest = max(height, width)
+    if largest <= max_side:
+        return image
+    scale = max_side / largest
+    return cv2.resize(image, (max(1, round(width * scale)), max(1, round(height * scale))))
+
+
+def frame_quality_score(
+    blur: float,
+    contrast: float,
+    brightness: float,
+    overexposed: float,
+    underexposed: float,
+) -> float:
+    blur_component = clamp(math.log1p(max(0.0, blur)) / math.log1p(500.0), 0.0, 1.0)
+    contrast_component = clamp(contrast / 60.0, 0.0, 1.0)
+    brightness_component = 1.0 - clamp(abs(brightness - 128.0) / 128.0, 0.0, 1.0)
+    exposure_component = 1.0 - clamp(max(overexposed, underexposed) * 2.0, 0.0, 1.0)
+    return round(
+        100.0
+        * (
+            0.45 * blur_component
+            + 0.25 * contrast_component
+            + 0.20 * exposure_component
+            + 0.10 * brightness_component
+        ),
+        3,
+    )
+
+
+def clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
+def rejected_reason_counts(profiles: list[FrameQuality]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for profile in profiles:
+        for reason in profile.reject_reasons:
+            counts[reason] = counts.get(reason, 0) + 1
+    return counts
+
+
+def summarize_profile_values(profiles: list[FrameQuality], field: str) -> dict[str, float | None]:
+    values = [getattr(profile, field) for profile in profiles]
+    numbers = [float(value) for value in values if value is not None]
+    if not numbers:
+        return {"min": None, "median": None, "max": None}
+    return {
+        "min": round(min(numbers), 3),
+        "median": round(float(median(numbers)), 3),
+        "max": round(max(numbers), 3),
+    }
+
+
+def frame_difference(previous: Path | None, current: Path) -> float | None:
+    if previous is None:
+        return None
     try:
         import cv2  # type: ignore[import-not-found]
     except Exception:  # noqa: BLE001
@@ -506,6 +928,112 @@ def validate_colmap_quality(metrics: dict, target_frames: int, settings: Setting
             f"COLMAP registered only {registered}/{selected_frames} selected frame(s) in the active sparse model"
             f"{hint}. This run would likely produce a distorted splat."
         )
+
+
+def record_colmap_attempt(
+    metrics: dict,
+    source: str,
+    input_dir: Path,
+    frame_count: int,
+    matching_method: str | None,
+    result: dict,
+    retry: bool = False,
+) -> None:
+    metrics.setdefault("colmap_attempts", []).append(
+        {
+            "source": source,
+            "input_dir": str(input_dir),
+            "frame_count": frame_count,
+            "matching_method": matching_method or "default",
+            "retry": retry,
+            "result": result,
+        }
+    )
+
+
+def build_even_subset(image_files: list[Path], subset_dir: Path, frame_count: int) -> None:
+    if subset_dir.exists():
+        shutil.rmtree(subset_dir)
+    subset_dir.mkdir(parents=True, exist_ok=True)
+    selected = quality_blind_even_sample(image_files, min(frame_count, len(image_files)))
+    for src in selected:
+        shutil.copy2(src, subset_dir / src.name)
+
+
+def quality_blind_even_sample(items: list[Path], count: int) -> list[Path]:
+    if count >= len(items):
+        return list(items)
+    if count <= 0:
+        return []
+    if count == 1:
+        return [items[len(items) // 2]]
+    step = (len(items) - 1) / (count - 1)
+    return [items[round(idx * step)] for idx in range(count)]
+
+
+def processed_frame_stems(processed_dir: Path) -> set[str]:
+    transforms_path = processed_dir / "transforms.json"
+    if not transforms_path.exists():
+        return set()
+    try:
+        frames = json.loads(transforms_path.read_text(encoding="utf-8")).get("frames", [])
+    except (OSError, json.JSONDecodeError):
+        return set()
+    stems: set[str] = set()
+    for frame in frames:
+        if not isinstance(frame, dict):
+            continue
+        file_path = frame.get("file_path")
+        if isinstance(file_path, str) and file_path:
+            stems.add(Path(PurePosixPath(file_path).name).stem)
+    return stems
+
+
+def replace_processed_images_with_object_images(
+    processed_dir: Path,
+    object_images_dir: Path,
+    allowed_stems: set[str] | None = None,
+) -> int:
+    transforms_path = processed_dir / "transforms.json"
+    if not transforms_path.exists():
+        raise FileNotFoundError(f"no transforms.json found under {processed_dir}")
+    data = json.loads(transforms_path.read_text(encoding="utf-8"))
+    frames = data.get("frames")
+    if not isinstance(frames, list):
+        raise ValueError(f"{transforms_path} does not contain a frames list")
+
+    object_images = {
+        image.stem: image
+        for image in sorted(object_images_dir.iterdir())
+        if image.is_file() and image.suffix.lower() in {".jpg", ".jpeg", ".png"}
+        and (allowed_stems is None or image.stem in allowed_stems)
+    }
+    processed_images_dir = processed_dir / "images"
+    processed_images_dir.mkdir(parents=True, exist_ok=True)
+
+    rewritten = 0
+    missing: list[str] = []
+    for frame in frames:
+        if not isinstance(frame, dict):
+            continue
+        file_path = frame.get("file_path")
+        if not isinstance(file_path, str) or not file_path:
+            continue
+        source_name = PurePosixPath(file_path).name
+        object_image = object_images.get(Path(source_name).stem)
+        if object_image is None:
+            missing.append(source_name)
+            continue
+        rewritten_path = PurePosixPath("images") / object_image.name
+        shutil.copy2(object_image, processed_dir / str(rewritten_path))
+        frame["file_path"] = rewritten_path.as_posix()
+        rewritten += 1
+
+    if not rewritten and frames:
+        sample = ", ".join(missing[:5])
+        raise ValueError(f"could not match object images to COLMAP transforms; missing {sample}")
+    write_json(transforms_path, data)
+    return rewritten
 
 
 def inspect_ply(path: Path) -> dict:
@@ -655,6 +1183,45 @@ def parse_ffprobe_duration(stdout: str) -> float | None:
     except (IndexError, ValueError):
         return None
     return duration if duration > 0 else None
+
+
+def parse_ffprobe_frame_rate(stdout: str) -> float | None:
+    for line in stdout.strip().splitlines():
+        fps = parse_frame_rate_value(line.strip())
+        if fps is not None:
+            return fps
+    return None
+
+
+def parse_int_list(value: str) -> list[int]:
+    parsed: list[int] = []
+    for item in value.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            parsed.append(int(item))
+        except ValueError:
+            continue
+    return parsed
+
+
+def parse_csv_list(value: str) -> list[str]:
+    return [item.strip().lower() for item in value.split(",") if item.strip()]
+
+
+def parse_frame_rate_value(value: str) -> float | None:
+    if not value or value == "0/0":
+        return None
+    try:
+        if "/" in value:
+            numerator, denominator = value.split("/", 1)
+            fps = float(numerator) / float(denominator)
+        else:
+            fps = float(value)
+    except (ValueError, ZeroDivisionError):
+        return None
+    return fps if fps > 0 else None
 
 
 def format_fps(fps: float) -> str:

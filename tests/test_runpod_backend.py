@@ -79,9 +79,12 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     command = render_remote_worker_command(settings, job, "pod123", "a2V5")
 
     assert "export SPLATBOT_MAX_VIDEO_FRAMES=140" in command
+    assert "export SPLATBOT_MAX_VIDEO_CANDIDATE_FPS=30.0" in command
     assert "export SPLATBOT_SCAN_PRESET=balanced" in command
     assert "export SPLATBOT_FFPROBE_BIN=ffprobe" in command
     assert "export SPLATBOT_ADAPTIVE_FRAME_SELECTION=true" in command
+    assert "export SPLATBOT_FRAME_QUALITY_REJECT_THRESHOLD=35.0" in command
+    assert "export SPLATBOT_OBJECT_COLMAP_ORIGINAL_POSE_FALLBACK=true" in command
     assert "export SPLATBOT_TRAIN_MAX_ITERATIONS=10000" in command
     assert "export SPLATBOT_COLMAP_USE_GPU=false" in command
     assert "export SPLATBOT_REMBG_REQUIRE_GPU=false" in command
