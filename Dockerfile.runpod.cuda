@@ -53,6 +53,26 @@ RUN git clone --branch "${COLMAP_VERSION}" --depth 1 https://github.com/colmap/c
 
 FROM ${SPLATBOT_STABLE_IMAGE}
 
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+      libboost-filesystem1.74.0 \
+      libboost-graph1.74.0 \
+      libboost-program-options1.74.0 \
+      libboost-system1.74.0 \
+      libceres2 \
+      libflann1.9 \
+      libfreeimage3 \
+      libgl1 \
+      libglew2.2 \
+      libgomp1 \
+      libgoogle-glog0v5 \
+      liblz4-1 \
+      libmetis5 \
+      libsqlite3-0 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=colmap-builder /opt/colmap-cuda/ /usr/local/
 
 RUN set -eu; \
