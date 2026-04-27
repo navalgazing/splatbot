@@ -469,9 +469,10 @@ async def test_object_colmap_fallback_uses_original_poses_and_object_images(tmp_
     processed = tmp_path / "processed"
     original.mkdir()
     object_images.mkdir()
-    (original / "frame_00001.jpg").write_bytes(b"original")
-    (object_images / "frame_00001.png").write_bytes(b"object")
-    metrics = {"frames": {"selected": 100}, "colmap": {}}
+    for idx in range(140):
+        (original / f"frame_{idx + 1:05d}.jpg").write_bytes(b"original")
+        (object_images / f"frame_{idx + 1:05d}.png").write_bytes(b"object")
+    metrics = {"frames": {"selected": 140}, "colmap": {}}
     metrics_path = tmp_path / "metrics.json"
 
     await pipeline.process_data_with_quality_gate(

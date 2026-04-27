@@ -459,9 +459,12 @@ class ScanPipeline:
     ) -> None:
         await self.process_data(input_images_dir, processed_dir, matching_method=matching_method)
         selected_frames = metrics.get("frames", {}).get("selected") or preset.max_video_frames
+        input_source_label = (
+            "object" if mode == ScanMode.OBJECT and input_images_dir == object_images_dir else "original"
+        )
         record_colmap_attempt(
             metrics,
-            source="object" if mode == ScanMode.OBJECT and input_images_dir == object_images_dir else "original",
+            source=input_source_label,
             input_dir=input_images_dir,
             frame_count=count_files(input_images_dir),
             matching_method=matching_method,
@@ -475,24 +478,24 @@ class ScanPipeline:
             return
         except ValueError as masked_error:
             masked_error_message = str(masked_error)
-            if await self.retry_colmap_with_subsets(
-                source_images_dir=input_images_dir,
-                processed_dir=processed_dir,
-                matching_method=matching_method,
-                metrics=metrics,
-                metrics_path=metrics_path,
-                target_frames=preset.max_video_frames,
-                selected_frames=selected_frames,
-                source_label="object" if mode == ScanMode.OBJECT and input_images_dir == object_images_dir else "original",
-                final_object_images_dir=None,
-            ):
-                return
             if (
                 mode != ScanMode.OBJECT
                 or object_images_dir is None
                 or input_images_dir != object_images_dir
                 or not self.settings.object_colmap_original_pose_fallback
             ):
+                if await self.retry_colmap_with_subsets(
+                    source_images_dir=input_images_dir,
+                    processed_dir=processed_dir,
+                    matching_method=matching_method,
+                    metrics=metrics,
+                    metrics_path=metrics_path,
+                    target_frames=preset.max_video_frames,
+                    selected_frames=selected_frames,
+                    source_label=input_source_label,
+                    final_object_images_dir=None,
+                ):
+                    return
                 raise
 
         metrics["colmap_masked"] = metrics["colmap"]
