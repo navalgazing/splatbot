@@ -44,7 +44,11 @@ RUN git clone --branch "${COLMAP_VERSION}" --depth 1 https://github.com/colmap/c
       -DOPENGL_ENABLED=OFF \
       -DCGAL_ENABLED=OFF \
       -DTESTS_ENABLED=OFF \
-    && cmake --build /tmp/colmap/build --target install --parallel "$(nproc)" \
+      -DCMAKE_INSTALL_MESSAGE=NEVER \
+    && cmake --build /tmp/colmap/build --parallel "$(nproc)" > /tmp/colmap-build.log 2>&1 \
+      || { tail -n 200 /tmp/colmap-build.log; exit 1; } \
+    && cmake --install /tmp/colmap/build > /tmp/colmap-install.log 2>&1 \
+      || { tail -n 200 /tmp/colmap-install.log; exit 1; } \
     && rm -rf /tmp/colmap
 
 FROM ${SPLATBOT_STABLE_IMAGE}
