@@ -304,7 +304,10 @@ def prepare_dn_splatter_depths(data_dir: Path) -> None:
     ]
     result = subprocess.run(script, check=False)
     if result.returncode != 0:
-        print("dn-splatter depth preparation failed; continuing without generated mono depth", file=sys.stderr)
+        raise SystemExit("dn-splatter depth preparation failed")
+    mono_depth_dir = data_dir / "mono_depth"
+    if not mono_depth_dir.exists() or not any(mono_depth_dir.glob("*.npy")):
+        raise SystemExit("dn-splatter depth preparation produced no mono_depth npy files")
 
 
 def train_main() -> None:
@@ -341,12 +344,18 @@ def train_main() -> None:
     if backend in {"dn-splatter", "dn-splatter-big", "ags-mesh"}:
         argv.extend(
             [
+                "--pipeline.datamanager.dataparser.load-normals",
+                "False",
                 "--pipeline.model.use-depth-loss",
                 "True",
                 "--pipeline.model.depth-lambda",
                 "0.2",
                 "--pipeline.model.depth-loss-type",
                 "PearsonDepth",
+                "--pipeline.model.use-normal-loss",
+                "False",
+                "--pipeline.model.use-normal-tv-loss",
+                "False",
             ]
         )
     argv.extend(arg for arg in args.extra if arg != "--")

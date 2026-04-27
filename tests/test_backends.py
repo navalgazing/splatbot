@@ -1,3 +1,5 @@
+from types import ModuleType
+
 import pytest
 
 from splatbot import backends
@@ -56,6 +58,42 @@ def test_train_backend_requires_dn_splatter_for_dn_backend(monkeypatch, tmp_path
         )
         with pytest.raises(SystemExit, match="dn-splatter"):
             backends.train_main()
+
+
+def test_train_backend_runs_dn_splatter_depth_only(monkeypatch, tmp_path) -> None:
+    calls = []
+
+    def fake_run(argv, env=None):
+        calls.append(argv)
+
+    monkeypatch.setattr(backends, "run", fake_run)
+    monkeypatch.setattr(backends, "prepare_dn_splatter_depths", lambda data_dir: None)
+    monkeypatch.setitem(__import__("sys").modules, "dn_splatter", ModuleType("dn_splatter"))
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            "sys.argv",
+            [
+                "splatbot-train",
+                "--backend",
+                "dn-splatter-big",
+                "--data",
+                str(tmp_path / "processed"),
+                "--output",
+                str(tmp_path / "ns"),
+                "--max-iterations",
+                "10",
+            ],
+        )
+        backends.train_main()
+
+    argv = calls[0]
+    assert "--pipeline.datamanager.dataparser.load-normals" in argv
+    assert argv[argv.index("--pipeline.datamanager.dataparser.load-normals") + 1] == "False"
+    assert "--pipeline.model.use-depth-loss" in argv
+    assert argv[argv.index("--pipeline.model.use-depth-loss") + 1] == "True"
+    assert "--pipeline.model.use-normal-loss" in argv
+    assert argv[argv.index("--pipeline.model.use-normal-loss") + 1] == "False"
 
 
 def test_mesh_backend_requires_gs_mesh(monkeypatch, tmp_path) -> None:
