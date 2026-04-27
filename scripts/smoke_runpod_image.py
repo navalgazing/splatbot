@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import subprocess
 from datetime import UTC, datetime
+from pathlib import Path
 
 from splatbot.config import ScanMode, Settings
 from splatbot.models import JobStatus, ScanJob
@@ -20,6 +22,7 @@ sed -n '1,5p' /tmp/colmap-help.txt
 grep -q 'with CUDA' /tmp/colmap-help.txt
 colmap feature_extractor -h > /tmp/feature-help.txt 2>&1
 grep -m1 'SiftExtraction.use_gpu' /tmp/feature-help.txt
+/opt/splatbot/venv/bin/pip install --no-build-isolation --no-deps -e /workspace/splatbot-app
 /opt/splatbot/venv/bin/python - <<'PY'
 import importlib.metadata as metadata
 import importlib.util
@@ -50,6 +53,36 @@ for cmd in splatbot-segment splatbot-pose splatbot-train splatbot-mesh; do
   command -v "$cmd"
 done
 """
+
+
+def sync_app_to_pod(repo_root: Path, launcher: RunPodLauncher, target) -> None:
+    ssh_args = launcher._pod_ssh_args(target)
+    ssh_transport = shlex.join(["ssh", *ssh_args[:-1]])
+    remote = ssh_args[-1]
+    subprocess.run(
+        ["ssh", *ssh_args, "mkdir", "-p", "/workspace/splatbot-app"],
+        check=True,
+    )
+    rsync_base = [
+        "rsync",
+        "-r",
+        "--delete",
+        "--no-perms",
+        "--no-owner",
+        "--no-group",
+        "--omit-dir-times",
+        "--exclude",
+        "__pycache__",
+        "--exclude",
+        "*.egg-info",
+        "-e",
+        ssh_transport,
+    ]
+    for item in ("pyproject.toml", "splatbot", "scripts"):
+        subprocess.run(
+            [*rsync_base, str(repo_root / item), f"{remote}:/workspace/splatbot-app/"],
+            check=True,
+        )
 
 
 def main() -> None:
@@ -84,6 +117,7 @@ def main() -> None:
         print(f"created pod {pod.id} image={pod.image_name}", flush=True)
         target = launcher.wait_for_ssh(pod.id)
         print(f"ssh ready {target.host}:{target.port}", flush=True)
+        sync_app_to_pod(Path(__file__).resolve().parents[1], launcher, target)
         result = subprocess.run(
             ["ssh", *launcher._pod_ssh_args(target), "bash", "-s"],
             input=SMOKE_SCRIPT,
