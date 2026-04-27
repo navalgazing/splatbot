@@ -70,6 +70,7 @@ RUN apt-get update \
       libgoogle-glog0v5 \
       liblz4-1 \
       libmetis5 \
+      libopengl0 \
       libsqlite3-0 \
     && rm -rf /var/lib/apt/lists/*
 
