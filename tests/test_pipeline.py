@@ -983,6 +983,39 @@ async def test_external_train_backend_preserves_extra_arg_boundaries(tmp_path) -
     ]
 
 
+async def test_mcmc_default_train_command_does_not_inherit_splatfacto_extra_args(tmp_path) -> None:
+    settings = Settings(
+        data_dir=tmp_path,
+        best_train_extra_args="--pipeline.model.cull-alpha-thresh=0.005 --note 'two words'",
+    )
+    runner = FakeRunner()
+    pipeline = ScanPipeline(settings, runner=runner)
+
+    await pipeline.train_external_backend(
+        "3dgs-mcmc",
+        tmp_path / "processed",
+        tmp_path / "nerfstudio",
+        settings.preset_config("best"),
+    )
+
+    assert runner.calls == [
+        [
+            "ns-train",
+            "splatfacto-mcmc",
+            "--data",
+            str(tmp_path / "processed"),
+            "--output-dir",
+            str(tmp_path / "nerfstudio"),
+            "--max-num-iterations",
+            "14000",
+            "--steps-per-save",
+            "14000",
+            "--viewer.quit-on-train-completion",
+            "True",
+        ]
+    ]
+
+
 def test_latest_nerfstudio_config_selects_newest(tmp_path) -> None:
     old = tmp_path / "old" / "config.yml"
     new = tmp_path / "new" / "config.yml"

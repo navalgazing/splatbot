@@ -196,7 +196,7 @@ class Settings(BaseSettings):
     mcmc_train_command: str = (
         "ns-train splatfacto-mcmc --data {processed_dir} --output-dir {ns_dir} "
         "--max-num-iterations {max_iterations} --steps-per-save {steps_per_save} "
-        "--viewer.quit-on-train-completion True {extra_args}"
+        "--viewer.quit-on-train-completion True"
     )
     mip_splatting_train_command: str = ""
     twodgs_train_command: str = ""
