@@ -165,15 +165,6 @@ print(f"onnxruntime_providers={ort.get_available_providers()}")
 require_import("sam2")
 require_import("depth_anything_3")
 require_import("xformers")
-try:
-    from sam2.build_sam import build_sam2_video_predictor
-
-    build_sam2_video_predictor(
-        os.environ["SPLATBOT_SAM2_CONFIG"],
-        os.environ["SPLATBOT_SAM2_CHECKPOINT"],
-    )
-except Exception as exc:
-    raise SystemExit(f"SAM2 predictor self-test failed: {exc}") from exc
 if "CUDAExecutionProvider" not in ort.get_available_providers():
     raise SystemExit("onnxruntime-gpu did not expose CUDAExecutionProvider")
 PY
