@@ -91,7 +91,9 @@ def ensure_viewer_assets(public_results_dir: Path) -> None:
                 tmp_target = Path(dst.name)
                 with source.open("rb") as src:
                     shutil.copyfileobj(src, dst)
+            tmp_target.chmod(0o644)
             tmp_target.replace(target)
+            target.chmod(0o644)
         finally:
             if tmp_target is not None:
                 tmp_target.unlink(missing_ok=True)

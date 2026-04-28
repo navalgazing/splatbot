@@ -1,6 +1,7 @@
 from splatbot.config import Settings
 from splatbot.pipeline import PipelineOutputs
 import struct
+import stat
 
 import pytest
 
@@ -42,6 +43,7 @@ def test_publish_viewer_writes_static_result_page(tmp_path) -> None:
     assert (tmp_path / "public" / "_viewer_assets" / "controls" / "OrbitControls.js").exists()
     assert (tmp_path / "public" / "_viewer_assets" / "loaders" / "PLYLoader.js").exists()
     assert (tmp_path / "public" / "_viewer_assets" / "gaussian-splats-3d.module.js").exists()
+    assert stat.S_IMODE((tmp_path / "public" / "_viewer_assets" / "three.module.js").stat().st_mode) == 0o644
     html = path.read_text(encoding="utf-8")
     assert 'type="importmap"' in html
     assert 'rel="modulepreload"' in html
