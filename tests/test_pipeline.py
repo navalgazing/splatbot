@@ -183,6 +183,47 @@ class SuccessfulColmapRunner:
         return CommandResult(argv=argv, returncode=0, stdout="", stderr="")
 
 
+class TransformOnlyThenColmapRunner:
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    async def run(self, argv: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> CommandResult:
+        self.calls.append(argv)
+        if argv[0] in {"splatbot-pose", "splatbot-da3"}:
+            output_flag = "--output" if "--output" in argv else "--processed"
+            input_flag = "--input" if "--input" in argv else "--images"
+            output_dir = Path(argv[argv.index(output_flag) + 1])
+            input_dir = Path(argv[argv.index(input_flag) + 1])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            frames = [
+                {"file_path": f"images/{path.name}", "transform_matrix": [[1, 0, 0, 0]] * 4}
+                for path in sorted(input_dir.iterdir())
+                if path.is_file()
+            ]
+            (output_dir / "transforms.json").write_text(
+                json.dumps({"frames": frames}) + "\n",
+                encoding="utf-8",
+            )
+        if argv[0] == "ns-process-data":
+            output_dir = Path(argv[argv.index("--output-dir") + 1])
+            data_dir = Path(argv[argv.index("--data") + 1])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            frames = [
+                {"file_path": f"images/{path.name}"}
+                for path in sorted(data_dir.iterdir())
+                if path.is_file()
+            ]
+            (output_dir / "images").mkdir(parents=True, exist_ok=True)
+            (output_dir / "transforms.json").write_text(
+                json.dumps({"frames": frames}) + "\n",
+                encoding="utf-8",
+            )
+            sparse = output_dir / "colmap" / "sparse" / "0"
+            sparse.mkdir(parents=True, exist_ok=True)
+            (sparse / "images.bin").write_text(f"images={len(frames)}", encoding="utf-8")
+        return CommandResult(argv=argv, returncode=0, stdout="", stderr="")
+
+
 def media(path: Path, kind: MediaKind = MediaKind.PHOTO) -> MediaItem:
     return MediaItem(
         id=path.name,
@@ -477,13 +518,13 @@ def test_best_preset_enables_sota_backend_chain_by_default(tmp_path) -> None:
     assert configured_segmentation_backends(settings, best) == ["sam2", "rembg"]
     assert configured_depth_backends(settings, best) == ["da3", "depth-anything-v2-large"]
     assert configured_pose_backends(settings, best) == [
-        "da3-colmap",
-        "vggt-colmap",
-        "mast3r-sfm",
         "colmap-global",
         "colmap-sequential",
         "colmap-exhaustive",
         "colmap",
+        "da3-colmap",
+        "vggt-colmap",
+        "mast3r-sfm",
     ]
     assert configured_train_backends(settings, best) == ["3dgs-mcmc", "splatfacto-big"]
 
@@ -1175,6 +1216,60 @@ def test_colmap_quality_gate_rejects_unknown_registration(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="registration count is unknown"):
         validate_colmap_quality(metrics, 140, Settings())
+
+
+def test_colmap_quality_gate_rejects_transform_only_pose(tmp_path) -> None:
+    metrics = {"frames": {"selected": 140}, "colmap": {"transforms_frames": 140, "models": []}}
+
+    with pytest.raises(ValueError, match="Transform-only poses are not accepted"):
+        validate_colmap_quality(metrics, 140, Settings())
+
+
+def test_quality_report_flags_transform_only_pose(tmp_path) -> None:
+    report = build_quality_report(
+        {
+            "frames": {"selected": 140},
+            "colmap": {"transforms_frames": 140, "models": []},
+            "ply": {"cleaned": {"vertices": 20_000}},
+        },
+        Settings(data_dir=tmp_path),
+    )
+
+    assert report["passed"] is False
+    assert "pose_missing_sparse_model" in report["issues"]
+
+
+async def test_transform_only_external_pose_falls_back_to_colmap(tmp_path) -> None:
+    settings = Settings(
+        data_dir=tmp_path,
+        best_pose_backends="da3-colmap,colmap-global",
+        best_pose_required_backends="",
+    )
+    runner = TransformOnlyThenColmapRunner()
+    pipeline = ScanPipeline(settings, runner=runner)
+    images = tmp_path / "images"
+    processed = tmp_path / "processed"
+    images.mkdir()
+    for idx in range(20):
+        (images / f"frame_{idx + 1:05d}.jpg").write_bytes(b"image")
+    metrics = {"frames": {"selected": 20}, "colmap": {}, "pipeline_events": []}
+
+    await pipeline.process_data_with_quality_gate(
+        input_images_dir=images,
+        processed_dir=processed,
+        matching_method="sequential",
+        metrics=metrics,
+        metrics_path=tmp_path / "metrics.json",
+        preset=settings.preset_config("best"),
+        mode=ScanMode.SCENE,
+        original_images_dir=images,
+        object_images_dir=None,
+    )
+
+    assert metrics["pose_backend"] == "colmap-global"
+    assert metrics["pose_backend_failures"][0]["backend"] == "da3-colmap"
+    assert "Transform-only poses are not accepted" in metrics["pose_backend_failures"][0]["error"]
+    assert metrics["colmap"]["active_registered_images"] == 20
 
 
 def test_postprocess_validation_rejects_unobserved_points(tmp_path) -> None:

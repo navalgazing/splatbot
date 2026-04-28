@@ -1418,8 +1418,10 @@ def build_quality_report(metrics: dict, settings: Settings) -> dict:
         warnings.append("train_backend_fallback_used")
     if metrics.get("colmap_fallback", {}).get("applied"):
         warnings.append("object_pose_used_original_frame_fallback")
-    registered = colmap.get("active_registered_images") or colmap.get("transforms_frames")
+    registered = colmap.get("active_registered_images")
     selected = frames.get("selected")
+    if selected and registered is None and colmap.get("transforms_frames") is not None:
+        issues.append("pose_missing_sparse_model")
     if selected and registered and registered < max(2, int(selected * settings.min_colmap_registered_ratio)):
         issues.append("low_pose_registration")
     if validation.get("applied") and not validation.get("passed", True):
@@ -2402,8 +2404,12 @@ def validate_colmap_quality(metrics: dict, target_frames: int, settings: Setting
     colmap = metrics.get("colmap", {})
     registered = colmap.get("active_registered_images")
     if registered is None:
-        registered = colmap.get("transforms_frames")
-    if registered is None:
+        if colmap.get("transforms_frames") is not None:
+            raise ValueError(
+                f"pose backend produced {colmap.get('transforms_frames')} transform frame(s) but no active "
+                "COLMAP sparse model. Transform-only poses are not accepted by the production quality gate "
+                "because they can produce diffuse or distorted splats."
+            )
         raise ValueError(
             f"COLMAP registration count is unknown for {selected_frames} selected frame(s). "
             "This run cannot be quality-gated safely."
