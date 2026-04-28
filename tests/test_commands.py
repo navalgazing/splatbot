@@ -1,6 +1,6 @@
 import pytest
 
-from splatbot.commands import render_argv_template
+from splatbot.commands import CommandError, CommandRunner, render_argv_template
 
 
 def test_render_argv_template_preserves_paths_with_spaces() -> None:
@@ -22,3 +22,9 @@ def test_render_argv_template_rejects_embedded_list_placeholder() -> None:
     with pytest.raises(ValueError, match="must be its own command token"):
         render_argv_template("tool --args={extra_args}", {"extra_args": ["--one"]})
 
+
+async def test_command_runner_times_out_hung_process() -> None:
+    runner = CommandRunner(timeout_seconds=0.1)
+
+    with pytest.raises(CommandError, match="timed out"):
+        await runner.run(["python3", "-c", "import time; time.sleep(5)"])
