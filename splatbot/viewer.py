@@ -12,13 +12,18 @@ from .config import Settings
 from .pipeline import PipelineOutputs
 
 ALLOWED_MESH_EXTENSIONS = {".glb", ".gltf", ".obj"}
-MODULE_INTEGRITY = {
+GAUSSIAN_SPLATS_MODULE_URL = (
+    "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.6/"
+    "build/gaussian-splats-3d.module.js"
+)
+CORE_MODULE_INTEGRITY = {
     "https://unpkg.com/three@0.165.0/build/three.module.js": "sha384-Qvl1RLjZOCDFOOH2bKcGnaDHMM8MVv3zVtMvhy3juQdiIOs6RgQ/7zYdM1FbpHzI",
     "https://unpkg.com/three@0.165.0/examples/jsm/controls/OrbitControls.js": "sha384-BZPDnhvqQ9HQ5XsmqEusjwpN9TIaiGbsJ5XWilDEuRu9Psbw4ZyYk67DUO0nbP3z",
+    "https://unpkg.com/three@0.165.0/examples/jsm/loaders/PLYLoader.js": "sha384-O7ZFYS9EuaDFTByrnLgtegHfTUwTgluDq8VMh7JWJaAnXi6SQCu6YSuTs1voPqsg",
+}
+MESH_MODULE_INTEGRITY = {
     "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js": "sha384-pK8zo1cGi3nIm4Yh/hrezBkXvN2riHD+7kg4agEXeMxDNqiAKGO2Ds20+xjzcYgZ",
     "https://unpkg.com/three@0.165.0/examples/jsm/loaders/OBJLoader.js": "sha384-qOxu19eVIcHchuUw1oqOwdUJBMFRbuIik14tOMzsoBIa4yuIxVZYj4/YeaWokjND",
-    "https://unpkg.com/three@0.165.0/examples/jsm/loaders/PLYLoader.js": "sha384-O7ZFYS9EuaDFTByrnLgtegHfTUwTgluDq8VMh7JWJaAnXi6SQCu6YSuTs1voPqsg",
-    "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.6/build/gaussian-splats-3d.module.js": "sha384-wn1UKOYaDMuKGmgBbBxjN4akrwQN6pl+kT1KvGuyOOUeBn8bzo5UnnzJTWeljp2C",
 }
 
 
@@ -97,10 +102,13 @@ def render_viewer_html(
     mesh_button = '<button id="mesh-button" type="button">Use mesh view</button>' if mesh_name else ""
     mesh_download = f'<a href="{html.escape(mesh_name)}" download>Download mesh</a>' if mesh_name else ""
     report_download = '<a href="quality_report.json" download>Download quality report</a>' if has_quality_report else ""
+    module_integrity = dict(CORE_MODULE_INTEGRITY)
+    if mesh_name:
+        module_integrity.update(MESH_MODULE_INTEGRITY)
     module_preloads = "\n".join(
         f'  <link rel="modulepreload" href="{html.escape(url)}" '
         f'integrity="{html.escape(integrity)}" crossorigin="anonymous">'
-        for url, integrity in MODULE_INTEGRITY.items()
+        for url, integrity in module_integrity.items()
     )
     metadata = {
         "job_id": job_id,
@@ -134,6 +142,11 @@ def render_viewer_html(
       position: relative;
     }}
     #fallback-viewport {{
+      display: none;
+      position: absolute;
+      inset: 0;
+    }}
+    #splat-viewport {{
       display: none;
       position: absolute;
       inset: 0;
@@ -200,13 +213,14 @@ def render_viewer_html(
 <body>
   <main>
     <section id="viewport">
+      <div id="splat-viewport"></div>
       <div id="fallback-viewport"></div>
       <div id="mesh-viewport"></div>
-      <div class="status" id="status">Loading Gaussian splat scene...</div>
+      <div class="status" id="status">Loading point preview...</div>
     </section>
     <aside>
       <h1>{html.escape(title)}</h1>
-      <button id="splat-button" type="button">Use splat view</button>
+      <button id="splat-button" type="button">Use full splat view</button>
       {mesh_button}
       <button id="fallback-button" type="button">Use point preview</button>
       {preview_html}
@@ -226,12 +240,10 @@ def render_viewer_html(
   <script type="module">
     import * as THREE from "three";
     import {{ OrbitControls }} from "three/addons/controls/OrbitControls.js";
-    import {{ GLTFLoader }} from "three/addons/loaders/GLTFLoader.js";
-    import {{ OBJLoader }} from "three/addons/loaders/OBJLoader.js";
     import {{ PLYLoader }} from "three/addons/loaders/PLYLoader.js";
-    import * as GaussianSplats3D from "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.6/build/gaussian-splats-3d.module.js";
 
     const container = document.getElementById("viewport");
+    const splatContainer = document.getElementById("splat-viewport");
     const fallbackContainer = document.getElementById("fallback-viewport");
     const meshContainer = document.getElementById("mesh-viewport");
     const status = document.getElementById("status");
@@ -240,15 +252,38 @@ def render_viewer_html(
     const meshButton = document.getElementById("mesh-button");
     const meshName = {json.dumps(mesh_name)};
     let splatViewer = null;
+    let GaussianSplats3D = null;
     let fallbackStarted = false;
     let meshStarted = false;
+    let activeView = null;
+
+    async function loadGaussianSplats3D() {{
+      if (!GaussianSplats3D) {{
+        GaussianSplats3D = await import("{GAUSSIAN_SPLATS_MODULE_URL}");
+      }}
+      return GaussianSplats3D;
+    }}
+
+    function disposeSplatViewer() {{
+      if (!splatViewer) return;
+      try {{ splatViewer.dispose(); }} catch (error) {{ console.warn(error); }}
+      splatViewer = null;
+    }}
 
     async function startSplatViewer() {{
+      activeView = "splat";
+      splatContainer.style.display = "block";
       fallbackContainer.style.display = "none";
       meshContainer.style.display = "none";
+      if (splatViewer) {{
+        status.textContent = "Drag to orbit. Scroll or pinch to zoom. Right-drag to pan.";
+        return;
+      }}
+      status.textContent = "Loading full Gaussian splat scene...";
       try {{
-        splatViewer = new GaussianSplats3D.Viewer({{
-          rootElement: container,
+        const GaussianSplats3DModule = await loadGaussianSplats3D();
+        splatViewer = new GaussianSplats3DModule.Viewer({{
+          rootElement: splatContainer,
           cameraUp: [0, 0, 1],
           initialCameraPosition: [1.4, -2.0, 1.2],
           initialCameraLookAt: [0, 0, 0],
@@ -260,7 +295,7 @@ def render_viewer_html(
           showLoadingUI: true,
         }});
         await splatViewer.addSplatScene("cleaned_splat.ply", {{
-          format: GaussianSplats3D.SceneFormat.Ply,
+          format: GaussianSplats3DModule.SceneFormat.Ply,
           splatAlphaRemovalThreshold: 5,
           showLoadingUI: true,
           progressiveLoad: true,
@@ -269,19 +304,23 @@ def render_viewer_html(
         status.textContent = "Drag to orbit. Scroll or pinch to zoom. Right-drag to pan.";
       }} catch (error) {{
         console.error(error);
+        disposeSplatViewer();
         status.textContent = "Full splat renderer failed. Showing point preview.";
         startPointPreview();
       }}
     }}
 
     function startPointPreview() {{
-      if (fallbackStarted) return;
-      fallbackStarted = true;
-      if (splatViewer) {{
-        try {{ splatViewer.dispose(); }} catch (error) {{ console.warn(error); }}
-      }}
+      activeView = "point";
+      disposeSplatViewer();
+      splatContainer.style.display = "none";
       fallbackContainer.style.display = "block";
       meshContainer.style.display = "none";
+      if (fallbackStarted) {{
+        status.textContent = "Drag to orbit. Scroll or pinch to zoom. Right-drag to pan.";
+        return;
+      }}
+      fallbackStarted = true;
       status.textContent = "Loading point preview...";
 
       const scene = new THREE.Scene();
@@ -335,25 +374,26 @@ def render_viewer_html(
 
     function animate() {{
       requestAnimationFrame(animate);
-      controls.update();
-      renderer.render(scene, camera);
+      if (activeView === "point") {{
+        controls.update();
+        renderer.render(scene, camera);
+      }}
     }}
     animate();
     }}
 
-    function startMeshPreview() {{
+    async function startMeshPreview() {{
       if (!meshName) return;
+      activeView = "mesh";
+      disposeSplatViewer();
+      splatContainer.style.display = "none";
+      fallbackContainer.style.display = "none";
+      meshContainer.style.display = "block";
       if (meshStarted) {{
-        fallbackContainer.style.display = "none";
-        meshContainer.style.display = "block";
+        status.textContent = "Drag to orbit. Scroll or pinch to zoom. Right-drag to pan.";
         return;
       }}
       meshStarted = true;
-      if (splatViewer) {{
-        try {{ splatViewer.dispose(); }} catch (error) {{ console.warn(error); }}
-      }}
-      fallbackContainer.style.display = "none";
-      meshContainer.style.display = "block";
       status.textContent = "Loading mesh...";
 
       const scene = new THREE.Scene();
@@ -404,8 +444,10 @@ def render_viewer_html(
         status.textContent = "Could not load the mesh in-browser. Use the download link.";
       }};
       if (extension === "glb" || extension === "gltf") {{
+        const {{ GLTFLoader }} = await import("three/addons/loaders/GLTFLoader.js");
         new GLTFLoader().load(meshName, onLoad, undefined, onError);
       }} else if (extension === "obj") {{
+        const {{ OBJLoader }} = await import("three/addons/loaders/OBJLoader.js");
         new OBJLoader().load(meshName, onLoad, undefined, onError);
       }} else {{
         status.textContent = "Mesh format is available for download but not previewed here.";
@@ -413,8 +455,10 @@ def render_viewer_html(
 
       function animate() {{
         requestAnimationFrame(animate);
-        controls.update();
-        renderer.render(scene, camera);
+        if (activeView === "mesh") {{
+          controls.update();
+          renderer.render(scene, camera);
+        }}
       }}
       animate();
     }}
@@ -422,7 +466,7 @@ def render_viewer_html(
     splatButton.addEventListener("click", startSplatViewer);
     if (meshButton) meshButton.addEventListener("click", startMeshPreview);
     fallbackButton.addEventListener("click", startPointPreview);
-    startSplatViewer();
+    startPointPreview();
   </script>
   <script type="application/json" id="metadata">{json.dumps(metadata)}</script>
 </body>

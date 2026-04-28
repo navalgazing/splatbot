@@ -45,6 +45,15 @@ def test_publish_viewer_writes_static_result_page(tmp_path) -> None:
     assert 'from "three"' in html
     assert "viewer_points.ply" in html
     assert "PLYLoader" in html
+    assert "Loading point preview" in html
+    assert "Use full splat view" in html
+    assert "startPointPreview();" in html
+    assert 'import * as GaussianSplats3D' not in html
+    assert 'await import("https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d' in html
+    assert (
+        'rel="modulepreload" href="https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d'
+        not in html
+    )
     assert 'name="robots"' in html
 
 
