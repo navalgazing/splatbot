@@ -100,6 +100,7 @@ class RunPodClient:
             "vcpuCount": settings.runpod_min_vcpu_count,
             "minRAMPerGPU": settings.runpod_min_memory_gb,
             "allowedCudaVersions": ["12.8", "12.9", "13.0"],
+            "globalNetworking": True,
             "supportPublicIp": True,
             "ports": [settings.runpod_ports.strip() or "22/tcp"],
             "env": {"PUBLIC_KEY": public_key},

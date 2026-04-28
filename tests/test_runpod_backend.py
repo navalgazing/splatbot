@@ -255,6 +255,8 @@ def test_create_pod_uses_network_volume_and_datacenter_filters(tmp_path) -> None
 
     assert pod.id == "pod123"
     assert client.payload["networkVolumeId"] == "vol123"
+    assert client.payload["globalNetworking"] is True
+    assert client.payload["supportPublicIp"] is True
     assert "volumeInGb" not in client.payload
     assert client.payload["dataCenterIds"] == ["EU-RO-1", "EUR-IS-2"]
     assert client.payload["dataCenterPriority"] == "availability"
