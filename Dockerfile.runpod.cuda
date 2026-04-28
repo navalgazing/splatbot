@@ -89,6 +89,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV SPLATBOT_VGGT_REPO=/opt/vggt
 ENV SPLATBOT_MAST3R_REPO=/opt/mast3r
 ENV TORCH_CUDA_ARCH_LIST=8.0;8.6;8.9;9.0
+ENV U2NET_HOME=/opt/splatbot/models/rembg
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -120,6 +121,16 @@ ENV SPLATBOT_SAM2_CONFIG=configs/sam2.1/sam2.1_hiera_l.yaml
 
 RUN /opt/splatbot/venv/bin/pip uninstall -y onnxruntime onnxruntime-gpu || true \
     && /opt/splatbot/venv/bin/pip install --no-cache-dir --upgrade "rembg[gpu,cli]" onnxruntime-gpu
+
+RUN mkdir -p "$U2NET_HOME" \
+    && if [ -s /root/.u2net/u2net.onnx ]; then \
+      cp /root/.u2net/u2net.onnx "$U2NET_HOME/u2net.onnx"; \
+    else \
+      curl -fsSL \
+        https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx \
+        -o "$U2NET_HOME/u2net.onnx"; \
+    fi \
+    && test "$(stat -c%s "$U2NET_HOME/u2net.onnx")" -gt 1000000
 
 RUN /opt/splatbot/venv/bin/pip install --no-cache-dir --upgrade --force-reinstall --no-deps \
       "git+https://github.com/nerfstudio-project/nerfstudio.git@${NERFSTUDIO_COMMIT}"
@@ -232,6 +243,7 @@ import importlib.metadata as metadata
 import importlib
 import importlib.util
 import os
+from pathlib import Path
 import onnxruntime as ort
 import torch
 from nerfstudio.configs.method_configs import method_configs
@@ -272,6 +284,10 @@ for package in (
 print(f"torch_cuda_available={torch.cuda.is_available()}")
 print(f"onnxruntime_device={ort.get_device()}")
 print(f"onnxruntime_providers={ort.get_available_providers()}")
+u2net_model = Path(os.environ["U2NET_HOME"]) / "u2net.onnx"
+if not u2net_model.exists() or u2net_model.stat().st_size < 1_000_000:
+    raise SystemExit(f"baked rembg model is missing or too small: {u2net_model}")
+print(f"u2net_model={u2net_model} bytes={u2net_model.stat().st_size}")
 require_import("sam2")
 require_import("depth_anything_3")
 require_import("xformers")

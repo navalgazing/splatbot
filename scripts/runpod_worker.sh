@@ -46,7 +46,7 @@ export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/workspace/triton_cache}"
 export CUDA_CACHE_PATH="${CUDA_CACHE_PATH:-/workspace/cuda_cache}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/workspace/.cache}"
 export TORCH_HOME="${TORCH_HOME:-$XDG_CACHE_HOME/torch}"
-export U2NET_HOME="${U2NET_HOME:-/workspace/.u2net}"
+export U2NET_HOME="${U2NET_HOME:-/opt/splatbot/models/rembg}"
 export SPLATBOT_LOG_COMMAND_OUTPUT="${SPLATBOT_LOG_COMMAND_OUTPUT:-1}"
 KNOWN_HOSTS="${SPLATBOT_VPS_KNOWN_HOSTS_FILE:-/root/.ssh/known_hosts}"
 mkdir -p "$(dirname "$KNOWN_HOSTS")"
@@ -127,6 +127,7 @@ check_colmap_cuda() {
 check_rembg_cuda() {
   "$VENV_DIR/bin/python" - <<'PY'
 import os
+from pathlib import Path
 
 import torch  # Preload CUDA/cuDNN libraries before ONNX Runtime initializes.
 import onnxruntime as ort
@@ -138,6 +139,14 @@ providers = ort.get_available_providers()
 device = ort.get_device()
 print(f"  onnxruntime_device={device}")
 print(f"  onnxruntime_providers={providers}")
+
+u2net_model = Path(os.environ.get("U2NET_HOME", "/opt/splatbot/models/rembg")) / "u2net.onnx"
+if not u2net_model.exists() or u2net_model.stat().st_size < 1_000_000:
+    raise SystemExit(
+        f"rembg u2net model is not baked into the worker image at {u2net_model}; "
+        "refusing runtime download during production job"
+    )
+print(f"  rembg_u2net_model={u2net_model} bytes={u2net_model.stat().st_size}")
 
 require_gpu = os.getenv("SPLATBOT_REMBG_REQUIRE_GPU", "").lower() in {"1", "true", "yes", "on"}
 if not require_gpu:

@@ -65,7 +65,7 @@ export TRITON_CACHE_DIR="${{TRITON_CACHE_DIR:-/workspace/triton_cache}}"
 export CUDA_CACHE_PATH="${{CUDA_CACHE_PATH:-/workspace/cuda_cache}}"
 export XDG_CACHE_HOME="${{XDG_CACHE_HOME:-/workspace/.cache}}"
 export TORCH_HOME="${{TORCH_HOME:-$XDG_CACHE_HOME/torch}}"
-export U2NET_HOME="${{U2NET_HOME:-/workspace/.u2net}}"
+export U2NET_HOME="${{U2NET_HOME:-/opt/splatbot/models/rembg}}"
 {shell_export("VENV_DIR", venv_dir)}
 {shell_export("CACHE_MARKER", cache_marker)}
 {shell_export("CACHE_VERSION", settings.runpod_runtime_cache_version.strip())}
@@ -109,15 +109,21 @@ export PATH="$VENV_DIR/bin:$PATH"
 python - <<'PY'
 import os
 from pathlib import Path
+import shutil
 import urllib.request
 
 model = Path(os.environ["U2NET_HOME"]) / "u2net.onnx"
 model.parent.mkdir(parents=True, exist_ok=True)
 if not model.exists() or model.stat().st_size < 1_000_000:
-    urllib.request.urlretrieve(
-        "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx",
-        model,
-    )
+    for candidate in (Path("/opt/splatbot/models/rembg/u2net.onnx"), Path("/root/.u2net/u2net.onnx")):
+        if candidate.exists() and candidate.stat().st_size >= 1_000_000:
+            shutil.copy2(candidate, model)
+            break
+    else:
+        urllib.request.urlretrieve(
+            "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx",
+            model,
+        )
 print(f"rembg model bytes={{model.stat().st_size}}")
 PY
 
