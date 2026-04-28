@@ -285,7 +285,7 @@ class Settings(BaseSettings):
     runpod_ssh_user: str = "root"
     runpod_pod_ssh_key: Path | None = None
     runpod_ssh_ready_timeout_seconds: int = 3600
-    runpod_no_endpoint_timeout_seconds: int = 900
+    runpod_no_endpoint_timeout_seconds: int = 1500
     runpod_launch_attempts: int = 5
     runpod_worker_timeout_seconds: int = 6 * 60 * 60
     runpod_vps_host: str = ""
