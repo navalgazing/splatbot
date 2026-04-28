@@ -16,6 +16,7 @@ from splatbot.runpod_backend import (
     RunPodSshUnavailableError,
     RunPodSshTarget,
     render_remote_worker_command,
+    runpod_gpu_type_ids,
 )
 
 
@@ -145,6 +146,17 @@ def test_remote_worker_command_can_pin_vps_host_key(tmp_path) -> None:
     assert "ssh-keyscan -T 15 -H" in command
 
 
+def test_runpod_gpu_type_ids_accepts_priority_list(tmp_path) -> None:
+    settings = make_runpod_settings(tmp_path)
+    settings.runpod_gpu_type_id = "NVIDIA RTX A6000, NVIDIA RTX 6000 Ada Generation, NVIDIA GeForce RTX 4090"
+
+    assert runpod_gpu_type_ids(settings) == [
+        "NVIDIA RTX A6000",
+        "NVIDIA RTX 6000 Ada Generation",
+        "NVIDIA GeForce RTX 4090",
+    ]
+
+
 def test_launch_recycles_pods_without_public_ssh_endpoint(tmp_path) -> None:
     settings = make_runpod_settings(tmp_path)
     settings.runpod_no_endpoint_timeout_seconds = 0
@@ -235,6 +247,7 @@ def test_launch_recycles_pod_that_disappears_before_ssh_ready(tmp_path, monkeypa
 
 def test_create_pod_uses_network_volume_and_datacenter_filters(tmp_path) -> None:
     settings = make_runpod_settings(tmp_path)
+    settings.runpod_gpu_type_id = "NVIDIA RTX A6000, NVIDIA GeForce RTX 4090"
     settings.runpod_network_volume_id = "vol123"
     settings.runpod_data_center_ids = "EU-RO-1, EUR-IS-2"
     settings.runpod_ports = ""
@@ -265,6 +278,7 @@ def test_create_pod_uses_network_volume_and_datacenter_filters(tmp_path) -> None
     assert client.payload["networkVolumeId"] == "vol123"
     assert client.payload["globalNetworking"] is True
     assert client.payload["supportPublicIp"] is True
+    assert client.payload["gpuTypeIds"] == ["NVIDIA RTX A6000", "NVIDIA GeForce RTX 4090"]
     assert "volumeInGb" not in client.payload
     assert client.payload["dataCenterIds"] == ["EU-RO-1", "EUR-IS-2"]
     assert client.payload["dataCenterPriority"] == "availability"

@@ -299,6 +299,10 @@ SPLATBOT_COLMAP_USE_GPU=true
 SPLATBOT_REMBG_REQUIRE_GPU=true
 ```
 
+`SPLATBOT_RUNPOD_GPU_TYPE_ID` accepts a comma-separated priority list. For best
+mode, put a 48 GB card first; a 24 GB 4090 is cheaper when available but can
+OOM the official VGGT COLMAP demo.
+
 The image keeps `apt-get` and bulk Python installs out of each job and includes
 a CUDA-enabled headless COLMAP build plus GPU ONNX Runtime for `rembg`. A RunPod
 network volume is still useful for workspace caches and future large model
@@ -319,6 +323,7 @@ Then set:
 
 ```bash
 SPLATBOT_RUNPOD_IMAGE_NAME=ghcr.io/navalgazing/splatbot-runpod:cuda-colmap
+SPLATBOT_RUNPOD_GPU_TYPE_ID='NVIDIA RTX A6000,NVIDIA RTX 6000 Ada Generation,NVIDIA L40S,NVIDIA GeForce RTX 4090'
 SPLATBOT_RUNPOD_NETWORK_VOLUME_ID=...
 SPLATBOT_RUNPOD_DATA_CENTER_IDS=EU-RO-1
 SPLATBOT_RUNPOD_VENV=/opt/splatbot/venv

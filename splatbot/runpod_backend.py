@@ -46,6 +46,10 @@ class RunPodSshTarget:
     port: int
 
 
+def runpod_gpu_type_ids(settings: Settings) -> list[str]:
+    return [item.strip() for item in settings.runpod_gpu_type_id.split(",") if item.strip()]
+
+
 class RunPodClient:
     def __init__(self, api_key: str) -> None:
         self.api_key = api_key
@@ -90,7 +94,7 @@ class RunPodClient:
         payload = {
             "name": "splatbot-" + job.id[:12],
             "imageName": settings.runpod_image_name,
-            "gpuTypeIds": [settings.runpod_gpu_type_id],
+            "gpuTypeIds": runpod_gpu_type_ids(settings),
             "gpuCount": 1,
             "cloudType": cloud_type,
             "computeType": "GPU",
