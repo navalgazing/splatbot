@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import os
@@ -263,11 +262,74 @@ class RunPodLauncher:
             f"{self.settings.runpod_ssh_user}@{target.host}",
         ]
 
+    def _pod_scp_args(self, target: RunPodSshTarget) -> list[str]:
+        return [
+            "-i",
+            str(self.settings.runpod_pod_ssh_key),
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            f"UserKnownHostsFile={self.settings.runpod_pod_known_hosts_path}",
+            "-o",
+            "LogLevel=ERROR",
+            "-o",
+            "ConnectTimeout=10",
+            "-P",
+            str(target.port),
+        ]
+
+    def _install_vps_ssh_key(self, target: RunPodSshTarget) -> None:
+        mkdir_result = subprocess.run(
+            ["ssh", *self._pod_ssh_args(target), "install", "-d", "-m", "700", "/root/.ssh"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+        if mkdir_result.returncode != 0:
+            raise RunPodError(
+                "failed to prepare pod SSH directory: "
+                + mkdir_result.stderr.decode(errors="replace").strip()[-500:]
+            )
+        copy_result = subprocess.run(
+            [
+                "scp",
+                *self._pod_scp_args(target),
+                str(self.settings.runpod_vps_ssh_key),
+                f"{self.settings.runpod_ssh_user}@{target.host}:/root/.ssh/id_ed25519",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+            check=False,
+        )
+        if copy_result.returncode != 0:
+            raise RunPodError(
+                "failed to copy VPS SSH key to pod: "
+                + copy_result.stderr.decode(errors="replace").strip()[-500:]
+            )
+        chmod_result = subprocess.run(
+            ["ssh", *self._pod_ssh_args(target), "chmod", "600", "/root/.ssh/id_ed25519"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+        if chmod_result.returncode != 0:
+            raise RunPodError(
+                "failed to set pod VPS SSH key permissions: "
+                + chmod_result.stderr.decode(errors="replace").strip()[-500:]
+            )
+
     def run_worker(self, job: ScanJob, pod_id: str, target: RunPodSshTarget) -> None:
         log_path = self.settings.job_dir(job.id) / "runpod-worker.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        key_b64 = base64.b64encode(self.settings.runpod_vps_ssh_key.read_bytes()).decode()
-        command = render_remote_worker_command(self.settings, job, pod_id, key_b64)
+        self._install_vps_ssh_key(target)
+        command = render_remote_worker_command(self.settings, job, pod_id)
         ssh_command = ["ssh", *self._pod_ssh_args(target), "bash", "-s"]
         with log_path.open("ab") as log:
             log.write(f"\n--- RunPod worker {pod_id} on {target.host}:{target.port} ---\n".encode())
@@ -283,7 +345,7 @@ class RunPodLauncher:
             raise RunPodError(f"RunPod worker exited with {result.returncode}; see {log_path}")
 
 
-def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str, key_b64: str) -> str:
+def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str) -> str:
     host = shlex.quote(settings.runpod_vps_host)
     user = shlex.quote(settings.runpod_vps_user)
     bootstrap_command = shlex.quote(settings.runpod_bootstrap_command.strip())
@@ -452,8 +514,6 @@ if ! command -v ssh >/dev/null || ! command -v rsync >/dev/null || ! command -v 
   apt-get update
   apt-get install -y openssh-client rsync python3
 fi
-printf %s {shlex.quote(key_b64)} | base64 -d > /root/.ssh/id_ed25519
-chmod 600 /root/.ssh/id_ed25519
 export SPLATBOT_VPS_KNOWN_HOSTS={vps_known_hosts}
 export SPLATBOT_VPS_KNOWN_HOSTS_FILE=/root/.ssh/known_hosts
 if [ -n "$SPLATBOT_VPS_KNOWN_HOSTS" ]; then

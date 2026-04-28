@@ -76,7 +76,7 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
         updated_at=datetime.now(UTC),
     )
 
-    command = render_remote_worker_command(settings, job, "pod123", "a2V5")
+    command = render_remote_worker_command(settings, job, "pod123")
 
     assert "export SPLATBOT_MAX_VIDEO_FRAMES=140" in command
     assert "export SPLATBOT_MAX_VIDEO_CANDIDATE_FPS=30.0" in command
@@ -110,6 +110,8 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     assert "StrictHostKeyChecking=yes" in command
     assert "UserKnownHostsFile=$SPLATBOT_VPS_KNOWN_HOSTS_FILE" in command
     assert "SPLATBOT_RUNPOD_API_KEY" not in command
+    assert "base64 -d" not in command
+    assert "a2V5" not in command
 
 
 def test_remote_worker_command_can_pin_vps_host_key(tmp_path) -> None:
@@ -126,7 +128,7 @@ def test_remote_worker_command_can_pin_vps_host_key(tmp_path) -> None:
         updated_at=datetime.now(UTC),
     )
 
-    command = render_remote_worker_command(settings, job, "pod123", "a2V5")
+    command = render_remote_worker_command(settings, job, "pod123")
 
     assert "export SPLATBOT_VPS_KNOWN_HOSTS='203.0.113.10 ssh-ed25519 AAAAexample'" in command
     assert "ssh-keyscan -T 15 -H" in command
