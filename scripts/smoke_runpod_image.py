@@ -46,13 +46,23 @@ def optional_import(module: str) -> None:
     require_import(module)
 
 print("torch_cuda_available=" + str(torch.cuda.is_available()))
-for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "onnxruntime-gpu"):
+for package in (
+    "nerfstudio",
+    "gsplat",
+    "rembg",
+    "onnxruntime",
+    "onnxruntime-gpu",
+    "depth-anything-3",
+    "xformers",
+):
     try:
         version = metadata.version(package)
     except metadata.PackageNotFoundError:
         version = "missing"
     print(f"{package}={version}")
 require_import("sam2")
+require_import("depth_anything_3")
+require_import("xformers")
 optional_import("sam3")
 checkpoint = Path("/opt/splatbot/models/sam2.1_hiera_large.pt")
 if not checkpoint.exists() or checkpoint.stat().st_size <= 0:
@@ -62,11 +72,13 @@ print("onnxruntime_providers=" + str(ort.get_available_providers()))
 if "CUDAExecutionProvider" not in ort.get_available_providers():
     raise SystemExit("onnxruntime CUDAExecutionProvider is not available")
 PY
-for cmd in splatbot-segment splatbot-pose splatbot-train splatbot-mesh; do
+for cmd in splatbot-segment splatbot-pose splatbot-depth splatbot-train splatbot-mesh splatbot-da3; do
   command -v "$cmd"
   "$cmd" --help >/tmp/"$cmd"-help.txt
 done
 splatbot-segment --backend sam2 --self-test
+ns-train splatfacto-big --help | grep -q -- "--pipeline.model.strategy"
+splatbot-da3 --help >/tmp/splatbot-da3-help.txt
 if /opt/splatbot/venv/bin/python - <<'PY'
 import importlib.util
 raise SystemExit(0 if importlib.util.find_spec("sam3") is not None else 1)
