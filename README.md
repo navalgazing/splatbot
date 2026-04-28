@@ -89,7 +89,8 @@ registers too few frames, the pipeline retries smaller evenly sampled subsets
 from `SPLATBOT_COLMAP_RETRY_FRAME_COUNTS` with methods from
 `SPLATBOT_COLMAP_RETRY_MATCHING_METHODS` before failing the job. The default
 `best` pose chain does not include COLMAP fallback; it requires a learned pose
-adapter to succeed.
+adapter to succeed. The 24 GB production profile tries MASt3R before VGGT
+because the official VGGT COLMAP demo can exceed 24 GB even after downsampling.
 
 Object exports also run conservative silhouette cleanup. The exported Gaussian
 centers are projected back into up to `SPLATBOT_SILHOUETTE_CLEANUP_MAX_VIEWS`
@@ -110,7 +111,7 @@ SPLATBOT_OBJECT_MASK_PROMPT='main object'
 SPLATBOT_SAM2_MASK_COMMAND='splatbot-segment --backend sam2 --input {images_dir} --output {object_dir}'
 SPLATBOT_SAM2_CHECKPOINT=/opt/splatbot/models/sam2.1_hiera_large.pt
 SPLATBOT_SAM2_CONFIG=configs/sam2.1/sam2.1_hiera_l.yaml
-SPLATBOT_BEST_POSE_BACKENDS=vggt-colmap,mast3r-sfm
+SPLATBOT_BEST_POSE_BACKENDS=mast3r-sfm,vggt-colmap
 SPLATBOT_BEST_POSE_REQUIRED_BACKENDS=
 SPLATBOT_POSE_BACKEND_COMMAND='splatbot-pose --backend {backend} --input {images_dir} --output {processed_dir} --matching-method {matching_method}'
 SPLATBOT_DA3_MODEL=depth-anything/DA3-LARGE-1.1

@@ -92,7 +92,7 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     assert "export SPLATBOT_OBJECT_COLMAP_ORIGINAL_POSE_FALLBACK=true" in command
     assert "export SPLATBOT_BEST_SEGMENTATION_BACKENDS=sam2,rembg" in command
     assert "export SPLATBOT_EXPERIMENTAL_SAM3_ENABLED=false" in command
-    assert "export SPLATBOT_BEST_POSE_BACKENDS=vggt-colmap,mast3r-sfm" in command
+    assert "export SPLATBOT_BEST_POSE_BACKENDS=mast3r-sfm,vggt-colmap" in command
     assert "export SPLATBOT_DA3_MODEL=depth-anything/DA3-LARGE-1.1" in command
     assert "export SPLATBOT_DA3_USE_RAY_POSE=true" in command
     assert "export SPLATBOT_DA3_REF_VIEW_STRATEGY=middle" in command

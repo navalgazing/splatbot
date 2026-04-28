@@ -363,7 +363,9 @@ def write_pairs_file(images: list[Path], pairs_path: Path, matching_method: str)
         raise SystemExit("MASt3R requires at least one image pair")
     pairs_path.parent.mkdir(parents=True, exist_ok=True)
     pairs_path.write_text(
-        "".join(f"{left} {right} 1.0\n" for left, right in sorted(pairs)),
+        "# kapture format: 1.1\n"
+        "# query_image, map_image, score\n"
+        + "".join(f"{left}, {right}, 1.0\n" for left, right in sorted(pairs)),
         encoding="utf-8",
     )
 
