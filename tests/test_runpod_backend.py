@@ -247,6 +247,57 @@ def test_launch_recycles_pod_that_disappears_before_ssh_ready(tmp_path, monkeypa
     assert pod_ids == ["pod1", None, "pod2", None]
 
 
+def test_launch_recycles_pod_that_exits_before_ssh_ready(tmp_path, monkeypatch) -> None:
+    settings = make_runpod_settings(tmp_path)
+    settings.runpod_launch_attempts = 2
+
+    class ExitingClient:
+        def __init__(self) -> None:
+            self.created: list[str] = []
+            self.deleted: list[str] = []
+
+        def create_ssh_pod(self, settings, job, public_key):
+            pod_id = f"pod{len(self.created) + 1}"
+            self.created.append(pod_id)
+            return RunPodPod(id=pod_id, image_name=settings.runpod_image_name)
+
+        def get_pod(self, pod_id: str) -> dict:
+            if pod_id == "pod1":
+                return {
+                    "desiredStatus": "EXITED",
+                    "publicIp": "",
+                    "portMappings": None,
+                    "lastStatusChange": "Exited by Runpod",
+                }
+            return {"desiredStatus": "RUNNING", "publicIp": "198.51.100.2", "portMappings": {"22": 30022}}
+
+        def delete_pod(self, pod_id: str) -> None:
+            self.deleted.append(pod_id)
+
+    job = ScanJob(
+        id="job123",
+        session_id="session123",
+        telegram_user_id=42,
+        mode=ScanMode.SCENE,
+        status=JobStatus.QUEUED,
+        error=None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    client = ExitingClient()
+    pod_ids: list[str | None] = []
+    launcher = RunPodLauncher(settings, client=client)
+    monkeypatch.setattr(launcher, "_ssh_ready", lambda target: (True, ""))
+    monkeypatch.setattr(launcher, "run_worker", lambda job, pod_id, target: None)
+
+    pod = launcher.launch(job, pod_ids.append)
+
+    assert pod.id == "pod2"
+    assert client.created == ["pod1", "pod2"]
+    assert client.deleted == ["pod1", "pod2"]
+    assert pod_ids == ["pod1", None, "pod2", None]
+
+
 def test_create_pod_uses_network_volume_and_datacenter_filters(tmp_path) -> None:
     settings = make_runpod_settings(tmp_path)
     settings.runpod_gpu_type_id = "NVIDIA RTX A6000, NVIDIA GeForce RTX 4090"

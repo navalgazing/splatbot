@@ -214,9 +214,16 @@ class RunPodLauncher:
                 if exc.status_code == 404:
                     raise RunPodSshUnavailableError(f"RunPod pod disappeared before SSH was ready: {pod_id}") from exc
                 raise
+            status = str(pod.get("desiredStatus") or "").upper()
             host = pod.get("publicIp") or ""
             port = (pod.get("portMappings") or {}).get("22")
             last_seen = f"host={host!r} port={port!r} status={pod.get('desiredStatus')!r}"
+            if status in {"EXITED", "TERMINATED", "FAILED", "DEAD"}:
+                detail = pod.get("lastStatusChange") or pod.get("message") or ""
+                suffix = f": {detail}" if detail else ""
+                raise RunPodSshUnavailableError(
+                    f"RunPod pod reached terminal status before SSH was ready: {last_seen}{suffix}"
+                )
             if host and port:
                 target = RunPodSshTarget(host=host, port=int(port))
                 ready, ssh_error = self._ssh_ready(target)
