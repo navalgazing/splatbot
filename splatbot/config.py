@@ -181,7 +181,7 @@ class Settings(BaseSettings):
     postprocess_validation_sample_limit: int = 200_000
     render_validation_command: str = ""
     quality_report_enabled: bool = True
-    min_splat_vertices: int = 10000
+    min_splat_vertices: int = 7500
     max_flattened_axis_ratio: float = 0.015
     depth_backends: str = ""
     best_depth_backends: str = "da3,depth-anything-v2-large"

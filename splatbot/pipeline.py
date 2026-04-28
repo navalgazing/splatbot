@@ -1398,6 +1398,7 @@ def build_quality_report(metrics: dict, settings: Settings) -> dict:
     masks = metrics.get("masks", {})
     colmap = metrics.get("colmap", {})
     cleanup = metrics.get("ply", {}).get("cleanup", {})
+    cleaned_ply = metrics.get("ply", {}).get("cleaned", {})
     validation = cleanup.get("validation", {})
     mesh = metrics.get("mesh", {})
 
@@ -1425,6 +1426,9 @@ def build_quality_report(metrics: dict, settings: Settings) -> dict:
         issues.append("postprocess_validation_failed")
     if settings.mesh_export_enabled and not mesh.get("applied"):
         warnings.append("mesh_not_exported")
+    vertices = cleaned_ply.get("vertices")
+    if isinstance(vertices, int) and vertices < max(10_000, int(settings.min_splat_vertices * 1.5)):
+        warnings.append("low_splat_vertex_count")
 
     return {
         "job_id": metrics.get("job_id"),

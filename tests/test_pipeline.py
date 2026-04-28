@@ -22,6 +22,7 @@ from splatbot.pipeline import (
     clean_spatial_outliers,
     clear_colmap_sparse_points,
     format_fps,
+    build_quality_report,
     inspect_processed_dataset,
     latest_nerfstudio_config,
     object_mask_command_for_backend,
@@ -431,6 +432,42 @@ def test_validate_ply_quality_rejects_unparseable_summary(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="parseable PLY"):
         validate_ply_quality(metrics, Settings(data_dir=tmp_path, min_splat_vertices=1))
+
+
+def test_validate_ply_quality_accepts_borderline_vertex_count(tmp_path) -> None:
+    metrics = {
+        "ply": {
+            "cleaned": {
+                "parseable": True,
+                "format": "format binary_little_endian 1.0",
+                "vertices": 9_752,
+                "has_xyz": True,
+                "flat_axis_ratio": 0.25,
+            },
+            "cleanup": {"validation": {"applied": True, "passed": True}},
+        }
+    }
+
+    validate_ply_quality(metrics, Settings(data_dir=tmp_path))
+    report = build_quality_report(metrics, Settings(data_dir=tmp_path))
+    assert "low_splat_vertex_count" in report["warnings"]
+
+
+def test_validate_ply_quality_rejects_too_few_vertices(tmp_path) -> None:
+    metrics = {
+        "ply": {
+            "cleaned": {
+                "parseable": True,
+                "format": "format binary_little_endian 1.0",
+                "vertices": 5_000,
+                "has_xyz": True,
+                "flat_axis_ratio": 0.25,
+            }
+        }
+    }
+
+    with pytest.raises(ValueError, match="only 5000 vertices"):
+        validate_ply_quality(metrics, Settings(data_dir=tmp_path))
 
 
 def test_best_preset_enables_sota_backend_chain_by_default(tmp_path) -> None:
