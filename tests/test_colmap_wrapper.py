@@ -39,6 +39,20 @@ def test_promote_largest_sparse_model_keeps_sparse_zero_when_best(tmp_path) -> N
     assert not list(sparse.glob("0-splatbot-replaced-*"))
 
 
+def test_promote_largest_sparse_model_logs_reader_failure(tmp_path, capsys) -> None:
+    sparse = tmp_path / "sparse"
+    _write_model(sparse / "0", image_count=2, point_bytes=10)
+    _write_model(sparse / "1", image_count=140, point_bytes=100)
+
+    promoted = promote_largest_sparse_model(
+        sparse,
+        image_count_reader=lambda path: (_ for _ in ()).throw(RuntimeError("broken reader")),
+    )
+
+    assert promoted == sparse / "0"
+    assert "failed to read registered image count" in capsys.readouterr().err
+
+
 def test_mapped_argv_uses_global_mapper_when_requested(monkeypatch) -> None:
     monkeypatch.setenv("SPLATBOT_COLMAP_MAPPER", "global")
     monkeypatch.setattr("splatbot.colmap_wrapper._has_colmap_command", lambda command: command == "global_mapper")

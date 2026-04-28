@@ -46,7 +46,11 @@ def promote_largest_sparse_model(
     def score(model: Path) -> tuple[int, int]:
         try:
             image_count = image_count_reader(model / "images.bin")
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"splatbot-colmap-wrapper: failed to read registered image count for {model}: {exc}",
+                file=sys.stderr,
+            )
             image_count = 0
         points_size = (model / "points3D.bin").stat().st_size if (model / "points3D.bin").exists() else 0
         return image_count, points_size
