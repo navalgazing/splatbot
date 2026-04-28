@@ -36,6 +36,9 @@ jobs:
           docker buildx build \
             --progress=plain \
             --push \
+            --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
             --cache-from type=gha,scope=runpod-cuda-colmap \
             --cache-to type=gha,mode=max,scope=runpod-cuda-colmap \
             --file Dockerfile.runpod.cuda \
