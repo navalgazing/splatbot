@@ -1,5 +1,6 @@
 ARG RUNPOD_BASE=runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04
 ARG SPLATBOT_STABLE_IMAGE=ghcr.io/navalgazing/splatbot-runpod:latest
+ARG SPLATBOT_BASE_REFRESH=2026-04-28-wheel
 
 FROM ${RUNPOD_BASE} AS colmap-builder
 
