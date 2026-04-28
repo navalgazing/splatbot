@@ -16,6 +16,8 @@ SMOKE_SCRIPT = r"""
 set -euo pipefail
 export LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
 export PATH=/opt/splatbot/venv/bin:/usr/local/cuda/bin:$PATH
+export SPLATBOT_SAM2_CHECKPOINT=/opt/splatbot/models/sam2.1_hiera_large.pt
+export SPLATBOT_SAM2_CONFIG=configs/sam2.1/sam2.1_hiera_l.yaml
 echo image smoke
 command -v colmap
 colmap -h > /tmp/colmap-help.txt 2>&1
