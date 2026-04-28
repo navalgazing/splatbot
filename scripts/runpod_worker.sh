@@ -256,12 +256,24 @@ PY
 if [ "${SPLATBOT_SCAN_PRESET:-balanced}" = "best" ]; then
   "$VENV_DIR/bin/python" - <<'PY'
 import importlib.util
+from nerfstudio.configs.method_configs import method_configs
+from nerfstudio.models.splatfacto import SplatfactoModelConfig
 
 if importlib.util.find_spec("depth_anything_3") is None:
     raise SystemExit("best preset requires Depth Anything 3, but depth_anything_3 is not installed")
+if "splatfacto-mcmc" not in method_configs:
+    raise SystemExit("best preset requires Nerfstudio splatfacto-mcmc, but it is not registered")
+if getattr(SplatfactoModelConfig(), "strategy", None) != "default":
+    raise SystemExit("best preset requires Nerfstudio Splatfacto MCMC strategy support")
 PY
-  ns-train splatfacto-mcmc --help >/tmp/ns-train-splatfacto-mcmc-help.txt 2>&1 || {
-    echo "best preset requires Nerfstudio splatfacto-mcmc support" >&2
+  ns-train --help >/tmp/ns-train-methods.txt 2>&1
+  grep -q "splatfacto-mcmc" /tmp/ns-train-methods.txt || {
+    echo "best preset requires Nerfstudio splatfacto-mcmc in ns-train method list" >&2
+    tail -n 80 /tmp/ns-train-methods.txt >&2
+    exit 2
+  }
+  ns-train splatfacto-mcmc --max-num-iterations 1 --steps-per-save 1 --viewer.quit-on-train-completion True --help >/tmp/ns-train-splatfacto-mcmc-help.txt 2>&1 || {
+    echo "best preset requires Nerfstudio splatfacto-mcmc options used by Splatbot" >&2
     tail -n 80 /tmp/ns-train-splatfacto-mcmc-help.txt >&2
     exit 2
   }

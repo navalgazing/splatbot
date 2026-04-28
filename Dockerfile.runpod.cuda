@@ -1,6 +1,7 @@
 ARG RUNPOD_BASE=runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04
 ARG SPLATBOT_STABLE_IMAGE=ghcr.io/navalgazing/splatbot-runpod:latest
 ARG SPLATBOT_BASE_REFRESH=2026-04-28-wheel
+ARG NERFSTUDIO_COMMIT=50e0e3c70c775e89333256213363badbf074f29d
 
 FROM ${RUNPOD_BASE} AS colmap-builder
 
@@ -54,6 +55,8 @@ RUN git clone --branch "${COLMAP_VERSION}" --depth 1 https://github.com/colmap/c
 
 FROM ${SPLATBOT_STABLE_IMAGE}
 
+ARG NERFSTUDIO_COMMIT
+
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
@@ -84,6 +87,9 @@ ENV SPLATBOT_SAM2_CONFIG=configs/sam2.1/sam2.1_hiera_l.yaml
 
 RUN /opt/splatbot/venv/bin/pip uninstall -y onnxruntime onnxruntime-gpu || true \
     && /opt/splatbot/venv/bin/pip install --no-cache-dir --upgrade "rembg[gpu,cli]" onnxruntime-gpu
+
+RUN /opt/splatbot/venv/bin/pip install --no-cache-dir --upgrade --force-reinstall --no-deps \
+      "git+https://github.com/nerfstudio-project/nerfstudio.git@${NERFSTUDIO_COMMIT}"
 
 RUN /opt/splatbot/venv/bin/pip install --no-cache-dir \
       git+https://github.com/facebookresearch/sam2.git \
@@ -132,7 +138,16 @@ RUN set -eu; \
       echo "feature_extractor help did not list SiftExtraction.use_gpu"; \
       tail -n 40 /tmp/colmap-feature-extractor-help.txt; \
       exit 1; \
-    fi
+    fi; \
+    ns-train --help > /tmp/ns-train-methods.txt 2>&1; \
+    if ! grep -q "splatfacto-mcmc" /tmp/ns-train-methods.txt; then \
+      echo "ns-train method list did not include splatfacto-mcmc"; \
+      tail -n 80 /tmp/ns-train-methods.txt; \
+      exit 1; \
+    fi; \
+    ns-train splatfacto-mcmc --max-num-iterations 1 --steps-per-save 1 --viewer.quit-on-train-completion True --help \
+      > /tmp/ns-train-splatfacto-mcmc-help.txt 2>&1 \
+      || { echo "splatfacto-mcmc option validation failed"; tail -n 120 /tmp/ns-train-splatfacto-mcmc-help.txt; exit 1; }
 
 RUN /opt/splatbot/venv/bin/python - <<'PY'
 import importlib.metadata as metadata
@@ -141,6 +156,8 @@ import importlib.util
 import os
 import onnxruntime as ort
 import torch
+from nerfstudio.configs.method_configs import method_configs
+from nerfstudio.models.splatfacto import SplatfactoModelConfig
 
 def require_import(module: str) -> None:
     try:
@@ -167,6 +184,10 @@ print(f"onnxruntime_providers={ort.get_available_providers()}")
 require_import("sam2")
 require_import("depth_anything_3")
 require_import("xformers")
+if "splatfacto-mcmc" not in method_configs:
+    raise SystemExit("nerfstudio does not register splatfacto-mcmc")
+if getattr(SplatfactoModelConfig(), "strategy", None) != "default":
+    raise SystemExit("splatfacto strategy field is missing or invalid")
 if "CUDAExecutionProvider" not in ort.get_available_providers():
     raise SystemExit("onnxruntime-gpu did not expose CUDAExecutionProvider")
 PY

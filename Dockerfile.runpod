@@ -1,6 +1,7 @@
 FROM runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04
 
 ARG DA3_COMMIT=41736238f5bced4debf3f2a12375d2466874866d
+ARG NERFSTUDIO_COMMIT=50e0e3c70c775e89333256213363badbf074f29d
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV SPLATBOT_RUNPOD_VENV=/opt/splatbot/venv
@@ -44,7 +45,7 @@ RUN python3 -m venv /opt/splatbot/venv \
     && /opt/splatbot/venv/bin/pip install \
       aiosqlite \
       boto3 \
-      nerfstudio \
+      "git+https://github.com/nerfstudio-project/nerfstudio.git@${NERFSTUDIO_COMMIT}" \
       pydantic-settings \
       python-dotenv \
       python-telegram-bot \
@@ -58,6 +59,8 @@ RUN python3 -m venv /opt/splatbot/venv \
     && command -v nvcc \
     && /opt/splatbot/venv/bin/ns-process-data --help >/tmp/ns-process-data-help.txt \
     && /opt/splatbot/venv/bin/ns-train --help >/tmp/ns-train-help.txt \
+    && grep -q "splatfacto-mcmc" /tmp/ns-train-help.txt \
+    && /opt/splatbot/venv/bin/ns-train splatfacto-mcmc --max-num-iterations 1 --steps-per-save 1 --viewer.quit-on-train-completion True --help >/tmp/ns-train-splatfacto-mcmc-help.txt \
     && /opt/splatbot/venv/bin/ns-export --help >/tmp/ns-export-help.txt \
     && /opt/splatbot/venv/bin/ns-render --help >/tmp/ns-render-help.txt \
     && /opt/splatbot/venv/bin/rembg --help >/tmp/rembg-help.txt \
@@ -70,6 +73,8 @@ RUN python3 -m venv /opt/splatbot/venv \
 RUN colmap -h | sed -n '1p' \
     && /opt/splatbot/venv/bin/python - <<'PY'
 import importlib.metadata as metadata
+from nerfstudio.configs.method_configs import method_configs
+from nerfstudio.models.splatfacto import SplatfactoModelConfig
 import torch
 
 for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "torch", "depth-anything-3", "xformers"):
@@ -80,5 +85,9 @@ for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "torch", "depth-
     print(f"{package}={version}")
 import depth_anything_3  # noqa: F401
 import xformers  # noqa: F401
+if "splatfacto-mcmc" not in method_configs:
+    raise SystemExit("nerfstudio does not register splatfacto-mcmc")
+if getattr(SplatfactoModelConfig(), "strategy", None) != "default":
+    raise SystemExit("splatfacto strategy field is missing or invalid")
 print(f"torch_cuda_available={torch.cuda.is_available()}")
 PY

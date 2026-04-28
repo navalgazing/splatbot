@@ -33,6 +33,8 @@ import importlib.util
 from pathlib import Path
 import onnxruntime as ort
 import torch
+from nerfstudio.configs.method_configs import method_configs
+from nerfstudio.models.splatfacto import SplatfactoModelConfig
 
 def require_import(module: str) -> None:
     try:
@@ -73,6 +75,10 @@ print("onnxruntime_device=" + ort.get_device())
 print("onnxruntime_providers=" + str(ort.get_available_providers()))
 if "CUDAExecutionProvider" not in ort.get_available_providers():
     raise SystemExit("onnxruntime CUDAExecutionProvider is not available")
+if "splatfacto-mcmc" not in method_configs:
+    raise SystemExit("nerfstudio does not register splatfacto-mcmc")
+if getattr(SplatfactoModelConfig(), "strategy", None) != "default":
+    raise SystemExit("splatfacto strategy field is missing or invalid")
 PY
 for cmd in splatbot-segment splatbot-pose splatbot-depth splatbot-train splatbot-mesh splatbot-da3; do
   command -v "$cmd"
@@ -90,6 +96,17 @@ splatbot-segment --backend sam2 --self-test >/tmp/sam2-self-test.txt 2>&1 || {
 ns-train splatfacto-mcmc --help >/tmp/ns-train-splatfacto-mcmc-help.txt 2>&1 || {
   echo "ns-train splatfacto-mcmc help failed"
   tail -n 120 /tmp/ns-train-splatfacto-mcmc-help.txt
+  exit 1
+}
+ns-train --help >/tmp/ns-train-methods.txt 2>&1
+grep -q "splatfacto-mcmc" /tmp/ns-train-methods.txt || {
+  echo "ns-train method list did not include splatfacto-mcmc"
+  tail -n 120 /tmp/ns-train-methods.txt
+  exit 1
+}
+ns-train splatfacto-mcmc --max-num-iterations 1 --steps-per-save 1 --viewer.quit-on-train-completion True --help >/tmp/ns-train-splatfacto-mcmc-options.txt 2>&1 || {
+  echo "ns-train splatfacto-mcmc option validation failed"
+  tail -n 120 /tmp/ns-train-splatfacto-mcmc-options.txt
   exit 1
 }
 splatbot-da3 --help >/tmp/splatbot-da3-help.txt
