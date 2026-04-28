@@ -17,6 +17,13 @@ from splatbot.commands import render_argv_template
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
 
 
+class ExternalCommandFailed(RuntimeError):
+    def __init__(self, argv: list[str], returncode: int) -> None:
+        self.argv = argv
+        self.returncode = returncode
+        super().__init__(f"external command failed ({returncode}): {' '.join(argv)}")
+
+
 def truthy(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -52,7 +59,7 @@ def run(argv: list[str]) -> None:
     print("+ " + " ".join(argv), flush=True)
     result = subprocess.run(argv, check=False)
     if result.returncode != 0:
-        raise SystemExit(result.returncode)
+        raise ExternalCommandFailed(argv, result.returncode)
 
 
 @contextlib.contextmanager
@@ -249,6 +256,23 @@ def render_and_run(command: str, values: dict[str, str]) -> None:
     run(render_argv_template(command, values))
 
 
+def retry_image_caps(max_images: int, min_images: int) -> list[int]:
+    if max_images <= 0:
+        return [0]
+    if max_images <= min_images:
+        return [max_images]
+    caps: list[int] = []
+    current = max_images
+    minimum = max(1, min_images)
+    while current >= minimum:
+        caps.append(current)
+        next_count = max(minimum, current // 2)
+        if next_count == current:
+            break
+        current = next_count
+    return caps
+
+
 def vggt_default_command(script: Path) -> str:
     extra_args = os.environ.get("SPLATBOT_VGGT_ARGS", "").strip()
     command = f"{default_python()} {script} --scene_dir {{scene_dir}}"
@@ -272,30 +296,45 @@ def vggt_main() -> None:
         raise SystemExit("SPLATBOT_VGGT_RUN_COMMAND must include the {scene_dir} placeholder")
 
     with work_dir(args.work_dir, "splatbot-vggt-") as tmp:
-        scene_dir = tmp / "scene"
-        staged_images = scene_dir / "images"
-        stage_images(
-            args.images_dir,
-            staged_images,
-            max_images=max_images_from_env("SPLATBOT_VGGT_MAX_IMAGES", 96),
-        )
-        render_and_run(
-            command,
-            {
-                "scene_dir": str(scene_dir),
-                "images_dir": str(staged_images),
-                "input_dir": str(staged_images),
-                "processed_dir": str(args.processed_dir),
-                "output_dir": str(args.processed_dir),
-                "work_dir": str(tmp),
-                "vggt_repo": str(vggt_repo),
-                "vggt_script": str(script),
-                "python": default_python(),
-                "matching_method": args.matching_method,
-            },
-        )
-        sparse_model = find_best_sparse_model(scene_dir / "sparse", scene_dir, tmp)
-        finalize_colmap_pose_dataset(staged_images, args.processed_dir, sparse_model)
+        last_error: ExternalCommandFailed | None = None
+        max_images = max_images_from_env("SPLATBOT_VGGT_MAX_IMAGES", 64)
+        min_images = max_images_from_env("SPLATBOT_VGGT_MIN_IMAGES", 24)
+        for image_cap in retry_image_caps(max_images, min_images):
+            scene_dir = tmp / f"scene_{image_cap or 'all'}"
+            staged_images = scene_dir / "images"
+            if scene_dir.exists():
+                shutil.rmtree(scene_dir)
+            stage_images(args.images_dir, staged_images, max_images=image_cap)
+            try:
+                render_and_run(
+                    command,
+                    {
+                        "scene_dir": str(scene_dir),
+                        "images_dir": str(staged_images),
+                        "input_dir": str(staged_images),
+                        "processed_dir": str(args.processed_dir),
+                        "output_dir": str(args.processed_dir),
+                        "work_dir": str(tmp),
+                        "vggt_repo": str(vggt_repo),
+                        "vggt_script": str(script),
+                        "python": default_python(),
+                        "matching_method": args.matching_method,
+                    },
+                )
+            except ExternalCommandFailed as exc:
+                last_error = exc
+                print(
+                    f"VGGT failed with {image_cap} image(s), retrying with fewer if available: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                continue
+            sparse_model = find_best_sparse_model(scene_dir / "sparse", scene_dir, tmp)
+            finalize_colmap_pose_dataset(staged_images, args.processed_dir, sparse_model)
+            return
+        if last_error is not None:
+            raise SystemExit(str(last_error)) from last_error
+        raise SystemExit("VGGT did not run")
 
 
 def write_pairs_file(images: list[Path], pairs_path: Path, matching_method: str) -> None:
@@ -324,7 +363,7 @@ def write_pairs_file(images: list[Path], pairs_path: Path, matching_method: str)
         raise SystemExit("MASt3R requires at least one image pair")
     pairs_path.parent.mkdir(parents=True, exist_ok=True)
     pairs_path.write_text(
-        "".join(f"{left} {right}\n" for left, right in sorted(pairs)),
+        "".join(f"{left} {right} 1.0\n" for left, right in sorted(pairs)),
         encoding="utf-8",
     )
 

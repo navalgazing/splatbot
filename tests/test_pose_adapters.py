@@ -112,6 +112,12 @@ def test_vggt_adapter_runs_configured_command_and_normalizes_sparse(
     assert (processed / "transforms.json").exists()
 
 
+def test_retry_image_caps_halves_to_minimum() -> None:
+    assert pose_adapters.retry_image_caps(64, 24) == [64, 32, 24]
+    assert pose_adapters.retry_image_caps(20, 24) == [20]
+    assert pose_adapters.retry_image_caps(0, 24) == [0]
+
+
 def test_mast3r_adapter_writes_pairs_and_normalizes_reconstruction(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -153,9 +159,9 @@ def test_mast3r_adapter_writes_pairs_and_normalizes_reconstruction(
 
     assert calls[0][0] == "fake-mast3r"
     assert pairs_text == [
-        "frame_00001.jpg frame_00002.jpg\n"
-        "frame_00002.jpg frame_00003.jpg\n"
-        "frame_00003.jpg frame_00004.jpg\n"
+        "frame_00001.jpg frame_00002.jpg 1.0\n"
+        "frame_00002.jpg frame_00003.jpg 1.0\n"
+        "frame_00003.jpg frame_00004.jpg 1.0\n"
     ]
     assert (processed / "colmap" / "sparse" / "0" / "images.bin").read_text(encoding="utf-8") == "images=4"
 

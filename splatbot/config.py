@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     object_mask_min_keep_ratio: float = 0.55
     object_mask_training_alpha_threshold: int = 16
     pose_backends: str = "colmap"
-    best_pose_backends: str = "vggt-colmap,mast3r-sfm,colmap-global,colmap-sequential,colmap-exhaustive,colmap"
+    best_pose_backends: str = "vggt-colmap,mast3r-sfm"
     best_pose_required_backends: str = ""
     pose_backend_command: str = "splatbot-pose --backend {backend} --input {images_dir} --output {processed_dir} --matching-method {matching_method}"
     da3_model: str = "depth-anything/DA3-LARGE-1.1"
@@ -128,7 +128,7 @@ class Settings(BaseSettings):
     vggt_demo_colmap: str = ""
     vggt_run_command: str = ""
     vggt_args: str = "--use_ba --max_query_pts 2048 --query_frame_num 5"
-    vggt_max_images: int = 96
+    vggt_max_images: int = 64
     mast3r_pose_command: str = (
         "splatbot-mast3r --images {images_dir} --processed {processed_dir} "
         "--matching-method {matching_method}"

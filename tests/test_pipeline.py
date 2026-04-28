@@ -517,14 +517,7 @@ def test_best_preset_enables_sota_backend_chain_by_default(tmp_path) -> None:
 
     assert configured_segmentation_backends(settings, best) == ["sam2", "rembg"]
     assert configured_depth_backends(settings, best) == ["da3", "depth-anything-v2-large"]
-    assert configured_pose_backends(settings, best) == [
-        "vggt-colmap",
-        "mast3r-sfm",
-        "colmap-global",
-        "colmap-sequential",
-        "colmap-exhaustive",
-        "colmap",
-    ]
+    assert configured_pose_backends(settings, best) == ["vggt-colmap", "mast3r-sfm"]
     assert configured_train_backends(settings, best) == ["3dgs-mcmc", "splatfacto-big"]
 
 

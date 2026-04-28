@@ -82,12 +82,14 @@ over/underexposure, and duplicate content, drops frames below
 `SPLATBOT_FRAME_QUALITY_REJECT_THRESHOLD`, then samples the best surviving frames
 while preserving coverage through the clip; `best` mode also spreads selections
 across distinct frame signatures so it does not waste budget on near-duplicate
-views. Object mode can fall back to solving
-COLMAP poses on the original frames while training on `rembg` object frames when
+views. When COLMAP is in the configured pose chain, object mode can fall back to
+solving poses on the original frames while training on object frames when
 background-removed frames are too unstable for registration. If COLMAP still
 registers too few frames, the pipeline retries smaller evenly sampled subsets
 from `SPLATBOT_COLMAP_RETRY_FRAME_COUNTS` with methods from
-`SPLATBOT_COLMAP_RETRY_MATCHING_METHODS` before failing the job.
+`SPLATBOT_COLMAP_RETRY_MATCHING_METHODS` before failing the job. The default
+`best` pose chain does not include COLMAP fallback; it requires a learned pose
+adapter to succeed.
 
 Object exports also run conservative silhouette cleanup. The exported Gaussian
 centers are projected back into up to `SPLATBOT_SILHOUETTE_CLEANUP_MAX_VIEWS`
@@ -108,7 +110,7 @@ SPLATBOT_OBJECT_MASK_PROMPT='main object'
 SPLATBOT_SAM2_MASK_COMMAND='splatbot-segment --backend sam2 --input {images_dir} --output {object_dir}'
 SPLATBOT_SAM2_CHECKPOINT=/opt/splatbot/models/sam2.1_hiera_large.pt
 SPLATBOT_SAM2_CONFIG=configs/sam2.1/sam2.1_hiera_l.yaml
-SPLATBOT_BEST_POSE_BACKENDS=vggt-colmap,mast3r-sfm,colmap-global,colmap-sequential,colmap-exhaustive,colmap
+SPLATBOT_BEST_POSE_BACKENDS=vggt-colmap,mast3r-sfm
 SPLATBOT_BEST_POSE_REQUIRED_BACKENDS=
 SPLATBOT_POSE_BACKEND_COMMAND='splatbot-pose --backend {backend} --input {images_dir} --output {processed_dir} --matching-method {matching_method}'
 SPLATBOT_DA3_MODEL=depth-anything/DA3-LARGE-1.1
@@ -172,7 +174,7 @@ git clone https://github.com/facebookresearch/vggt.git /opt/vggt
 export HF_TOKEN=...
 export SPLATBOT_VGGT_POSE_COMMAND='splatbot-vggt --images {images_dir} --processed {processed_dir} --matching-method {matching_method}'
 export SPLATBOT_VGGT_RUN_COMMAND='/opt/splatbot/venv/bin/python /opt/vggt/demo_colmap.py --scene_dir {scene_dir} --use_ba --max_query_pts 2048 --query_frame_num 5'
-export SPLATBOT_VGGT_MAX_IMAGES=96
+export SPLATBOT_VGGT_MAX_IMAGES=64
 ```
 
 MASt3R's repository and published checkpoint are CC BY-NC-SA / non-commercial
@@ -204,8 +206,10 @@ For either adapter, run a small non-artifact smoke dataset before making the
 backend required. A valid smoke run must leave `transforms.json` and
 `colmap/sparse/0/{cameras.bin,images.bin,points3D.bin}` under the processed
 directory, and the quality gate must report enough registered images. The
-default VGGT and MASt3R image caps are chosen for a 24 GB 4090-class worker; set
-the cap to `0` only after confirming GPU memory on a smoke run.
+default VGGT and MASt3R image caps are chosen for a 24 GB 4090-class worker.
+VGGT retries with fewer staged images if the first cap fails, down to
+`SPLATBOT_VGGT_MIN_IMAGES` (default 24). Set caps to `0` only after confirming
+GPU memory on a smoke run.
 
 Object-mode postprocessing now includes a mask-support cleanup pass and a
 publish-time validation gate. If the cleaned splat still has too many points
