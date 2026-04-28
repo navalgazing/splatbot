@@ -115,7 +115,7 @@ class Settings(BaseSettings):
     best_pose_backends: str = "da3-colmap,vggt-colmap,mast3r-sfm,colmap-global,colmap-sequential,colmap-exhaustive,colmap"
     best_pose_required_backends: str = "da3-colmap"
     pose_backend_command: str = "splatbot-pose --backend {backend} --input {images_dir} --output {processed_dir} --matching-method {matching_method}"
-    da3_model: str = "depth-anything/DA3NESTED-GIANT-LARGE-1.1"
+    da3_model: str = "depth-anything/DA3-LARGE-1.1"
     da3_use_ray_pose: bool = True
     da3_ref_view_strategy: str = "middle"
     da3_pose_command: str = "splatbot-da3 --images {images_dir} --processed {processed_dir}"

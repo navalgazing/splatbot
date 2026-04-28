@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
-DEFAULT_MODEL = "depth-anything/DA3NESTED-GIANT-LARGE-1.1"
+DEFAULT_MODEL = "depth-anything/DA3-LARGE-1.1"
 
 
 def main() -> None:
@@ -113,11 +113,6 @@ def write_nerfstudio_dataset(images: list[Path], prediction, processed_dir: Path
             "frames": frames,
         },
     )
-    sparse = processed_dir / "sparse" / "0"
-    sparse.mkdir(parents=True, exist_ok=True)
-    (sparse / "images.bin").write_text(f"images={len(frames)}\n", encoding="utf-8")
-    (sparse / "points3D.bin").write_bytes(b"")
-
 
 def opencv_world_to_camera_to_nerfstudio_c2w(extrinsic) -> list[list[float]]:
     import numpy as np
