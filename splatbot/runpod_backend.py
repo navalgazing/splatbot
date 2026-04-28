@@ -203,7 +203,12 @@ class RunPodLauncher:
         deadline = time.monotonic() + self.settings.runpod_ssh_ready_timeout_seconds
         last_seen = ""
         while time.monotonic() < deadline:
-            pod = self.client.get_pod(pod_id)
+            try:
+                pod = self.client.get_pod(pod_id)
+            except RunPodApiError as exc:
+                if exc.status_code == 404:
+                    raise RunPodSshUnavailableError(f"RunPod pod disappeared before SSH was ready: {pod_id}") from exc
+                raise
             host = pod.get("publicIp") or ""
             port = (pod.get("portMappings") or {}).get("22")
             last_seen = f"host={host!r} port={port!r} status={pod.get('desiredStatus')!r}"
