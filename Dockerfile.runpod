@@ -34,7 +34,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv /opt/splatbot/venv \
-    && /opt/splatbot/venv/bin/pip install --upgrade pip \
+    && /opt/splatbot/venv/bin/pip install --upgrade pip setuptools wheel \
     && /opt/splatbot/venv/bin/pip install --index-url https://download.pytorch.org/whl/cu128 \
       torch==2.8.0 \
       torchvision==0.23.0 \
