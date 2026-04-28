@@ -259,8 +259,9 @@ import importlib.util
 if importlib.util.find_spec("depth_anything_3") is None:
     raise SystemExit("best preset requires Depth Anything 3, but depth_anything_3 is not installed")
 PY
-  ns-train splatfacto-big --help | grep -q -- "--pipeline.model.strategy" || {
-    echo "best preset requires Nerfstudio splatfacto MCMC strategy support" >&2
+  ns-train splatfacto-mcmc --help >/tmp/ns-train-splatfacto-mcmc-help.txt 2>&1 || {
+    echo "best preset requires Nerfstudio splatfacto-mcmc support" >&2
+    tail -n 80 /tmp/ns-train-splatfacto-mcmc-help.txt >&2
     exit 2
   }
 fi

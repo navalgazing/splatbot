@@ -194,9 +194,9 @@ class Settings(BaseSettings):
     best_train_required_backends: str = "3dgs-mcmc"
     experimental_dn_splatter_enabled: bool = False
     mcmc_train_command: str = (
-        "ns-train splatfacto-big --data {processed_dir} --output-dir {ns_dir} "
+        "ns-train splatfacto-mcmc --data {processed_dir} --output-dir {ns_dir} "
         "--max-num-iterations {max_iterations} --steps-per-save {steps_per_save} "
-        "--viewer.quit-on-train-completion True --pipeline.model.strategy mcmc {extra_args}"
+        "--viewer.quit-on-train-completion True {extra_args}"
     )
     mip_splatting_train_command: str = ""
     twodgs_train_command: str = ""
