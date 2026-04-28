@@ -103,6 +103,7 @@ RUN mkdir -p /opt/splatbot/models \
     && test -s "$SPLATBOT_SAM2_CHECKPOINT"
 
 RUN set -eu; \
+    export PATH="/opt/splatbot/venv/bin:$PATH"; \
     ldconfig; \
     for cmd in ffmpeg ffprobe colmap nvcc ns-process-data ns-train ns-export ns-render rembg da3; do \
       path="$(command -v "$cmd" || true)"; \
