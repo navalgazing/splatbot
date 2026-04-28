@@ -153,7 +153,7 @@ for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "onnxruntime-gpu
         version = "missing"
     print(f"  {package}={version}")
 print(f"  torch_cuda_available={torch.cuda.is_available()}")
-for module in ("sam2", "sam3", "dn_splatter"):
+for module in ("sam2", "sam3", "dn_splatter", "vggt", "mast3r", "dust3r", "lightglue"):
     try:
         __import__(module)
     except Exception as exc:
@@ -205,11 +205,14 @@ command -v colmap >/dev/null
 command -v rembg >/dev/null
 command -v splatbot-segment >/dev/null
 command -v splatbot-pose >/dev/null
+command -v splatbot-colmap-pose-adapter >/dev/null
+command -v splatbot-vggt >/dev/null
+command -v splatbot-mast3r >/dev/null
 command -v splatbot-depth >/dev/null
 command -v splatbot-train >/dev/null
 command -v splatbot-mesh >/dev/null
 command -v splatbot-da3 >/dev/null
-for cmd in splatbot-segment splatbot-pose splatbot-depth splatbot-train splatbot-mesh splatbot-da3; do
+for cmd in splatbot-segment splatbot-pose splatbot-colmap-pose-adapter splatbot-vggt splatbot-mast3r splatbot-depth splatbot-train splatbot-mesh splatbot-da3; do
   "$cmd" --help >/tmp/"$cmd"-help.txt
 done
 IFS=',' read -ra SEGMENT_BACKENDS <<< "${SPLATBOT_BEST_SEGMENTATION_BACKENDS:-${SPLATBOT_SEGMENTATION_BACKEND:-rembg}}"

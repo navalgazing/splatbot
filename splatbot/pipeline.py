@@ -1430,7 +1430,7 @@ def build_quality_report(metrics: dict, settings: Settings) -> dict:
         validation.get("applied")
         and validation.get("unobserved_fraction", 0.0) > settings.postprocess_validation_max_unobserved_fraction
     ):
-        warnings.append("high_unobserved_splat_fraction")
+        issues.append("high_unobserved_splat_fraction")
     if settings.mesh_export_enabled and not mesh.get("applied"):
         warnings.append("mesh_not_exported")
     vertices = cleaned_ply.get("vertices")
@@ -2361,6 +2361,7 @@ def inspect_processed_dataset(processed_dir: Path) -> dict:
                 "path": str(model_dir.relative_to(processed_dir)),
                 "registered_images": count,
                 "points3d_bytes": points3d.stat().st_size if points3d.exists() else None,
+                "points3d_count": read_colmap_points3d_count(points3d),
                 "active_sparse_0": model_dir.name == "0",
             }
         )
@@ -2369,6 +2370,8 @@ def inspect_processed_dataset(processed_dir: Path) -> dict:
         "transforms_frames": transforms_frames,
         "models": models,
         "active_registered_images": active["registered_images"] if active else None,
+        "active_points3d_count": active["points3d_count"] if active else None,
+        "active_points3d_bytes": active["points3d_bytes"] if active else None,
         "best_registered_images": max(
             (model["registered_images"] for model in models if model["registered_images"] is not None),
             default=None,
@@ -2397,6 +2400,25 @@ def read_colmap_registered_images(images_bin: Path) -> int | None:
     return None
 
 
+def read_colmap_points3d_count(points3d_bin: Path) -> int | None:
+    if not points3d_bin.exists():
+        return None
+    if points3d_bin.suffix == ".bin":
+        try:
+            with points3d_bin.open("rb") as handle:
+                data = handle.read(8)
+        except OSError:
+            return None
+        if len(data) != 8:
+            return None
+        return struct.unpack("<Q", data)[0]
+    try:
+        text = points3d_bin.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    return sum(1 for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#"))
+
+
 def validate_colmap_quality(metrics: dict, target_frames: int, settings: Settings) -> None:
     selected_frames = metrics.get("frames", {}).get("selected") or target_frames
     if selected_frames < 10:
@@ -2422,6 +2444,15 @@ def validate_colmap_quality(metrics: dict, target_frames: int, settings: Setting
             f"COLMAP registered only {registered}/{selected_frames} selected frame(s) in the active sparse model"
             f"{hint}. This run would likely produce a distorted splat."
         )
+    points3d_count = colmap.get("active_points3d_count")
+    points3d_bytes = colmap.get("active_points3d_bytes")
+    if points3d_count is not None and points3d_count < settings.min_colmap_sparse_points:
+        raise ValueError(
+            f"COLMAP active sparse model has only {points3d_count} 3D point(s); expected at least "
+            f"{settings.min_colmap_sparse_points}. This run would likely produce weak or diffuse geometry."
+        )
+    if points3d_count is None and points3d_bytes is not None and points3d_bytes <= 8:
+        raise ValueError("COLMAP active sparse model has an empty points3D.bin.")
 
 
 def record_colmap_attempt(
@@ -3247,6 +3278,7 @@ def validate_postprocess_against_masks(
         checked_points >= settings.postprocess_validation_min_checked_points
         and outside_fraction <= settings.postprocess_validation_max_outside_fraction
         and low_support_fraction <= settings.postprocess_validation_max_low_support_fraction
+        and unobserved_fraction <= settings.postprocess_validation_max_unobserved_fraction
     )
     return {
         "applied": True,

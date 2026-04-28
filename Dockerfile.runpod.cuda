@@ -2,6 +2,8 @@ ARG RUNPOD_BASE=runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04
 ARG SPLATBOT_STABLE_IMAGE=ghcr.io/navalgazing/splatbot-runpod:latest
 ARG SPLATBOT_BASE_REFRESH=2026-04-28-wheel
 ARG NERFSTUDIO_COMMIT=50e0e3c70c775e89333256213363badbf074f29d
+ARG VGGT_COMMIT=44b3afbd1869d8bde4894dd8ea1e293112dd5eba
+ARG MAST3R_COMMIT=f5209afc300cec36239a7ac992263f36847bbba0
 
 FROM ${RUNPOD_BASE} AS colmap-builder
 
@@ -56,8 +58,12 @@ RUN git clone --branch "${COLMAP_VERSION}" --depth 1 https://github.com/colmap/c
 FROM ${SPLATBOT_STABLE_IMAGE}
 
 ARG NERFSTUDIO_COMMIT
+ARG VGGT_COMMIT
+ARG MAST3R_COMMIT
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV SPLATBOT_VGGT_REPO=/opt/vggt
+ENV SPLATBOT_MAST3R_REPO=/opt/mast3r
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -109,6 +115,45 @@ RUN mkdir -p /opt/splatbot/models \
       -o "$SPLATBOT_SAM2_CHECKPOINT" \
     && test -s "$SPLATBOT_SAM2_CHECKPOINT"
 
+RUN git clone --filter=blob:none https://github.com/facebookresearch/vggt.git "$SPLATBOT_VGGT_REPO" \
+    && git -C "$SPLATBOT_VGGT_REPO" checkout "$VGGT_COMMIT" \
+    && git clone --filter=blob:none https://github.com/naver/mast3r.git "$SPLATBOT_MAST3R_REPO" \
+    && git -C "$SPLATBOT_MAST3R_REPO" checkout "$MAST3R_COMMIT" \
+    && git -C "$SPLATBOT_MAST3R_REPO" submodule update --init --recursive --depth 1
+
+RUN /opt/splatbot/venv/bin/pip install --no-cache-dir \
+      "huggingface-hub[torch]>=0.22" \
+      einops \
+      safetensors \
+      scipy \
+      opencv-python \
+      trimesh \
+      matplotlib \
+      tqdm \
+      hydra-core \
+      omegaconf \
+      requests \
+      pycolmap==3.10.0 \
+      pyceres==2.3 \
+      roma \
+      scikit-learn \
+      cython \
+      kapture \
+      kapture-localization \
+      "pyglet<2" \
+      tensorboard \
+      "git+https://github.com/jytime/LightGlue.git#egg=lightglue" \
+    && /opt/splatbot/venv/bin/python - <<'PY'
+from pathlib import Path
+import sysconfig
+
+site_packages = Path(sysconfig.get_paths()["purelib"])
+(site_packages / "splatbot-vggt-mast3r.pth").write_text(
+    "/opt/vggt\n/opt/mast3r\n/opt/mast3r/dust3r\n",
+    encoding="utf-8",
+)
+PY
+
 RUN set -eu; \
     export PATH="/opt/splatbot/venv/bin:$PATH"; \
     ldconfig; \
@@ -147,7 +192,11 @@ RUN set -eu; \
     fi; \
     ns-train splatfacto-mcmc --max-num-iterations 1 --steps-per-save 1 --viewer.quit-on-train-completion True --help \
       > /tmp/ns-train-splatfacto-mcmc-help.txt 2>&1 \
-      || { echo "splatfacto-mcmc option validation failed"; tail -n 120 /tmp/ns-train-splatfacto-mcmc-help.txt; exit 1; }
+      || { echo "splatfacto-mcmc option validation failed"; tail -n 120 /tmp/ns-train-splatfacto-mcmc-help.txt; exit 1; }; \
+    python /opt/vggt/demo_colmap.py --help > /tmp/vggt-demo-colmap-help.txt 2>&1 \
+      || { echo "VGGT demo_colmap help failed"; tail -n 120 /tmp/vggt-demo-colmap-help.txt; exit 1; }; \
+    python /opt/mast3r/kapture_mast3r_mapping.py --help > /tmp/mast3r-mapping-help.txt 2>&1 \
+      || { echo "MASt3R mapping help failed"; tail -n 120 /tmp/mast3r-mapping-help.txt; exit 1; }
 
 RUN /opt/splatbot/venv/bin/python - <<'PY'
 import importlib.metadata as metadata
@@ -172,7 +221,20 @@ def optional_import(module: str) -> None:
         return
     require_import(module)
 
-for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "onnxruntime-gpu", "torch", "depth-anything-3", "xformers"):
+for package in (
+    "nerfstudio",
+    "gsplat",
+    "rembg",
+    "onnxruntime",
+    "onnxruntime-gpu",
+    "torch",
+    "depth-anything-3",
+    "xformers",
+    "pycolmap",
+    "pyceres",
+    "kapture",
+    "kapture-localization",
+):
     try:
         version = metadata.version(package)
     except metadata.PackageNotFoundError:
@@ -184,6 +246,11 @@ print(f"onnxruntime_providers={ort.get_available_providers()}")
 require_import("sam2")
 require_import("depth_anything_3")
 require_import("xformers")
+require_import("vggt")
+require_import("mast3r")
+require_import("dust3r")
+require_import("lightglue")
+require_import("pycolmap")
 if "splatfacto-mcmc" not in method_configs:
     raise SystemExit("nerfstudio does not register splatfacto-mcmc")
 if getattr(SplatfactoModelConfig(), "strategy", None) != "default":

@@ -518,13 +518,12 @@ def test_best_preset_enables_sota_backend_chain_by_default(tmp_path) -> None:
     assert configured_segmentation_backends(settings, best) == ["sam2", "rembg"]
     assert configured_depth_backends(settings, best) == ["da3", "depth-anything-v2-large"]
     assert configured_pose_backends(settings, best) == [
+        "vggt-colmap",
+        "mast3r-sfm",
         "colmap-global",
         "colmap-sequential",
         "colmap-exhaustive",
         "colmap",
-        "da3-colmap",
-        "vggt-colmap",
-        "mast3r-sfm",
     ]
     assert configured_train_backends(settings, best) == ["3dgs-mcmc", "splatfacto-big"]
 
@@ -1051,9 +1050,9 @@ async def test_external_train_backend_preserves_extra_arg_boundaries(tmp_path) -
             "--output",
             str(tmp_path / "nerfstudio"),
             "--max-iterations",
-            "14000",
+            "30000",
             "--steps-per-save",
-            "14000",
+            "30000",
             "--pipeline.model.cull_alpha_thresh=0.005",
             "--note",
             "two words",
@@ -1061,7 +1060,7 @@ async def test_external_train_backend_preserves_extra_arg_boundaries(tmp_path) -
     ]
 
 
-async def test_mcmc_default_train_command_does_not_inherit_splatfacto_extra_args(tmp_path) -> None:
+async def test_mcmc_default_train_command_preserves_best_extra_args(tmp_path) -> None:
     settings = Settings(
         data_dir=tmp_path,
         best_train_extra_args="--pipeline.model.cull-alpha-thresh=0.005 --note 'two words'",
@@ -1085,11 +1084,14 @@ async def test_mcmc_default_train_command_does_not_inherit_splatfacto_extra_args
             "--output-dir",
             str(tmp_path / "nerfstudio"),
             "--max-num-iterations",
-            "14000",
+            "30000",
             "--steps-per-save",
-            "14000",
+            "30000",
             "--viewer.quit-on-train-completion",
             "True",
+            "--pipeline.model.cull-alpha-thresh=0.005",
+            "--note",
+            "two words",
         ]
     ]
 
@@ -1225,6 +1227,21 @@ def test_colmap_quality_gate_rejects_transform_only_pose(tmp_path) -> None:
         validate_colmap_quality(metrics, 140, Settings())
 
 
+def test_colmap_quality_gate_rejects_tiny_sparse_point_cloud(tmp_path) -> None:
+    metrics = {
+        "frames": {"selected": 100},
+        "colmap": {
+            "active_registered_images": 100,
+            "best_registered_images": 100,
+            "active_points3d_count": 12,
+            "active_points3d_bytes": 104,
+        },
+    }
+
+    with pytest.raises(ValueError, match="only 12 3D point"):
+        validate_colmap_quality(metrics, 100, Settings(data_dir=tmp_path, min_colmap_sparse_points=1000))
+
+
 def test_quality_report_flags_transform_only_pose(tmp_path) -> None:
     report = build_quality_report(
         {
@@ -1306,7 +1323,7 @@ def test_postprocess_validation_rejects_unobserved_points(tmp_path) -> None:
     assert result["passed"] is False
 
 
-def test_postprocess_validation_warns_on_unobserved_points_with_clean_checked_support(tmp_path) -> None:
+def test_postprocess_validation_rejects_unobserved_points_with_clean_checked_support(tmp_path) -> None:
     ply_path = tmp_path / "splat.ply"
     write_binary_xyz_ply(ply_path, [(0.0, 0.0, -1.0), (0.0, 0.0, 1.0), (1.0, 1.0, 1.0)])
     frames = [
@@ -1337,5 +1354,5 @@ def test_postprocess_validation_warns_on_unobserved_points_with_clean_checked_su
     assert result["unobserved_fraction"] == pytest.approx(0.666667)
     assert result["outside_candidate_fraction"] == 0.0
     assert result["low_support_fraction"] == 0.0
-    assert result["passed"] is True
-    assert "high_unobserved_splat_fraction" in report["warnings"]
+    assert result["passed"] is False
+    assert "high_unobserved_splat_fraction" in report["issues"]

@@ -485,7 +485,8 @@ def train_main() -> None:
     parser.add_argument("--max-iterations", required=True)
     parser.add_argument("--steps-per-save", default=None)
     parser.add_argument("extra", nargs=argparse.REMAINDER)
-    args = parser.parse_args()
+    args, unknown_extra = parser.parse_known_args()
+    extra_args = [arg for arg in [*unknown_extra, *args.extra] if arg != "--"]
     ns_train = os.environ.get("SPLATBOT_NS_TRAIN_BIN", "ns-train")
     backend = args.backend
     if backend in {"3dgs-mcmc", "mip-splatting", "2dgs"}:
@@ -495,7 +496,7 @@ def train_main() -> None:
             args.ns_dir,
             args.max_iterations,
             args.steps_per_save,
-            [arg for arg in args.extra if arg != "--"],
+            extra_args,
         )
         return
     if backend in {"dn-splatter", "dn-splatter-big", "ags-mesh"}:
@@ -535,7 +536,7 @@ def train_main() -> None:
                 "False",
             ]
         )
-    argv.extend(arg for arg in args.extra if arg != "--")
+    argv.extend(extra_args)
     run(argv)
 
 

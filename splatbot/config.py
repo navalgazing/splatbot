@@ -112,15 +112,36 @@ class Settings(BaseSettings):
     object_mask_min_keep_ratio: float = 0.55
     object_mask_training_alpha_threshold: int = 16
     pose_backends: str = "colmap"
-    best_pose_backends: str = "colmap-global,colmap-sequential,colmap-exhaustive,colmap,da3-colmap,vggt-colmap,mast3r-sfm"
+    best_pose_backends: str = "vggt-colmap,mast3r-sfm,colmap-global,colmap-sequential,colmap-exhaustive,colmap"
     best_pose_required_backends: str = ""
     pose_backend_command: str = "splatbot-pose --backend {backend} --input {images_dir} --output {processed_dir} --matching-method {matching_method}"
     da3_model: str = "depth-anything/DA3-LARGE-1.1"
     da3_use_ray_pose: bool = True
     da3_ref_view_strategy: str = "middle"
     da3_pose_command: str = "splatbot-da3 --images {images_dir} --processed {processed_dir}"
-    vggt_pose_command: str = ""
-    mast3r_pose_command: str = ""
+    vggt_pose_command: str = (
+        "splatbot-vggt --images {images_dir} --processed {processed_dir} "
+        "--matching-method {matching_method}"
+    )
+    pose_python: str = ""
+    vggt_repo: str = "/opt/vggt"
+    vggt_demo_colmap: str = ""
+    vggt_run_command: str = ""
+    vggt_args: str = ""
+    vggt_max_images: int = 96
+    mast3r_pose_command: str = (
+        "splatbot-mast3r --images {images_dir} --processed {processed_dir} "
+        "--matching-method {matching_method}"
+    )
+    mast3r_repo: str = "/opt/mast3r"
+    mast3r_run_command: str = ""
+    mast3r_weights: str = ""
+    mast3r_args: str = ""
+    mast3r_max_images: int = 120
+    mast3r_pair_window: int = 5
+    mast3r_pair_cyclic: bool = True
+    mast3r_device: str = "cuda"
+    mast3r_shared_camera: bool = True
     glomap_bin: str = "glomap"
     colmap_global_calibrate: bool = True
     colmap_use_gpu: bool = False
@@ -142,6 +163,7 @@ class Settings(BaseSettings):
     duplicate_frame_threshold: float = 3.0
     min_selected_video_frames: int = 60
     min_colmap_registered_ratio: float = 0.35
+    min_colmap_sparse_points: int = 1000
     object_colmap_original_pose_fallback: bool = True
     colmap_retry_frame_counts: str = "120,80,60"
     colmap_retry_matching_methods: str = "sequential,exhaustive"
@@ -177,7 +199,7 @@ class Settings(BaseSettings):
     postprocess_validation_min_inside_ratio: float = 0.02
     postprocess_validation_max_low_support_fraction: float = 0.25
     postprocess_validation_min_checked_points: int = 1
-    postprocess_validation_max_unobserved_fraction: float = 0.75
+    postprocess_validation_max_unobserved_fraction: float = 0.35
     postprocess_validation_sample_limit: int = 200_000
     render_validation_command: str = ""
     quality_report_enabled: bool = True
@@ -196,7 +218,7 @@ class Settings(BaseSettings):
     mcmc_train_command: str = (
         "ns-train splatfacto-mcmc --data {processed_dir} --output-dir {ns_dir} "
         "--max-num-iterations {max_iterations} --steps-per-save {steps_per_save} "
-        "--viewer.quit-on-train-completion True"
+        "--viewer.quit-on-train-completion True {extra_args}"
     )
     mip_splatting_train_command: str = ""
     twodgs_train_command: str = ""
@@ -214,8 +236,8 @@ class Settings(BaseSettings):
     fast_train_extra_args: str = ""
 
     best_max_video_frames: int = 180
-    best_train_max_iterations: int = 14000
-    best_train_steps_per_save: int = 14000
+    best_train_max_iterations: int = 30000
+    best_train_steps_per_save: int = 30000
     best_train_method: str = "splatfacto-big"
     best_train_extra_args: str = (
         "--pipeline.model.cull-alpha-thresh=0.005 "
