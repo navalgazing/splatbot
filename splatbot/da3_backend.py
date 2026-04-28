@@ -11,6 +11,10 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 DEFAULT_MODEL = "depth-anything/DA3-LARGE-1.1"
 
 
+class Da3BackendError(RuntimeError):
+    pass
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Depth Anything 3 for Splatbot pose/depth priors.")
     parser.add_argument("--images", "--input", dest="images_dir", required=True, type=Path)
@@ -36,16 +40,19 @@ def main() -> None:
     if args.depth_only and (args.processed_dir / "transforms.json").exists() and depth_priors_exist(args.processed_dir):
         return
 
-    prediction = run_da3(
-        images,
-        args.model,
-        args.device,
-        use_ray_pose=args.use_ray_pose,
-        ref_view_strategy=args.ref_view_strategy,
-    )
-    if not args.depth_only:
-        write_nerfstudio_dataset(images, prediction, args.processed_dir)
-    write_depth_priors(prediction, args.processed_dir)
+    try:
+        prediction = run_da3(
+            images,
+            args.model,
+            args.device,
+            use_ray_pose=args.use_ray_pose,
+            ref_view_strategy=args.ref_view_strategy,
+        )
+        if not args.depth_only:
+            write_nerfstudio_dataset(images, prediction, args.processed_dir)
+        write_depth_priors(prediction, args.processed_dir)
+    except Da3BackendError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def run_da3(
@@ -60,10 +67,10 @@ def run_da3(
         import torch
         from depth_anything_3.api import DepthAnything3
     except Exception as exc:  # noqa: BLE001
-        raise SystemExit(f"Depth Anything 3 is not installed or importable: {exc}") from exc
+        raise Da3BackendError(f"Depth Anything 3 is not installed or importable: {exc}") from exc
 
     if device == "cuda" and not torch.cuda.is_available():
-        raise SystemExit("Depth Anything 3 requires CUDA for Splatbot best preset, but CUDA is unavailable")
+        raise Da3BackendError("Depth Anything 3 requires CUDA for Splatbot best preset, but CUDA is unavailable")
     model = DepthAnything3.from_pretrained(model_name)
     model = model.to(device=torch.device(device))
     return model.inference(
@@ -82,7 +89,7 @@ def write_nerfstudio_dataset(images: list[Path], prediction, processed_dir: Path
     extrinsics = np.asarray(required_prediction_attr(prediction, "extrinsics", "exts"))
     intrinsics = np.asarray(required_prediction_attr(prediction, "intrinsics", "ixts"))
     if len(extrinsics) != len(images) or len(intrinsics) != len(images):
-        raise SystemExit(
+        raise Da3BackendError(
             f"DA3 returned {len(extrinsics)} pose(s) and {len(intrinsics)} intrinsic(s) for {len(images)} image(s)"
         )
 
@@ -124,7 +131,7 @@ def opencv_world_to_camera_to_nerfstudio_c2w(extrinsic) -> list[list[float]]:
     elif matrix.shape == (4, 4):
         w2c = matrix
     else:
-        raise SystemExit(f"unsupported DA3 extrinsic shape: {matrix.shape}")
+        raise Da3BackendError(f"unsupported DA3 extrinsic shape: {matrix.shape}")
     c2w_opencv = np.linalg.inv(w2c)
     opencv_to_opengl = np.diag([1.0, -1.0, -1.0, 1.0])
     c2w = c2w_opencv @ opencv_to_opengl
@@ -158,7 +165,7 @@ def required_prediction_attr(prediction, *names: str):
     for name in names:
         if hasattr(prediction, name):
             return getattr(prediction, name)
-    raise SystemExit(f"DA3 prediction did not include required field: {'/'.join(names)}")
+    raise Da3BackendError(f"DA3 prediction did not include required field: {'/'.join(names)}")
 
 
 def depth_priors_exist(processed_dir: Path) -> bool:
