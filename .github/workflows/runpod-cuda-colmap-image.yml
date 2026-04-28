@@ -5,6 +5,7 @@ on:
   push:
     branches: [master]
     paths:
+      - Dockerfile.runpod
       - Dockerfile.runpod.cuda
       - .github/workflows/runpod-cuda-colmap-image.yml
 
@@ -29,6 +30,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/setup-buildx-action@v3
+      - name: Build and push base image
+        run: |
+          set +e
+          set -o pipefail
+          docker buildx build \
+            --progress=plain \
+            --push \
+            --cache-from type=gha,scope=runpod-base \
+            --cache-to type=gha,mode=max,scope=runpod-base \
+            --file Dockerfile.runpod \
+            --tag ghcr.io/navalgazing/splatbot-runpod:latest \
+            . 2>&1 | tee /tmp/runpod-base-image-build.log
+          rc="${PIPESTATUS[0]}"
+          if [ "$rc" -ne 0 ]; then
+            tail="$(tail -n 80 /tmp/runpod-base-image-build.log)"
+            tail="${tail//'%'/'%25'}"
+            tail="${tail//$'\n'/'%0A'}"
+            tail="${tail//$'\r'/'%0D'}"
+            echo "::error title=Base Docker build failed::$tail"
+            exit "$rc"
+          fi
       - name: Build and push CUDA COLMAP image
         run: |
           set +e
