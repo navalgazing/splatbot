@@ -39,6 +39,7 @@ CACHE_MARKER="${SPLATBOT_RUNPOD_RUNTIME_CACHE_MARKER:-/workspace/.splatbot-runti
 VPS_APP_DIR="${SPLATBOT_VPS_APP_DIR:-/opt/splatbot/app}"
 VPS_DATA_DIR="${SPLATBOT_VPS_DATA_DIR:-/var/lib/splatbot}"
 WORKER_DATA_DIR="${SPLATBOT_WORKER_DATA_DIR:-/workspace/splatbot-data}"
+export VPS_APP_DIR VPS_DATA_DIR
 RUNTIME_CACHE_ENABLED=false
 case "$VENV_DIR" in
   /workspace/*)

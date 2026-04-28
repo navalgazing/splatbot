@@ -218,8 +218,8 @@ class Settings(BaseSettings):
     best_train_steps_per_save: int = 14000
     best_train_method: str = "splatfacto-big"
     best_train_extra_args: str = (
-        "--pipeline.model.cull_alpha_thresh=0.005 "
-        "--pipeline.model.use_scale_regularization=True"
+        "--pipeline.model.cull-alpha-thresh=0.005 "
+        "--pipeline.model.use-scale-regularization=True"
     )
 
     worker_backend: WorkerBackend = WorkerBackend.LOCAL
