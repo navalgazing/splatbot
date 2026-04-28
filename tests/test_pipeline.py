@@ -443,7 +443,7 @@ def test_silhouette_cleanup_skips_when_remove_fraction_is_too_high(tmp_path) -> 
     assert b"element vertex 2" in dest.read_bytes().split(b"end_header", 1)[0]
 
 
-def test_validate_ply_quality_rejects_failed_mask_validation(tmp_path) -> None:
+def test_validate_ply_quality_records_failed_mask_validation(tmp_path) -> None:
     metrics = {
         "ply": {
             "cleaned": {
@@ -464,8 +464,10 @@ def test_validate_ply_quality_rejects_failed_mask_validation(tmp_path) -> None:
         }
     }
 
-    with pytest.raises(ValueError, match="object-mask validation"):
-        validate_ply_quality(metrics, Settings(data_dir=tmp_path, min_splat_vertices=1))
+    validate_ply_quality(metrics, Settings(data_dir=tmp_path, min_splat_vertices=1))
+    report = build_quality_report(metrics, Settings(data_dir=tmp_path, min_splat_vertices=1))
+    assert "postprocess_validation_failed" in report["issues"]
+    assert metrics["pipeline_events"][-1]["reason"] == "object_mask_validation_failed"
 
 
 def test_validate_ply_quality_rejects_unparseable_summary(tmp_path) -> None:
@@ -494,7 +496,7 @@ def test_validate_ply_quality_accepts_borderline_vertex_count(tmp_path) -> None:
     assert "low_splat_vertex_count" in report["warnings"]
 
 
-def test_validate_ply_quality_rejects_too_few_vertices(tmp_path) -> None:
+def test_validate_ply_quality_records_too_few_vertices(tmp_path) -> None:
     metrics = {
         "ply": {
             "cleaned": {
@@ -507,8 +509,10 @@ def test_validate_ply_quality_rejects_too_few_vertices(tmp_path) -> None:
         }
     }
 
-    with pytest.raises(ValueError, match="only 5000 vertices"):
-        validate_ply_quality(metrics, Settings(data_dir=tmp_path))
+    validate_ply_quality(metrics, Settings(data_dir=tmp_path))
+    report = build_quality_report(metrics, Settings(data_dir=tmp_path))
+    assert "low_splat_vertex_count" in report["warnings"]
+    assert metrics["pipeline_events"][-1]["reason"] == "low_splat_vertex_count"
 
 
 def test_best_preset_enables_sota_backend_chain_by_default(tmp_path) -> None:
@@ -517,7 +521,7 @@ def test_best_preset_enables_sota_backend_chain_by_default(tmp_path) -> None:
 
     assert configured_segmentation_backends(settings, best) == ["sam2", "rembg"]
     assert configured_depth_backends(settings, best) == ["da3", "depth-anything-v2-large"]
-    assert configured_pose_backends(settings, best) == ["mast3r-sfm", "vggt-colmap"]
+    assert configured_pose_backends(settings, best) == ["vggt-colmap", "mast3r-sfm"]
     assert configured_train_backends(settings, best) == ["3dgs-mcmc", "splatfacto-big"]
 
 

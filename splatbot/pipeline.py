@@ -367,6 +367,7 @@ class ScanPipeline:
         }
         write_json(metrics_path, metrics)
         validate_ply_quality(metrics, self.settings)
+        write_json(metrics_path, metrics)
         mesh_path = None
         mesh_metrics = {"enabled": False, "reason": "disabled"}
         if self.settings.mesh_export_enabled:
@@ -1436,6 +1437,14 @@ def build_quality_report(metrics: dict, settings: Settings) -> dict:
     vertices = cleaned_ply.get("vertices")
     if isinstance(vertices, int) and vertices < max(10_000, int(settings.min_splat_vertices * 1.5)):
         warnings.append("low_splat_vertex_count")
+    ratio = cleaned_ply.get("flat_axis_ratio")
+    if (
+        ratio is not None
+        and ratio < settings.max_flattened_axis_ratio
+        and isinstance(vertices, int)
+        and vertices < 20_000
+    ):
+        issues.append("flattened_splat_geometry")
 
     return {
         "job_id": metrics.get("job_id"),
@@ -1523,7 +1532,8 @@ def pipeline_events_by_status(events: list[dict], statuses: set[str]) -> list[di
 
 def summarize_pipeline_events(events: list[dict], limit: int = 6) -> list[str]:
     summary: list[str] = []
-    for event in pipeline_events_by_status(events, {"fallback", "recovered", "skip", "failure"}):
+    visible_statuses = {"fallback", "recovered", "skip", "failure", "warning"}
+    for event in pipeline_events_by_status(events, visible_statuses):
         stage = str(event.get("stage") or "pipeline")
         status = str(event.get("status") or "event")
         backend = str(event.get("backend") or "").strip()
@@ -1532,7 +1542,7 @@ def summarize_pipeline_events(events: list[dict], limit: int = 6) -> list[str]:
         summary.append(f"{label}: {status} ({reason})")
         if len(summary) >= limit:
             break
-    remaining = max(0, len(pipeline_events_by_status(events, {"fallback", "recovered", "skip", "failure"})) - len(summary))
+    remaining = max(0, len(pipeline_events_by_status(events, visible_statuses)) - len(summary))
     if remaining:
         summary.append(f"{remaining} more pipeline event(s)")
     return summary
@@ -2788,8 +2798,13 @@ def validate_ply_quality(metrics: dict, settings: Settings) -> None:
     if not cleaned.get("has_xyz"):
         raise ValueError("Exported splat PLY does not contain x/y/z vertex properties.")
     if vertices is not None and vertices < settings.min_splat_vertices:
-        raise ValueError(
-            f"Exported splat has only {vertices} vertices; expected at least {settings.min_splat_vertices}."
+        record_pipeline_event(
+            metrics,
+            stage="exporting",
+            status="warning",
+            reason="low_splat_vertex_count",
+            recovered=True,
+            details={"vertices": vertices, "expected_min_vertices": settings.min_splat_vertices},
         )
     ratio = cleaned.get("flat_axis_ratio")
     if (
@@ -2798,17 +2813,30 @@ def validate_ply_quality(metrics: dict, settings: Settings) -> None:
         and vertices is not None
         and vertices < 20_000
     ):
-        raise ValueError(
-            f"Exported splat appears flattened (axis ratio {ratio:.4f}, vertices {vertices})."
+        record_pipeline_event(
+            metrics,
+            stage="exporting",
+            status="warning",
+            reason="flattened_splat_geometry",
+            recovered=True,
+            details={
+                "flat_axis_ratio": ratio,
+                "min_axis_ratio": settings.max_flattened_axis_ratio,
+                "vertices": vertices,
+            },
         )
     validation = metrics.get("ply", {}).get("cleanup", {}).get("validation", {})
     if validation.get("applied") and validation.get("passed") is False:
         outside = validation.get("outside_candidate_fraction")
         low_support = validation.get("low_support_fraction")
         unobserved = validation.get("unobserved_fraction")
-        raise ValueError(
-            "Exported splat failed object-mask validation "
-            f"(outside={outside}, low_support={low_support}, unobserved={unobserved})."
+        record_pipeline_event(
+            metrics,
+            stage="postprocess",
+            status="warning",
+            reason="object_mask_validation_failed",
+            recovered=True,
+            details={"outside": outside, "low_support": low_support, "unobserved": unobserved},
         )
 
 
