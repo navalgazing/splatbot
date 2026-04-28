@@ -5,7 +5,7 @@ ARG DA3_COMMIT=41736238f5bced4debf3f2a12375d2466874866d
 ENV DEBIAN_FRONTEND=noninteractive
 ENV SPLATBOT_RUNPOD_VENV=/opt/splatbot/venv
 ENV CUDA_HOME=/usr/local/cuda
-ENV PATH=/opt/splatbot/venv/bin:/usr/local/cuda/bin:$PATH
+ENV PATH=/usr/local/cuda/bin:$PATH
 ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 ENV TORCH_CUDA_ARCH_LIST=8.9
 ENV TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
@@ -56,13 +56,12 @@ RUN python3 -m venv /opt/splatbot/venv \
     && command -v ffprobe \
     && command -v colmap \
     && command -v nvcc \
-    && command -v ns-process-data \
-    && command -v ns-train \
-    && command -v ns-export \
-    && command -v ns-render \
-    && command -v rembg \
-    && command -v da3 \
-    && da3 --help >/tmp/da3-help.txt \
+    && /opt/splatbot/venv/bin/ns-process-data --help >/tmp/ns-process-data-help.txt \
+    && /opt/splatbot/venv/bin/ns-train --help >/tmp/ns-train-help.txt \
+    && /opt/splatbot/venv/bin/ns-export --help >/tmp/ns-export-help.txt \
+    && /opt/splatbot/venv/bin/ns-render --help >/tmp/ns-render-help.txt \
+    && /opt/splatbot/venv/bin/rembg --help >/tmp/rembg-help.txt \
+    && /opt/splatbot/venv/bin/da3 --help >/tmp/da3-help.txt \
     && mkdir -p /root/.u2net \
     && curl -fsSL \
       https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx \
