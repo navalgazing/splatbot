@@ -87,7 +87,12 @@ splatbot-segment --backend sam2 --self-test >/tmp/sam2-self-test.txt 2>&1 || {
   tail -n 120 /tmp/sam2-self-test.txt
   exit 1
 }
-ns-train splatfacto-big --help | grep -q -- "--pipeline.model.strategy"
+ns-train splatfacto-big --help >/tmp/ns-train-splatfacto-big-help.txt 2>&1
+grep -q -- "--pipeline.model.strategy" /tmp/ns-train-splatfacto-big-help.txt || {
+  echo "ns-train splatfacto-big help did not include MCMC strategy flag"
+  tail -n 120 /tmp/ns-train-splatfacto-big-help.txt
+  exit 1
+}
 splatbot-da3 --help >/tmp/splatbot-da3-help.txt
 if /opt/splatbot/venv/bin/python - <<'PY'
 import importlib.util
