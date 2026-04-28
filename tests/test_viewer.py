@@ -38,6 +38,10 @@ def test_publish_viewer_writes_static_result_page(tmp_path) -> None:
     assert (tmp_path / "public" / "job1" / "cleaned_splat.ply").exists()
     assert (tmp_path / "public" / "job1" / "viewer_points.ply").exists()
     assert (tmp_path / "public" / "job1" / "turntable.mp4").exists()
+    assert (tmp_path / "public" / "_viewer_assets" / "three.module.js").exists()
+    assert (tmp_path / "public" / "_viewer_assets" / "controls" / "OrbitControls.js").exists()
+    assert (tmp_path / "public" / "_viewer_assets" / "loaders" / "PLYLoader.js").exists()
+    assert (tmp_path / "public" / "_viewer_assets" / "gaussian-splats-3d.module.js").exists()
     html = path.read_text(encoding="utf-8")
     assert 'type="importmap"' in html
     assert 'rel="modulepreload"' in html
@@ -49,11 +53,10 @@ def test_publish_viewer_writes_static_result_page(tmp_path) -> None:
     assert "Use full splat view" in html
     assert "startPointPreview();" in html
     assert 'import * as GaussianSplats3D' not in html
-    assert 'await import("https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d' in html
-    assert (
-        'rel="modulepreload" href="https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d'
-        not in html
-    )
+    assert 'await import("../_viewer_assets/gaussian-splats-3d.module.js")' in html
+    assert "../_viewer_assets/three.module.js" in html
+    assert "https://unpkg.com/" not in html
+    assert "https://cdn.jsdelivr.net/" not in html
     assert 'name="robots"' in html
 
 
@@ -104,6 +107,7 @@ def test_publish_viewer_copies_mesh_and_quality_report(tmp_path) -> None:
     assert "Use mesh view" in html
     assert "Download mesh" in html
     assert "GLTFLoader" in html
+    assert (result_dir.parent / "_viewer_assets" / "loaders" / "GLTFLoader.js").exists()
 
 
 def test_publish_viewer_rejects_unsupported_mesh_extension(tmp_path) -> None:

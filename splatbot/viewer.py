@@ -6,28 +6,38 @@ import math
 import os
 import shutil
 import struct
+import tempfile
+from importlib.resources import files
 from pathlib import Path
 
 from .config import Settings
 from .pipeline import PipelineOutputs
 
 ALLOWED_MESH_EXTENSIONS = {".glb", ".gltf", ".obj"}
-GAUSSIAN_SPLATS_MODULE_URL = (
-    "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.6/"
-    "build/gaussian-splats-3d.module.js"
+VIEWER_ASSET_DIR_NAME = "_viewer_assets"
+GAUSSIAN_SPLATS_MODULE_PATH = "gaussian-splats-3d.module.js"
+VIEWER_ASSET_INTEGRITY = {
+    "three.module.js": "sha384-Qvl1RLjZOCDFOOH2bKcGnaDHMM8MVv3zVtMvhy3juQdiIOs6RgQ/7zYdM1FbpHzI",
+    "controls/OrbitControls.js": "sha384-BZPDnhvqQ9HQ5XsmqEusjwpN9TIaiGbsJ5XWilDEuRu9Psbw4ZyYk67DUO0nbP3z",
+    "loaders/PLYLoader.js": "sha384-O7ZFYS9EuaDFTByrnLgtegHfTUwTgluDq8VMh7JWJaAnXi6SQCu6YSuTs1voPqsg",
+    "loaders/GLTFLoader.js": "sha384-pK8zo1cGi3nIm4Yh/hrezBkXvN2riHD+7kg4agEXeMxDNqiAKGO2Ds20+xjzcYgZ",
+    "loaders/OBJLoader.js": "sha384-qOxu19eVIcHchuUw1oqOwdUJBMFRbuIik14tOMzsoBIa4yuIxVZYj4/YeaWokjND",
+    GAUSSIAN_SPLATS_MODULE_PATH: "sha384-wn1UKOYaDMuKGmgBbBxjN4akrwQN6pl+kT1KvGuyOOUeBn8bzo5UnnzJTWeljp2C",
+}
+CORE_MODULE_ASSETS = (
+    "three.module.js",
+    "controls/OrbitControls.js",
+    "loaders/PLYLoader.js",
 )
-CORE_MODULE_INTEGRITY = {
-    "https://unpkg.com/three@0.165.0/build/three.module.js": "sha384-Qvl1RLjZOCDFOOH2bKcGnaDHMM8MVv3zVtMvhy3juQdiIOs6RgQ/7zYdM1FbpHzI",
-    "https://unpkg.com/three@0.165.0/examples/jsm/controls/OrbitControls.js": "sha384-BZPDnhvqQ9HQ5XsmqEusjwpN9TIaiGbsJ5XWilDEuRu9Psbw4ZyYk67DUO0nbP3z",
-    "https://unpkg.com/three@0.165.0/examples/jsm/loaders/PLYLoader.js": "sha384-O7ZFYS9EuaDFTByrnLgtegHfTUwTgluDq8VMh7JWJaAnXi6SQCu6YSuTs1voPqsg",
-}
-MESH_MODULE_INTEGRITY = {
-    "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js": "sha384-pK8zo1cGi3nIm4Yh/hrezBkXvN2riHD+7kg4agEXeMxDNqiAKGO2Ds20+xjzcYgZ",
-    "https://unpkg.com/three@0.165.0/examples/jsm/loaders/OBJLoader.js": "sha384-qOxu19eVIcHchuUw1oqOwdUJBMFRbuIik14tOMzsoBIa4yuIxVZYj4/YeaWokjND",
-}
+MESH_MODULE_ASSETS = (
+    "loaders/GLTFLoader.js",
+    "loaders/OBJLoader.js",
+)
+ALL_VIEWER_ASSETS = tuple(VIEWER_ASSET_INTEGRITY)
 
 
 def publish_viewer(settings: Settings, job_id: str, outputs: PipelineOutputs) -> Path:
+    ensure_viewer_assets(settings.public_results_dir)
     target = safe_result_dir(settings.public_results_dir, job_id)
     tmp_target = target.with_name(f".{target.name}.tmp-{os.getpid()}")
     shutil.rmtree(tmp_target, ignore_errors=True)
@@ -61,6 +71,30 @@ def publish_viewer(settings: Settings, job_id: str, outputs: PipelineOutputs) ->
     )
     replace_result_dir(tmp_target, target)
     return target / "index.html"
+
+
+def ensure_viewer_assets(public_results_dir: Path) -> None:
+    asset_root = public_results_dir / VIEWER_ASSET_DIR_NAME
+    asset_root.mkdir(parents=True, exist_ok=True)
+    package_assets = files("splatbot").joinpath("viewer_assets")
+    for relative_path in ALL_VIEWER_ASSETS:
+        source = package_assets.joinpath(*relative_path.split("/"))
+        target = asset_root / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp_target: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                prefix=f".{target.name}.tmp-",
+                dir=target.parent,
+                delete=False,
+            ) as dst:
+                tmp_target = Path(dst.name)
+                with source.open("rb") as src:
+                    shutil.copyfileobj(src, dst)
+            tmp_target.replace(target)
+        finally:
+            if tmp_target is not None:
+                tmp_target.unlink(missing_ok=True)
 
 
 def replace_result_dir(tmp_target: Path, target: Path) -> None:
@@ -102,13 +136,14 @@ def render_viewer_html(
     mesh_button = '<button id="mesh-button" type="button">Use mesh view</button>' if mesh_name else ""
     mesh_download = f'<a href="{html.escape(mesh_name)}" download>Download mesh</a>' if mesh_name else ""
     report_download = '<a href="quality_report.json" download>Download quality report</a>' if has_quality_report else ""
-    module_integrity = dict(CORE_MODULE_INTEGRITY)
+    asset_base = f"../{VIEWER_ASSET_DIR_NAME}/"
+    module_assets = list(CORE_MODULE_ASSETS)
     if mesh_name:
-        module_integrity.update(MESH_MODULE_INTEGRITY)
+        module_assets.extend(MESH_MODULE_ASSETS)
     module_preloads = "\n".join(
-        f'  <link rel="modulepreload" href="{html.escape(url)}" '
-        f'integrity="{html.escape(integrity)}" crossorigin="anonymous">'
-        for url, integrity in module_integrity.items()
+        f'  <link rel="modulepreload" href="{html.escape(asset_base + path)}" '
+        f'integrity="{html.escape(VIEWER_ASSET_INTEGRITY[path])}">'
+        for path in module_assets
     )
     metadata = {
         "job_id": job_id,
@@ -232,8 +267,8 @@ def render_viewer_html(
   <script type="importmap">
     {{
       "imports": {{
-        "three": "https://unpkg.com/three@0.165.0/build/three.module.js",
-        "three/addons/": "https://unpkg.com/three@0.165.0/examples/jsm/"
+        "three": "{asset_base}three.module.js",
+        "three/addons/": "{asset_base}"
       }}
     }}
   </script>
@@ -259,7 +294,7 @@ def render_viewer_html(
 
     async function loadGaussianSplats3D() {{
       if (!GaussianSplats3D) {{
-        GaussianSplats3D = await import("{GAUSSIAN_SPLATS_MODULE_URL}");
+        GaussianSplats3D = await import("{asset_base}{GAUSSIAN_SPLATS_MODULE_PATH}");
       }}
       return GaussianSplats3D;
     }}

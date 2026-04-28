@@ -41,6 +41,14 @@ splatbot-da3 = "splatbot.da3_backend:main"
 where = ["."]
 include = ["splatbot*"]
 
+[tool.setuptools.package-data]
+splatbot = [
+  "viewer_assets/*.js",
+  "viewer_assets/controls/*.js",
+  "viewer_assets/loaders/*.js",
+  "viewer_assets/*.md",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
