@@ -74,13 +74,15 @@ Presets control the target video frame count and training budget:
 
 - `fast`: fewer frames and iterations for cheaper previews.
 - `balanced`: production default, adaptive frame selection, current quality baseline.
-- `best`: more frames, higher iteration budget, and `splatfacto-big` for A/B quality trials.
+- `best`: more frames, quality-diverse frame selection, SOTA-capable fallback chains, and `splatfacto-big` as the stable export fallback.
 
 For video uploads, adaptive selection extracts candidates up to
 `SPLATBOT_MAX_VIDEO_CANDIDATE_FPS`, scores frames for blur, contrast,
 over/underexposure, and duplicate content, drops frames below
 `SPLATBOT_FRAME_QUALITY_REJECT_THRESHOLD`, then samples the best surviving frames
-while preserving coverage through the clip. Object mode can fall back to solving
+while preserving coverage through the clip; `best` mode also spreads selections
+across distinct frame signatures so it does not waste budget on near-duplicate
+views. Object mode can fall back to solving
 COLMAP poses on the original frames while training on `rembg` object frames when
 background-removed frames are too unstable for registration. If COLMAP still
 registers too few frames, the pipeline retries smaller evenly sampled subsets
@@ -94,35 +96,47 @@ culled before publishing. The pass is bounded by
 `SPLATBOT_SILHOUETTE_CLEANUP_MAX_REMOVE_FRACTION` so bad masks or unusual camera
 poses cannot delete too much of a result.
 
-Maximum-quality runs can opt into newer reconstruction stages without changing
-the Telegram flow:
+Maximum-quality runs require the strongest non-gated stages to be installed and
+configured. `best` does not silently degrade to legacy backends; if a required
+stage is unavailable, the job fails with a Telegram summary naming the missing
+stage. Approval-gated models are not part of the default chain.
 
 ```bash
-SPLATBOT_SEGMENTATION_BACKEND=sam3,sam2,rembg
+SPLATBOT_BEST_SEGMENTATION_BACKENDS=sam2,rembg
+SPLATBOT_BEST_SEGMENTATION_REQUIRED_BACKENDS=sam2
 SPLATBOT_OBJECT_MASK_PROMPT='main object'
-SPLATBOT_SAM3_MASK_COMMAND='splatbot-segment --backend sam3 --input {images_dir} --output {object_dir} --prompt {prompt}'
 SPLATBOT_SAM2_MASK_COMMAND='splatbot-segment --backend sam2 --input {images_dir} --output {object_dir}'
 SPLATBOT_SAM2_CHECKPOINT=/opt/splatbot/models/sam2.1_hiera_large.pt
 SPLATBOT_SAM2_CONFIG=configs/sam2.1/sam2.1_hiera_l.yaml
-SPLATBOT_POSE_BACKENDS=glomap,colmap
+SPLATBOT_BEST_POSE_BACKENDS=da3-colmap,vggt-colmap,mast3r-sfm,colmap-global,colmap-sequential,colmap-exhaustive,colmap
+SPLATBOT_BEST_POSE_REQUIRED_BACKENDS=da3-colmap
 SPLATBOT_POSE_BACKEND_COMMAND='splatbot-pose --backend {backend} --input {images_dir} --output {processed_dir} --matching-method {matching_method}'
-SPLATBOT_TRAIN_BACKENDS=dn-splatter,splatfacto-big
+SPLATBOT_DA3_MODEL=depth-anything/DA3NESTED-GIANT-LARGE-1.1
+SPLATBOT_DA3_USE_RAY_POSE=true
+SPLATBOT_DA3_REF_VIEW_STRATEGY=middle
+SPLATBOT_DA3_POSE_COMMAND='splatbot-da3 --images {images_dir} --processed {processed_dir}'
+SPLATBOT_BEST_DEPTH_BACKENDS=da3,depth-anything-v2-large
+SPLATBOT_BEST_DEPTH_REQUIRED_BACKENDS=da3
+SPLATBOT_DEPTH_BACKEND_COMMAND='splatbot-depth --backend {backend} --processed {processed_dir} --images {images_dir}'
+SPLATBOT_DA3_DEPTH_COMMAND='splatbot-da3 --images {images_dir} --processed {processed_dir} --depth-only'
+SPLATBOT_BEST_TRAIN_BACKENDS=3dgs-mcmc,splatfacto-big
+SPLATBOT_BEST_TRAIN_REQUIRED_BACKENDS=3dgs-mcmc
 SPLATBOT_TRAIN_BACKEND_COMMAND='splatbot-train --backend {backend} --data {processed_dir} --output {ns_dir} --max-iterations {max_iterations} --steps-per-save {steps_per_save} {extra_args}'
+SPLATBOT_MCMC_TRAIN_COMMAND='ns-train splatfacto-big --data {processed_dir} --output-dir {ns_dir} --max-num-iterations {max_iterations} --steps-per-save {steps_per_save} --viewer.quit-on-train-completion True --pipeline.model.strategy mcmc {extra_args}'
 SPLATBOT_MESH_EXPORT_ENABLED=true
 SPLATBOT_MESH_BACKEND=o3dtsdf
 SPLATBOT_MESH_EXPORT_COMMAND='splatbot-mesh --backend {backend} --ns-dir {ns_dir} --output {mesh_path}'
 ```
 
-Backends are attempted in order. In `best` mode, the default object chain is
-SAM2, then rembg; pose is COLMAP global mapper when available, then normal
-COLMAP; training is DN-Splatter-big when the runtime has a compatible
-DN-Splatter/Nerfstudio stack, then `splatfacto-big`. SAM3 can be explicitly
-enabled with `SPLATBOT_SEGMENTATION_BACKEND=sam3,sam2,rembg` once the runtime
-has a fully importable SAM3 stack and model access. The CUDA RunPod image
-intentionally excludes SAM3 for now because the current upstream package targets
-a newer Python/runtime stack, and excludes DN-Splatter because current upstream
-DN-Splatter imports an older `gsplat` API; both adapters remain available for a
-future pinned or patched runtime.
+Backends are attempted in order for non-required stages. In `best` mode, SAM2,
+DA3 pose/depth, and 3DGS-MCMC training are required by default. VGGT, MASt3R,
+Depth Anything V2, and COLMAP variants can still be configured as diagnostic or
+compatibility backends, but they do not mask a missing required SOTA stage. SAM3
+is disabled by default because it requires access approval. DN-Splatter remains
+explicitly opt-in because its dependency stack can conflict with Nerfstudio/gsplat.
+
+Every skipped, failed, or recovered backend attempt is written into
+`quality_report.json` and summarized in the Telegram completion/failure message.
 
 Object-mode postprocessing now includes a mask-support cleanup pass and a
 publish-time validation gate. If the cleaned splat still has too many points

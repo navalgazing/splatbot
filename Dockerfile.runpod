@@ -1,5 +1,7 @@
 FROM runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04
 
+ARG DA3_COMMIT=41736238f5bced4debf3f2a12375d2466874866d
+
 ENV DEBIAN_FRONTEND=noninteractive
 ENV SPLATBOT_RUNPOD_VENV=/opt/splatbot/venv
 ENV CUDA_HOME=/usr/local/cuda
@@ -23,15 +25,26 @@ RUN apt-get update \
       colmap \
       curl \
       ffmpeg \
+      git \
       openssh-client \
-      python3 \
-      python3-pip \
-      python3-venv \
+      software-properties-common \
       rsync \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+      python3.12 \
+      python3.12-dev \
+      python3.12-venv \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m venv --system-site-packages /opt/splatbot/venv \
+RUN python3.12 -m venv /opt/splatbot/venv \
     && /opt/splatbot/venv/bin/pip install --upgrade pip \
+    && /opt/splatbot/venv/bin/pip install --index-url https://download.pytorch.org/whl/cu128 \
+      torch==2.8.0 \
+      torchvision==0.23.0 \
+      torchaudio==2.8.0 \
+    && /opt/splatbot/venv/bin/pip install --no-cache-dir \
+      xformers==0.0.32.post2 \
     && /opt/splatbot/venv/bin/pip install \
       aiosqlite \
       boto3 \
@@ -40,6 +53,9 @@ RUN python3 -m venv --system-site-packages /opt/splatbot/venv \
       python-dotenv \
       python-telegram-bot \
       'rembg[cpu,cli]' \
+    && git clone https://github.com/ByteDance-Seed/Depth-Anything-3.git /opt/splatbot/depth-anything-3 \
+    && git -C /opt/splatbot/depth-anything-3 checkout "$DA3_COMMIT" \
+    && /opt/splatbot/venv/bin/pip install --no-cache-dir -e /opt/splatbot/depth-anything-3 \
     && command -v ffmpeg \
     && command -v ffprobe \
     && command -v colmap \
@@ -49,6 +65,8 @@ RUN python3 -m venv --system-site-packages /opt/splatbot/venv \
     && command -v ns-export \
     && command -v ns-render \
     && command -v rembg \
+    && command -v da3 \
+    && da3 --help >/tmp/da3-help.txt \
     && mkdir -p /root/.u2net \
     && curl -fsSL \
       https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx \
@@ -59,11 +77,13 @@ RUN colmap -h | sed -n '1p' \
 import importlib.metadata as metadata
 import torch
 
-for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "torch"):
+for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "torch", "depth-anything-3", "xformers"):
     try:
         version = metadata.version(package)
     except metadata.PackageNotFoundError:
         version = "missing"
     print(f"{package}={version}")
+import depth_anything_3  # noqa: F401
+import xformers  # noqa: F401
 print(f"torch_cuda_available={torch.cuda.is_available()}")
 PY

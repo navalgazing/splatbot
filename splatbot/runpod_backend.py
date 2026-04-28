@@ -133,11 +133,15 @@ class RunPodLauncher:
         attempts = max(1, self.settings.runpod_launch_attempts)
         last_error: RunPodSshUnavailableError | None = None
         for attempt in range(1, attempts + 1):
-            pod = self.client.create_ssh_pod(self.settings, job, public_key)
-            LOGGER.info("created RunPod pod %s for job %s attempt %s/%s", pod.id, job.id, attempt, attempts)
-            if on_pod_id:
-                on_pod_id(pod.id)
+            pod: RunPodPod | None = None
             try:
+                pod = self.client.create_ssh_pod(self.settings, job, public_key)
+                LOGGER.info("created RunPod pod %s for job %s attempt %s/%s", pod.id, job.id, attempt, attempts)
+                if on_pod_id:
+                    try:
+                        on_pod_id(pod.id)
+                    except Exception as exc:  # noqa: BLE001
+                        raise RunPodError(f"failed to record RunPod pod id for job {job.id}") from exc
                 target = self.wait_for_ssh(pod.id)
                 self.run_worker(job, pod.id, target)
                 return pod
@@ -147,16 +151,17 @@ class RunPodLauncher:
                 if attempt >= attempts:
                     raise
             finally:
-                try:
-                    self.client.delete_pod(pod.id)
-                except Exception:  # noqa: BLE001
-                    LOGGER.exception("failed to delete RunPod pod %s", pod.id)
-                else:
-                    if on_pod_id:
-                        try:
-                            on_pod_id(None)
-                        except Exception:  # noqa: BLE001
-                            LOGGER.exception("failed to clear RunPod pod id for job %s", job.id)
+                if pod is not None:
+                    try:
+                        self.client.delete_pod(pod.id)
+                    except Exception:  # noqa: BLE001
+                        LOGGER.exception("failed to delete RunPod pod %s", pod.id)
+                    else:
+                        if on_pod_id:
+                            try:
+                                on_pod_id(None)
+                            except Exception:  # noqa: BLE001
+                                LOGGER.exception("failed to clear RunPod pod id for job %s", job.id)
         assert last_error is not None
         raise last_error
 
@@ -289,6 +294,8 @@ def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str, 
             "SPLATBOT_MAX_VIDEO_SAMPLE_FPS": settings.max_video_sample_fps,
             "SPLATBOT_MAX_VIDEO_CANDIDATE_FPS": settings.max_video_candidate_fps,
             "SPLATBOT_ADAPTIVE_FRAME_SELECTION": str(settings.adaptive_frame_selection).lower(),
+            "SPLATBOT_FRAME_SELECTION_STRATEGY": settings.frame_selection_strategy,
+            "SPLATBOT_BEST_FRAME_SELECTION_STRATEGY": settings.best_frame_selection_strategy,
             "SPLATBOT_FRAME_QUALITY_REJECT_THRESHOLD": settings.frame_quality_reject_threshold,
             "SPLATBOT_BLUR_REJECT_THRESHOLD": settings.blur_reject_threshold,
             "SPLATBOT_LOW_CONTRAST_REJECT_THRESHOLD": settings.low_contrast_reject_threshold,
@@ -309,6 +316,7 @@ def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str, 
             "SPLATBOT_SILHOUETTE_CLEANUP_PADDING_PX": settings.silhouette_cleanup_padding_px,
             "SPLATBOT_SILHOUETTE_CLEANUP_OUTSIDE_RATIO": settings.silhouette_cleanup_outside_ratio,
             "SPLATBOT_SILHOUETTE_CLEANUP_MAX_INSIDE_VIEWS": settings.silhouette_cleanup_max_inside_views,
+            "SPLATBOT_SILHOUETTE_CLEANUP_MAX_INSIDE_RATIO": settings.silhouette_cleanup_max_inside_ratio,
             "SPLATBOT_SILHOUETTE_CLEANUP_MAX_REMOVE_FRACTION": settings.silhouette_cleanup_max_remove_fraction,
             "SPLATBOT_MIN_SPLAT_VERTICES": settings.min_splat_vertices,
             "SPLATBOT_MAX_FLATTENED_AXIS_RATIO": settings.max_flattened_axis_ratio,
@@ -322,6 +330,11 @@ def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str, 
             "SPLATBOT_REMBG_BIN": settings.rembg_bin,
             "SPLATBOT_REMBG_REQUIRE_GPU": str(settings.rembg_require_gpu).lower(),
             "SPLATBOT_SEGMENTATION_BACKEND": settings.segmentation_backend,
+            "SPLATBOT_BEST_SEGMENTATION_BACKENDS": settings.best_segmentation_backends,
+            "SPLATBOT_BEST_SEGMENTATION_REQUIRED_BACKENDS": settings.best_segmentation_required_backends,
+            "SPLATBOT_EXPERIMENTAL_SAM3_ENABLED": str(settings.experimental_sam3_enabled).lower(),
+            "SPLATBOT_SEGMENTATION_MIN_OUTPUT_RATIO": settings.segmentation_min_output_ratio,
+            "SPLATBOT_SEGMENTATION_MIN_OUTPUT_FILES": settings.segmentation_min_output_files,
             "SPLATBOT_OBJECT_MASK_BACKEND": settings.object_mask_backend,
             "SPLATBOT_OBJECT_MASK_COMMAND": settings.object_mask_command,
             "SPLATBOT_OBJECT_MASK_PROMPT": settings.object_mask_prompt,
@@ -340,8 +353,17 @@ def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str, 
             "SPLATBOT_OBJECT_MASK_MIN_KEEP_RATIO": settings.object_mask_min_keep_ratio,
             "SPLATBOT_OBJECT_MASK_TRAINING_ALPHA_THRESHOLD": settings.object_mask_training_alpha_threshold,
             "SPLATBOT_POSE_BACKENDS": settings.pose_backends,
+            "SPLATBOT_BEST_POSE_BACKENDS": settings.best_pose_backends,
+            "SPLATBOT_BEST_POSE_REQUIRED_BACKENDS": settings.best_pose_required_backends,
             "SPLATBOT_POSE_BACKEND_COMMAND": settings.pose_backend_command,
+            "SPLATBOT_DA3_MODEL": settings.da3_model,
+            "SPLATBOT_DA3_USE_RAY_POSE": str(settings.da3_use_ray_pose).lower(),
+            "SPLATBOT_DA3_REF_VIEW_STRATEGY": settings.da3_ref_view_strategy,
+            "SPLATBOT_DA3_POSE_COMMAND": settings.da3_pose_command,
+            "SPLATBOT_VGGT_POSE_COMMAND": settings.vggt_pose_command,
+            "SPLATBOT_MAST3R_POSE_COMMAND": settings.mast3r_pose_command,
             "SPLATBOT_GLOMAP_BIN": settings.glomap_bin,
+            "SPLATBOT_COLMAP_GLOBAL_CALIBRATE": str(settings.colmap_global_calibrate).lower(),
             "SPLATBOT_COLMAP_USE_GPU": str(settings.colmap_use_gpu).lower(),
             "SPLATBOT_GAUSSIAN_CLEANUP_ENABLED": str(settings.gaussian_cleanup_enabled).lower(),
             "SPLATBOT_GAUSSIAN_CLEANUP_MIN_OPACITY": settings.gaussian_cleanup_min_opacity,
@@ -365,14 +387,28 @@ def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str, 
             "SPLATBOT_POSTPROCESS_VALIDATION_MIN_INSIDE_VIEWS": settings.postprocess_validation_min_inside_views,
             "SPLATBOT_POSTPROCESS_VALIDATION_MIN_INSIDE_RATIO": settings.postprocess_validation_min_inside_ratio,
             "SPLATBOT_POSTPROCESS_VALIDATION_MAX_LOW_SUPPORT_FRACTION": settings.postprocess_validation_max_low_support_fraction,
+            "SPLATBOT_POSTPROCESS_VALIDATION_MIN_CHECKED_POINTS": settings.postprocess_validation_min_checked_points,
+            "SPLATBOT_POSTPROCESS_VALIDATION_MAX_UNOBSERVED_FRACTION": settings.postprocess_validation_max_unobserved_fraction,
             "SPLATBOT_POSTPROCESS_VALIDATION_SAMPLE_LIMIT": settings.postprocess_validation_sample_limit,
             "SPLATBOT_RENDER_VALIDATION_COMMAND": settings.render_validation_command,
             "SPLATBOT_QUALITY_REPORT_ENABLED": str(settings.quality_report_enabled).lower(),
             "SPLATBOT_COMMAND_TIMEOUT_SECONDS": settings.command_timeout_seconds,
             "SPLATBOT_COMMAND_TAIL_BYTES": settings.command_tail_bytes,
+            "SPLATBOT_DEPTH_BACKENDS": settings.depth_backends,
+            "SPLATBOT_BEST_DEPTH_BACKENDS": settings.best_depth_backends,
+            "SPLATBOT_BEST_DEPTH_REQUIRED_BACKENDS": settings.best_depth_required_backends,
+            "SPLATBOT_DEPTH_BACKEND_COMMAND": settings.depth_backend_command,
+            "SPLATBOT_DA3_DEPTH_COMMAND": settings.da3_depth_command,
+            "SPLATBOT_DEPTH_ANYTHING_V2_COMMAND": settings.depth_anything_v2_command,
             "SPLATBOT_TRAIN_METHOD": settings.train_method,
             "SPLATBOT_TRAIN_BACKENDS": settings.train_backends,
+            "SPLATBOT_BEST_TRAIN_BACKENDS": settings.best_train_backends,
+            "SPLATBOT_BEST_TRAIN_REQUIRED_BACKENDS": settings.best_train_required_backends,
+            "SPLATBOT_EXPERIMENTAL_DN_SPLATTER_ENABLED": str(settings.experimental_dn_splatter_enabled).lower(),
             "SPLATBOT_TRAIN_BACKEND_COMMAND": settings.train_backend_command,
+            "SPLATBOT_MCMC_TRAIN_COMMAND": settings.mcmc_train_command,
+            "SPLATBOT_MIP_SPLATTING_TRAIN_COMMAND": settings.mip_splatting_train_command,
+            "SPLATBOT_2DGS_TRAIN_COMMAND": settings.twodgs_train_command,
             "SPLATBOT_TRAIN_EXTRA_ARGS": settings.train_extra_args,
             "SPLATBOT_TRAIN_MAX_ITERATIONS": settings.train_max_iterations,
             "SPLATBOT_TRAIN_STEPS_PER_SAVE": settings.train_steps_per_save,

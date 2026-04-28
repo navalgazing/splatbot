@@ -26,13 +26,16 @@ export SPLATBOT_LOG_COMMAND_OUTPUT="${SPLATBOT_LOG_COMMAND_OUTPUT:-1}"
 SSH_OPTS="-i /root/.ssh/id_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=6"
 VENV_DIR="${SPLATBOT_RUNPOD_VENV:-/workspace/venv}"
 CACHE_MARKER="${SPLATBOT_RUNPOD_RUNTIME_CACHE_MARKER:-/workspace/.splatbot-runtime-cache-version}"
+VPS_APP_DIR="${SPLATBOT_VPS_APP_DIR:-/opt/splatbot/app}"
+VPS_DATA_DIR="${SPLATBOT_VPS_DATA_DIR:-/var/lib/splatbot}"
+WORKER_DATA_DIR="${SPLATBOT_WORKER_DATA_DIR:-/workspace/splatbot-data}"
 RUNTIME_CACHE_ENABLED=false
 case "$VENV_DIR" in
   /workspace/*)
     RUNTIME_CACHE_ENABLED=true
     ;;
 esac
-VPS_JOBCTL="cd /opt/splatbot/app && /opt/splatbot/venv/bin/splatbot-jobctl"
+VPS_JOBCTL="cd $VPS_APP_DIR && /opt/splatbot/venv/bin/splatbot-jobctl"
 
 fail_job() {
   rc="$?"
@@ -189,12 +192,43 @@ command -v colmap >/dev/null
 command -v rembg >/dev/null
 command -v splatbot-segment >/dev/null
 command -v splatbot-pose >/dev/null
+command -v splatbot-depth >/dev/null
 command -v splatbot-train >/dev/null
 command -v splatbot-mesh >/dev/null
-for cmd in splatbot-segment splatbot-pose splatbot-train splatbot-mesh; do
+command -v splatbot-da3 >/dev/null
+for cmd in splatbot-segment splatbot-pose splatbot-depth splatbot-train splatbot-mesh splatbot-da3; do
   "$cmd" --help >/tmp/"$cmd"-help.txt
 done
-splatbot-segment --backend sam2 --self-test
+IFS=',' read -ra SEGMENT_BACKENDS <<< "${SPLATBOT_BEST_SEGMENTATION_BACKENDS:-${SPLATBOT_SEGMENTATION_BACKEND:-rembg}}"
+IFS=',' read -ra REQUIRED_SEGMENT_BACKENDS <<< "${SPLATBOT_BEST_SEGMENTATION_REQUIRED_BACKENDS:-}"
+if [ "${SPLATBOT_SCAN_PRESET:-balanced}" != "best" ] && [ -n "${SPLATBOT_SEGMENTATION_BACKEND:-}" ]; then
+  IFS=',' read -ra SEGMENT_BACKENDS <<< "$SPLATBOT_SEGMENTATION_BACKEND"
+fi
+if [ "${SPLATBOT_SCAN_MODE:-scene}" = "object" ]; then
+  for backend in "${SEGMENT_BACKENDS[@]}"; do
+    backend="$(printf '%s' "$backend" | xargs)"
+    if [ -n "$backend" ] && [ "$backend" != "rembg" ]; then
+      if splatbot-segment --backend "$backend" --self-test; then
+        continue
+      fi
+      required=false
+      if [ "${SPLATBOT_SCAN_PRESET:-balanced}" = "best" ]; then
+        for required_backend in "${REQUIRED_SEGMENT_BACKENDS[@]}"; do
+          required_backend="$(printf '%s' "$required_backend" | xargs)"
+          if [ "$backend" = "$required_backend" ]; then
+            required=true
+            break
+          fi
+        done
+      fi
+      if [ "$required" = true ]; then
+        echo "best preset requires segmentation backend '$backend', but its self-test failed" >&2
+        exit 2
+      fi
+      echo "optional segmentation backend '$backend' self-test failed; fallback remains available" >&2
+    fi
+  done
+fi
 command -v nvcc >/dev/null
 check_colmap_cuda
 check_rembg_cuda
@@ -208,6 +242,18 @@ from gsplat.cuda import _backend
 if _backend._C is None:
     raise SystemExit("gsplat CUDA extension is not available")
 PY
+if [ "${SPLATBOT_SCAN_PRESET:-balanced}" = "best" ]; then
+  "$VENV_DIR/bin/python" - <<'PY'
+import importlib.util
+
+if importlib.util.find_spec("depth_anything_3") is None:
+    raise SystemExit("best preset requires Depth Anything 3, but depth_anything_3 is not installed")
+PY
+  ns-train splatfacto-big --help | grep -q -- "--pipeline.model.strategy" || {
+    echo "best preset requires Nerfstudio splatfacto MCMC strategy support" >&2
+    exit 2
+  }
+fi
 if [ "$RUNTIME_CACHE_ENABLED" = true ] && [ -n "${SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION:-}" ]; then
   mkdir -p "$(dirname "$CACHE_MARKER")"
   printf '%s\n' "$SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION" > "$CACHE_MARKER"
@@ -233,13 +279,13 @@ ssh -i /root/.ssh/id_ed25519 \
   -o ServerAliveInterval=30 \
   -o ServerAliveCountMax=6 \
   "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
-  "cd /opt/splatbot/app && /opt/splatbot/venv/bin/splatbot-jobctl set-status $job_id $status"
+  "cd $VPS_APP_DIR && /opt/splatbot/venv/bin/splatbot-jobctl set-status $job_id $status"
 SH
 chmod +x /workspace/splatbot-set-status
 export SPLATBOT_STATUS_COMMAND=/workspace/splatbot-set-status
 
 rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
-  "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:/var/lib/splatbot/sessions/$SPLATBOT_SESSION_ID/" \
+  "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/sessions/$SPLATBOT_SESSION_ID/" \
   /workspace/input-media/
 find /workspace/input-media -maxdepth 1 -type f -printf 'input media: %f %s bytes\n' | sort
 
@@ -263,32 +309,32 @@ print(f"worker result ply: size={path.stat().st_size} format={fmt} vertices={ver
 PY
   fi
   ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
-    "mkdir -p /var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/export /var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/renders"
+    "mkdir -p $VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/export $VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/renders"
   rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
     /workspace/results/cleaned_splat.ply \
-    "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/export/cleaned_splat.ply"
+    "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/export/cleaned_splat.ply"
   for mesh in /workspace/results/mesh.glb /workspace/results/mesh.gltf /workspace/results/mesh.obj; do
     if [ -f "$mesh" ]; then
       rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
         "$mesh" \
-        "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/export/$(basename "$mesh")"
+        "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/export/$(basename "$mesh")"
     fi
   done
   if [ -f /workspace/results/turntable.mp4 ]; then
     rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
       /workspace/results/turntable.mp4 \
-      "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/renders/turntable.mp4"
+      "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/renders/turntable.mp4"
   fi
   if [ -f /workspace/results/metrics.json ]; then
     rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
       /workspace/results/metrics.json \
-      "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/metrics.json"
+      "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/metrics.json"
   fi
   for report in quality_report.json candidate_report.json; do
     if [ -f "/workspace/results/$report" ]; then
       rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
         "/workspace/results/$report" \
-        "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:/var/lib/splatbot/jobs/$SPLATBOT_JOB_ID/$report"
+        "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/$report"
     fi
   done
   ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \

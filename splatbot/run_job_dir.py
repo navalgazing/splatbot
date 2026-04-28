@@ -9,9 +9,8 @@ from pathlib import Path
 
 from .config import ScanMode, ScanPreset, Settings
 from .media import classify_path
-from .models import MediaItem
+from .models import JobStatus, MediaItem, MediaKind
 from .pipeline import ScanPipeline
-from .models import JobStatus
 
 
 def media_items(media_dir: Path) -> list[MediaItem]:
@@ -35,8 +34,12 @@ def media_items(media_dir: Path) -> list[MediaItem]:
 
 async def run(job_id: str, mode: ScanMode, preset: ScanPreset, media_dir: Path, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    settings = Settings(data_dir=Path("/workspace/splatbot-data"))
-    outputs = await ScanPipeline(settings).run(job_id, mode, media_items(media_dir), report_status, preset)
+    data_dir = Path(os.environ.get("SPLATBOT_WORKER_DATA_DIR", "/workspace/splatbot-data"))
+    settings = Settings(data_dir=data_dir)
+    media = media_items(media_dir)
+    images_dir = settings.job_dir(job_id) / "uploaded_images"
+    normalized_media = await normalize_photo_media(settings, media, images_dir)
+    outputs = await ScanPipeline(settings).run(job_id, mode, normalized_media, report_status, preset)
     shutil.copy2(outputs.cleaned_ply, output_dir / "cleaned_splat.ply")
     if outputs.mesh_path is not None and outputs.mesh_path.exists():
         shutil.copy2(outputs.mesh_path, output_dir / outputs.mesh_path.name)
@@ -58,6 +61,49 @@ async def report_status(job_id: str, status: JobStatus) -> None:
     returncode = await proc.wait()
     if returncode != 0:
         print(f"status update failed with exit code {returncode}: {status.value}", flush=True)
+
+
+async def normalize_photo_media(settings: Settings, media: list[MediaItem], images_dir: Path) -> list[MediaItem]:
+    if not media or any(item.kind != MediaKind.PHOTO for item in media):
+        return media
+    images_dir.mkdir(parents=True, exist_ok=True)
+    normalized: list[MediaItem] = []
+    for idx, item in enumerate(media, start=1):
+        src = Path(item.local_path)
+        suffix = src.suffix.lower()
+        if suffix in {".jpg", ".jpeg", ".png"}:
+            dest = images_dir / f"image_{idx:05d}{suffix}"
+            shutil.copy2(src, dest)
+        else:
+            dest = images_dir / f"image_{idx:05d}.png"
+            await transcode_photo(settings, src, dest)
+        normalized.append(
+            MediaItem(
+                id=item.id,
+                session_id=item.session_id,
+                kind=item.kind,
+                local_path=str(dest),
+                remote_key=item.remote_key,
+                created_at=item.created_at,
+            )
+        )
+    return normalized
+
+
+async def transcode_photo(settings: Settings, src: Path, dest: Path) -> None:
+    proc = await asyncio.create_subprocess_exec(
+        settings.ffmpeg_bin,
+        "-y",
+        "-i",
+        str(src),
+        str(dest),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        detail = stderr.decode(errors="replace")[-2000:] or stdout.decode(errors="replace")[-2000:]
+        raise RuntimeError(f"failed to transcode uploaded image {src.name}: {detail}")
 
 
 def main() -> None:

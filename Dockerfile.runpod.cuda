@@ -104,7 +104,7 @@ RUN mkdir -p /opt/splatbot/models \
 
 RUN set -eu; \
     ldconfig; \
-    for cmd in ffmpeg ffprobe colmap nvcc ns-process-data ns-train ns-export ns-render rembg; do \
+    for cmd in ffmpeg ffprobe colmap nvcc ns-process-data ns-train ns-export ns-render rembg da3; do \
       path="$(command -v "$cmd" || true)"; \
       if [ -z "$path" ]; then \
         echo "missing command: $cmd"; \
@@ -112,7 +112,7 @@ RUN set -eu; \
       fi; \
       echo "$cmd=$path"; \
       case "$cmd" in \
-        ns-process-data|ns-train|ns-export|ns-render|rembg) \
+        ns-process-data|ns-train|ns-export|ns-render|rembg|da3) \
           "$cmd" --help > "/tmp/$cmd-help.txt" 2>&1 || { echo "$cmd --help failed"; tail -n 40 "/tmp/$cmd-help.txt"; exit 1; }; \
           ;; \
       esac; \
@@ -153,7 +153,7 @@ def optional_import(module: str) -> None:
         return
     require_import(module)
 
-for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "onnxruntime-gpu", "torch"):
+for package in ("nerfstudio", "gsplat", "rembg", "onnxruntime", "onnxruntime-gpu", "torch", "depth-anything-3", "xformers"):
     try:
         version = metadata.version(package)
     except metadata.PackageNotFoundError:
@@ -163,7 +163,8 @@ print(f"torch_cuda_available={torch.cuda.is_available()}")
 print(f"onnxruntime_device={ort.get_device()}")
 print(f"onnxruntime_providers={ort.get_available_providers()}")
 require_import("sam2")
-optional_import("sam3")
+require_import("depth_anything_3")
+require_import("xformers")
 try:
     from sam2.build_sam import build_sam2_video_predictor
 

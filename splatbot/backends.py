@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -91,6 +92,30 @@ def segment_with_rembg(input_dir: Path, output_dir: Path) -> None:
     run([rembg, "p", str(input_dir), str(output_dir)])
 
 
+def render_backend_command(command: str, **values: str) -> list[str]:
+    rendered = command.format(**{key: shlex.quote(str(value)) for key, value in values.items()})
+    return shlex.split(rendered)
+
+
+def segment_with_external_command(input_dir: Path, output_dir: Path, backend: str, prompt: str) -> None:
+    env_name = "SPLATBOT_MATTING_COMMAND" if backend in {"matting", "matanyone"} else "SPLATBOT_OBJECT_MASK_COMMAND"
+    command = os.environ.get(env_name, "").strip()
+    if not command:
+        raise SystemExit(f"{env_name} is required for segmentation backend {backend!r}")
+    run(
+        render_backend_command(
+            command,
+            backend=backend,
+            input_dir=str(input_dir),
+            images_dir=str(input_dir),
+            output_dir=str(output_dir),
+            object_dir=str(output_dir),
+            prompt=prompt,
+        )
+    )
+    ensure_output_files(output_dir)
+
+
 def segment_with_sam3(input_dir: Path, output_dir: Path, prompt: str) -> None:
     try:
         from PIL import Image
@@ -121,7 +146,7 @@ def segment_backend_self_test(backend: str) -> None:
         except Exception as exc:  # noqa: BLE001
             raise SystemExit(f"SAM3 self-test failed: {exc}") from exc
         return
-    if backend == "sam2":
+    if backend in {"sam2", "sam2-video"}:
         checkpoint = os.environ.get("SPLATBOT_SAM2_CHECKPOINT", "")
         config = os.environ.get("SPLATBOT_SAM2_CONFIG", "configs/sam2.1/sam2.1_hiera_l.yaml")
         if not checkpoint:
@@ -134,9 +159,14 @@ def segment_backend_self_test(backend: str) -> None:
         except Exception as exc:  # noqa: BLE001
             raise SystemExit(f"SAM2 self-test failed: {exc}") from exc
         return
-    if backend == "rembg":
+    if backend in {"rembg", "matting", "matanyone", "external"}:
+        if backend in {"matting", "matanyone"} and not os.environ.get("SPLATBOT_MATTING_COMMAND", "").strip():
+            raise SystemExit("matting self-test failed: SPLATBOT_MATTING_COMMAND is required")
+        if backend == "external" and not os.environ.get("SPLATBOT_OBJECT_MASK_COMMAND", "").strip():
+            raise SystemExit("external segmentation self-test failed: SPLATBOT_OBJECT_MASK_COMMAND is required")
         try:
-            import rembg  # noqa: F401
+            if backend == "rembg":
+                import rembg  # noqa: F401
         except Exception as exc:  # noqa: BLE001
             raise SystemExit(f"rembg self-test failed: {exc}") from exc
         return
@@ -301,7 +331,11 @@ def segment_with_sam2(input_dir: Path, output_dir: Path) -> None:
 
 def segment_main() -> None:
     parser = argparse.ArgumentParser(description="Run Splatbot segmentation backends.")
-    parser.add_argument("--backend", required=True, choices=["sam3", "sam2", "rembg"])
+    parser.add_argument(
+        "--backend",
+        required=True,
+        choices=["sam3", "sam3-video", "sam2", "sam2-video", "matting", "matanyone", "rembg", "external"],
+    )
     parser.add_argument("--input", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--prompt", default=os.environ.get("SPLATBOT_OBJECT_MASK_PROMPT", "main object"))
@@ -313,10 +347,12 @@ def segment_main() -> None:
     if args.input is None or args.output is None:
         parser.error("--input and --output are required unless --self-test is used")
     args.output.mkdir(parents=True, exist_ok=True)
-    if args.backend == "sam3":
+    if args.backend in {"sam3", "sam3-video"}:
         segment_with_sam3(args.input, args.output, args.prompt)
-    elif args.backend == "sam2":
+    elif args.backend in {"sam2", "sam2-video"}:
         segment_with_sam2(args.input, args.output)
+    elif args.backend in {"matting", "matanyone", "external"}:
+        segment_with_external_command(args.input, args.output, args.backend, args.prompt)
     else:
         segment_with_rembg(args.input, args.output)
 
@@ -328,6 +364,9 @@ def pose_main() -> None:
     parser.add_argument("--output", "--processed", dest="processed_dir", required=True, type=Path)
     parser.add_argument("--matching-method", default="")
     args = parser.parse_args()
+    if args.backend in {"da3-colmap", "vggt-colmap", "mast3r-sfm"}:
+        run_external_pose_backend(args.backend, args.input_dir, args.processed_dir, args.matching_method)
+        return
     ns_process = os.environ.get("SPLATBOT_NS_PROCESS_DATA_BIN", "ns-process-data")
     env = os.environ.copy()
     if args.backend in {"colmap-global", "global", "glomap"}:
@@ -347,6 +386,79 @@ def pose_main() -> None:
     if env.get("SPLATBOT_COLMAP_USE_GPU", "false").lower() not in {"1", "true", "yes", "on"}:
         argv.append("--no-gpu")
     run(argv, env=env)
+
+
+def run_external_pose_backend(
+    backend: str,
+    input_dir: Path,
+    processed_dir: Path,
+    matching_method: str,
+) -> None:
+    command = pose_command_for_backend(backend)
+    if not command:
+        raise SystemExit(
+            f"pose backend {backend!r} is not configured; set the matching SPLATBOT_*_POSE_COMMAND"
+        )
+    processed_dir.mkdir(parents=True, exist_ok=True)
+    run(
+        render_backend_command(
+            command,
+            backend=backend,
+            input_dir=str(input_dir),
+            images_dir=str(input_dir),
+            output_dir=str(processed_dir),
+            processed_dir=str(processed_dir),
+            matching_method=matching_method,
+            colmap_bin=os.environ.get("SPLATBOT_COLMAP_BIN", "colmap"),
+            glomap_bin=os.environ.get("SPLATBOT_GLOMAP_BIN", "glomap"),
+        )
+    )
+    if not (processed_dir / "transforms.json").exists():
+        raise SystemExit(
+            f"pose backend {backend!r} did not create {processed_dir / 'transforms.json'}"
+        )
+
+
+def pose_command_for_backend(backend: str) -> str:
+    env_names = {
+        "da3-colmap": "SPLATBOT_DA3_POSE_COMMAND",
+        "vggt-colmap": "SPLATBOT_VGGT_POSE_COMMAND",
+        "mast3r-sfm": "SPLATBOT_MAST3R_POSE_COMMAND",
+    }
+    return os.environ.get(env_names.get(backend, ""), "").strip()
+
+
+def depth_main() -> None:
+    parser = argparse.ArgumentParser(description="Run Splatbot depth-prior backends.")
+    parser.add_argument("--backend", required=True)
+    parser.add_argument("--processed", "--data", dest="processed_dir", required=True, type=Path)
+    parser.add_argument("--images", "--input", dest="images_dir", required=True, type=Path)
+    args = parser.parse_args()
+    command = depth_command_for_backend(args.backend)
+    if not command:
+        raise SystemExit(
+            f"depth backend {args.backend!r} is not configured; set SPLATBOT_DA3_DEPTH_COMMAND, "
+            "SPLATBOT_DEPTH_ANYTHING_V2_COMMAND, or SPLATBOT_DEPTH_BACKEND_COMMAND"
+        )
+    run(
+        render_backend_command(
+            command,
+            backend=args.backend,
+            processed_dir=str(args.processed_dir),
+            data_dir=str(args.processed_dir),
+            images_dir=str(args.images_dir),
+            input_dir=str(args.images_dir),
+        )
+    )
+
+
+def depth_command_for_backend(backend: str) -> str:
+    normalized = backend.strip().lower()
+    if normalized.startswith("da3"):
+        return os.environ.get("SPLATBOT_DA3_DEPTH_COMMAND", "").strip()
+    if normalized.startswith("depth-anything-v2"):
+        return os.environ.get("SPLATBOT_DEPTH_ANYTHING_V2_COMMAND", "").strip()
+    return os.environ.get("SPLATBOT_DEPTH_BACKEND_COMMAND", "").strip()
 
 
 def prepare_dn_splatter_depths(data_dir: Path) -> None:
@@ -378,6 +490,16 @@ def train_main() -> None:
     args = parser.parse_args()
     ns_train = os.environ.get("SPLATBOT_NS_TRAIN_BIN", "ns-train")
     backend = args.backend
+    if backend in {"3dgs-mcmc", "mip-splatting", "2dgs"}:
+        run_external_train_backend(
+            backend,
+            args.processed_dir,
+            args.ns_dir,
+            args.max_iterations,
+            args.steps_per_save,
+            [arg for arg in args.extra if arg != "--"],
+        )
+        return
     if backend in {"dn-splatter", "dn-splatter-big", "ags-mesh"}:
         try:
             import dn_splatter  # noqa: F401
@@ -417,6 +539,43 @@ def train_main() -> None:
         )
     argv.extend(arg for arg in args.extra if arg != "--")
     run(argv)
+
+
+def run_external_train_backend(
+    backend: str,
+    processed_dir: Path,
+    ns_dir: Path,
+    max_iterations: str,
+    steps_per_save: str | None,
+    extra_args: list[str],
+) -> None:
+    command = train_command_for_backend(backend)
+    if not command:
+        raise SystemExit(
+            f"training backend {backend!r} is not configured; set the matching SPLATBOT_*_TRAIN_COMMAND"
+        )
+    ns_dir.mkdir(parents=True, exist_ok=True)
+    rendered = command.format(
+        backend=shlex.quote(backend),
+        processed_dir=shlex.quote(str(processed_dir)),
+        data_dir=shlex.quote(str(processed_dir)),
+        ns_dir=shlex.quote(str(ns_dir)),
+        output_dir=shlex.quote(str(ns_dir)),
+        max_iterations=shlex.quote(str(max_iterations)),
+        steps_per_save=shlex.quote(str(steps_per_save or "")),
+        extra_args=" ".join(shlex.quote(arg) for arg in extra_args),
+    )
+    run(shlex.split(rendered))
+    latest_config(ns_dir)
+
+
+def train_command_for_backend(backend: str) -> str:
+    env_names = {
+        "3dgs-mcmc": "SPLATBOT_MCMC_TRAIN_COMMAND",
+        "mip-splatting": "SPLATBOT_MIP_SPLATTING_TRAIN_COMMAND",
+        "2dgs": "SPLATBOT_2DGS_TRAIN_COMMAND",
+    }
+    return os.environ.get(env_names.get(backend, ""), "").strip()
 
 
 def mesh_main() -> None:

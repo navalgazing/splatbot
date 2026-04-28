@@ -89,6 +89,11 @@ class Settings(BaseSettings):
     rembg_bin: str = "rembg"
     rembg_require_gpu: bool = False
     segmentation_backend: str = ""
+    best_segmentation_backends: str = "sam2,rembg"
+    best_segmentation_required_backends: str = "sam2"
+    experimental_sam3_enabled: bool = False
+    segmentation_min_output_ratio: float = 0.8
+    segmentation_min_output_files: int = 1
     object_mask_backend: str = "rembg"
     object_mask_command: str = ""
     object_mask_prompt: str = "main object"
@@ -107,8 +112,17 @@ class Settings(BaseSettings):
     object_mask_min_keep_ratio: float = 0.55
     object_mask_training_alpha_threshold: int = 16
     pose_backends: str = "colmap"
+    best_pose_backends: str = "da3-colmap,vggt-colmap,mast3r-sfm,colmap-global,colmap-sequential,colmap-exhaustive,colmap"
+    best_pose_required_backends: str = "da3-colmap"
     pose_backend_command: str = "splatbot-pose --backend {backend} --input {images_dir} --output {processed_dir} --matching-method {matching_method}"
+    da3_model: str = "depth-anything/DA3NESTED-GIANT-LARGE-1.1"
+    da3_use_ray_pose: bool = True
+    da3_ref_view_strategy: str = "middle"
+    da3_pose_command: str = "splatbot-da3 --images {images_dir} --processed {processed_dir}"
+    vggt_pose_command: str = ""
+    mast3r_pose_command: str = ""
     glomap_bin: str = "glomap"
+    colmap_global_calibrate: bool = True
     colmap_use_gpu: bool = False
     command_timeout_seconds: int = 6 * 60 * 60
     command_tail_bytes: int = 64 * 1024
@@ -118,6 +132,8 @@ class Settings(BaseSettings):
     train_extra_args: str = ""
     render_preview: bool = False
     adaptive_frame_selection: bool = True
+    frame_selection_strategy: str = "quality"
+    best_frame_selection_strategy: str = "quality-diversity"
     frame_quality_reject_threshold: float = 35.0
     blur_reject_threshold: float = 20.0
     low_contrast_reject_threshold: float = 6.0
@@ -167,7 +183,23 @@ class Settings(BaseSettings):
     quality_report_enabled: bool = True
     min_splat_vertices: int = 10000
     max_flattened_axis_ratio: float = 0.015
+    depth_backends: str = ""
+    best_depth_backends: str = "da3,depth-anything-v2-large"
+    best_depth_required_backends: str = "da3"
+    depth_backend_command: str = "splatbot-depth --backend {backend} --processed {processed_dir} --images {images_dir}"
+    da3_depth_command: str = "splatbot-da3 --images {images_dir} --processed {processed_dir} --depth-only"
+    depth_anything_v2_command: str = ""
     train_backends: str = ""
+    best_train_backends: str = "3dgs-mcmc,splatfacto-big"
+    best_train_required_backends: str = "3dgs-mcmc"
+    experimental_dn_splatter_enabled: bool = False
+    mcmc_train_command: str = (
+        "ns-train splatfacto-big --data {processed_dir} --output-dir {ns_dir} "
+        "--max-num-iterations {max_iterations} --steps-per-save {steps_per_save} "
+        "--viewer.quit-on-train-completion True --pipeline.model.strategy mcmc {extra_args}"
+    )
+    mip_splatting_train_command: str = ""
+    twodgs_train_command: str = ""
     train_backend_command: str = "splatbot-train --backend {backend} --data {processed_dir} --output {ns_dir} --max-iterations {max_iterations} --steps-per-save {steps_per_save} {extra_args}"
     mesh_export_enabled: bool = False
     mesh_backend: str = "o3dtsdf"
@@ -195,7 +227,7 @@ class Settings(BaseSettings):
     runpod_api_key: str = ""
     runpod_gpu_type_id: str = "NVIDIA GeForce RTX 4090"
     runpod_cloud_type: str = "ALL"
-    runpod_image_name: str = "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404"
+    runpod_image_name: str = "ghcr.io/navalgazing/splatbot-runpod:cuda-colmap"
     runpod_container_disk_gb: int = 80
     runpod_volume_gb: int = 80
     runpod_min_vcpu_count: int = 8

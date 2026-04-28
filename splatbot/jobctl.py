@@ -80,7 +80,11 @@ async def fail(job_id: str, error: str, notify: bool) -> None:
     job = await store.set_job_failed_unless_terminal(job_id, error)
     if notify and settings.telegram_token and job and job.status == JobStatus.FAILED and job.error == error:
         try:
-            await TelegramNotifier(settings.telegram_token).job_failed(job, error)
+            await TelegramNotifier(settings.telegram_token).job_failed(
+                job,
+                error,
+                metrics_path=settings.job_dir(job_id) / "metrics.json",
+            )
         except Exception:  # noqa: BLE001
             LOGGER.exception("failed to send failure notification for job %s", job_id)
 

@@ -68,6 +68,10 @@ def _has_colmap_command(command: str) -> bool:
     return result.returncode == 0
 
 
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _mapped_argv(argv: list[str]) -> list[str]:
     mapper = os.environ.get("SPLATBOT_COLMAP_MAPPER", "").strip().lower()
     if argv[:1] == ["mapper"] and mapper in {"global", "glomap", "global_mapper"}:
@@ -81,9 +85,34 @@ def _mapped_argv(argv: list[str]) -> list[str]:
     return argv
 
 
+def _maybe_calibrate_global_mapper(argv: list[str]) -> None:
+    if argv[:1] != ["global_mapper"] or not _truthy_env("SPLATBOT_COLMAP_GLOBAL_CALIBRATE"):
+        return
+    database_path = _option_value(argv, "--database_path")
+    if not database_path:
+        return
+    if not _has_colmap_command("view_graph_calibrator"):
+        print(
+            "splatbot-colmap-wrapper: requested view graph calibration but this COLMAP build "
+            "has no view_graph_calibrator; continuing",
+            file=sys.stderr,
+        )
+        return
+    result = subprocess.run(
+        [_real_colmap(), "view_graph_calibrator", "--database_path", database_path],
+        check=False,
+    )
+    if result.returncode != 0:
+        print(
+            "splatbot-colmap-wrapper: view_graph_calibrator failed; continuing with global_mapper",
+            file=sys.stderr,
+        )
+
+
 def main() -> None:
     argv = sys.argv[1:]
     argv = _mapped_argv(argv)
+    _maybe_calibrate_global_mapper(argv)
     real_colmap = _real_colmap()
     result = subprocess.run([real_colmap, *argv], check=False)
     if result.returncode == 0 and argv[:1] in (["mapper"], ["global_mapper"]):

@@ -96,6 +96,45 @@ def test_train_backend_runs_dn_splatter_depth_only(monkeypatch, tmp_path) -> Non
     assert argv[argv.index("--pipeline.model.use-normal-loss") + 1] == "False"
 
 
+def test_external_train_backend_uses_configured_command(monkeypatch, tmp_path) -> None:
+    calls = []
+    processed = tmp_path / "processed"
+    ns_dir = tmp_path / "ns"
+
+    def fake_run(argv, env=None):
+        calls.append(argv)
+        config_dir = ns_dir / "mcmc" / "run"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "config.yml").write_text("fake: true\n", encoding="utf-8")
+
+    monkeypatch.setattr(backends, "run", fake_run)
+    monkeypatch.setenv(
+        "SPLATBOT_MCMC_TRAIN_COMMAND",
+        "mcmc-train --data {processed_dir} --output {ns_dir} --iters {max_iterations} {extra_args}",
+    )
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            "sys.argv",
+            [
+                "splatbot-train",
+                "--backend",
+                "3dgs-mcmc",
+                "--data",
+                str(processed),
+                "--output",
+                str(ns_dir),
+                "--max-iterations",
+                "10",
+                "--",
+                "--flag",
+            ],
+        )
+        backends.train_main()
+
+    assert calls == [["mcmc-train", "--data", str(processed), "--output", str(ns_dir), "--iters", "10", "--flag"]]
+
+
 def test_mesh_backend_requires_gs_mesh(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(backends.shutil, "which", lambda _: None)
 
@@ -144,6 +183,99 @@ def test_segment_rembg_delegates_to_rembg_command(monkeypatch, tmp_path) -> None
         backends.segment_main()
 
     assert calls == [["rembg-test", "p", str(input_dir), str(output_dir)]]
+
+
+def test_segment_matting_delegates_to_configured_command(monkeypatch, tmp_path) -> None:
+    calls = []
+    input_dir = tmp_path / "images"
+    output_dir = tmp_path / "object"
+    input_dir.mkdir()
+    output_dir.mkdir()
+    (output_dir / "frame_00001.png").write_bytes(b"mask")
+
+    def fake_run(argv, env=None):
+        calls.append(argv)
+
+    monkeypatch.setattr(backends, "run", fake_run)
+    monkeypatch.setenv("SPLATBOT_MATTING_COMMAND", "matanyone-cli --input {input_dir} --output {output_dir}")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            "sys.argv",
+            [
+                "splatbot-segment",
+                "--backend",
+                "matanyone",
+                "--input",
+                str(input_dir),
+                "--output",
+                str(output_dir),
+            ],
+        )
+        backends.segment_main()
+
+    assert calls == [["matanyone-cli", "--input", str(input_dir), "--output", str(output_dir)]]
+
+
+def test_external_pose_backend_uses_configured_command(monkeypatch, tmp_path) -> None:
+    calls = []
+    images = tmp_path / "images"
+    processed = tmp_path / "processed"
+    images.mkdir()
+
+    def fake_run(argv, env=None):
+        calls.append(argv)
+        processed.mkdir(parents=True, exist_ok=True)
+        (processed / "transforms.json").write_text('{"frames": []}\n', encoding="utf-8")
+
+    monkeypatch.setattr(backends, "run", fake_run)
+    monkeypatch.setenv("SPLATBOT_VGGT_POSE_COMMAND", "vggt-adapter --images {images_dir} --processed {processed_dir}")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            "sys.argv",
+            [
+                "splatbot-pose",
+                "--backend",
+                "vggt-colmap",
+                "--input",
+                str(images),
+                "--output",
+                str(processed),
+            ],
+        )
+        backends.pose_main()
+
+    assert calls == [["vggt-adapter", "--images", str(images), "--processed", str(processed)]]
+
+
+def test_depth_backend_uses_configured_command(monkeypatch, tmp_path) -> None:
+    calls = []
+    images = tmp_path / "images"
+    processed = tmp_path / "processed"
+
+    def fake_run(argv, env=None):
+        calls.append(argv)
+
+    monkeypatch.setattr(backends, "run", fake_run)
+    monkeypatch.setenv("SPLATBOT_DA3_DEPTH_COMMAND", "da3 colmap {processed_dir} --export-dir {processed_dir}/da3")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            "sys.argv",
+            [
+                "splatbot-depth",
+                "--backend",
+                "da3",
+                "--processed",
+                str(processed),
+                "--images",
+                str(images),
+            ],
+        )
+        backends.depth_main()
+
+    assert calls == [["da3", "colmap", str(processed), "--export-dir", f"{processed}/da3"]]
 
 
 def test_segment_backend_self_test_skips_input_output(monkeypatch) -> None:

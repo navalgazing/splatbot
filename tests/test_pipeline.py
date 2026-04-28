@@ -28,9 +28,11 @@ from splatbot.pipeline import (
     parse_ffprobe_duration,
     parse_ffprobe_frame_rate,
     parse_int_list,
+    quality_diverse_sample,
     quality_aware_sample,
     replace_processed_images_with_object_images,
     select_video_frames,
+    configured_depth_backends,
     configured_pose_backends,
     configured_segmentation_backends,
     configured_train_backends,
@@ -45,7 +47,7 @@ class FakeRunner:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
 
-    async def run(self, argv: list[str], cwd: Path | None = None) -> CommandResult:
+    async def run(self, argv: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> CommandResult:
         self.calls.append(argv)
         if argv[0] == "ffprobe":
             return CommandResult(argv=argv, returncode=0, stdout="21.0\n", stderr="")
@@ -88,7 +90,7 @@ class ColmapFallbackRunner:
         self.calls: list[list[str]] = []
         self.process_calls = 0
 
-    async def run(self, argv: list[str], cwd: Path | None = None) -> CommandResult:
+    async def run(self, argv: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> CommandResult:
         self.calls.append(argv)
         if argv[0] == "ns-process-data":
             self.process_calls += 1
@@ -112,7 +114,7 @@ class ColmapRetryRunner:
         self.calls: list[list[str]] = []
         self.process_calls = 0
 
-    async def run(self, argv: list[str], cwd: Path | None = None) -> CommandResult:
+    async def run(self, argv: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> CommandResult:
         self.calls.append(argv)
         if argv[0] == "ns-process-data":
             self.process_calls += 1
@@ -133,6 +135,50 @@ class ColmapRetryRunner:
             sparse.mkdir(parents=True, exist_ok=True)
             registered = 2 if self.process_calls == 1 else len(frames)
             (sparse / "images.bin").write_text(f"images={registered}", encoding="utf-8")
+        return CommandResult(argv=argv, returncode=0, stdout="", stderr="")
+
+
+class SegmentationFallbackRunner:
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    async def run(self, argv: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> CommandResult:
+        self.calls.append(argv)
+        output_dir = Path(argv[argv.index("--output") + 1]) if "--output" in argv else Path(argv[-1])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        backend = argv[argv.index("--backend") + 1] if "--backend" in argv else "rembg"
+        count = 1 if backend == "sam2" else 3
+        valid_alpha = [0] * 100
+        for pixel in (44, 45, 54, 55):
+            valid_alpha[pixel] = 255
+        for idx in range(count):
+            write_rgba_png(output_dir / f"frame_{idx + 1:05d}.png", 10, 10, valid_alpha)
+        return CommandResult(argv=argv, returncode=0, stdout="", stderr="")
+
+
+class SuccessfulColmapRunner:
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    async def run(self, argv: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> CommandResult:
+        self.calls.append(argv)
+        if argv[0] == "ns-process-data":
+            output_dir = Path(argv[argv.index("--output-dir") + 1])
+            data_dir = Path(argv[argv.index("--data") + 1])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            frames = [
+                {"file_path": f"images/{path.name}"}
+                for path in sorted(data_dir.iterdir())
+                if path.is_file()
+            ]
+            (output_dir / "images").mkdir(parents=True, exist_ok=True)
+            (output_dir / "transforms.json").write_text(
+                json.dumps({"frames": frames}) + "\n",
+                encoding="utf-8",
+            )
+            sparse = output_dir / "colmap" / "sparse" / "0"
+            sparse.mkdir(parents=True, exist_ok=True)
+            (sparse / "images.bin").write_text(f"images={len(frames)}", encoding="utf-8")
         return CommandResult(argv=argv, returncode=0, stdout="", stderr="")
 
 
@@ -392,8 +438,29 @@ def test_best_preset_enables_sota_backend_chain_by_default(tmp_path) -> None:
     best = settings.preset_config("best")
 
     assert configured_segmentation_backends(settings, best) == ["sam2", "rembg"]
-    assert configured_pose_backends(settings, best) == ["colmap-global", "colmap"]
-    assert configured_train_backends(settings, best) == ["dn-splatter-big", "splatfacto-big"]
+    assert configured_depth_backends(settings, best) == ["da3", "depth-anything-v2-large"]
+    assert configured_pose_backends(settings, best) == [
+        "da3-colmap",
+        "vggt-colmap",
+        "mast3r-sfm",
+        "colmap-global",
+        "colmap-sequential",
+        "colmap-exhaustive",
+        "colmap",
+    ]
+    assert configured_train_backends(settings, best) == ["3dgs-mcmc", "splatfacto-big"]
+
+
+def test_experimental_backends_are_explicit_opt_in(tmp_path) -> None:
+    settings = Settings(
+        data_dir=tmp_path,
+        experimental_sam3_enabled=True,
+        experimental_dn_splatter_enabled=True,
+    )
+    best = settings.preset_config("best")
+
+    assert configured_segmentation_backends(settings, best) == ["sam2", "rembg"]
+    assert configured_train_backends(settings, best) == ["dn-splatter-big", "3dgs-mcmc", "splatfacto-big"]
 
 
 def test_sota_object_mask_command_renders_adapter_cli(tmp_path) -> None:
@@ -414,6 +481,32 @@ def test_sota_object_mask_command_renders_adapter_cli(tmp_path) -> None:
         "--output",
         str(tmp_path / "object"),
     ]
+
+
+async def test_segmentation_backend_falls_back_when_outputs_are_sparse(tmp_path) -> None:
+    images = tmp_path / "images"
+    object_dir = tmp_path / "object"
+    images.mkdir()
+    for idx in range(3):
+        (images / f"frame_{idx + 1:05d}.jpg").write_bytes(b"image")
+    settings = Settings(data_dir=tmp_path, segmentation_backend="sam2,rembg", segmentation_min_output_ratio=0.8)
+    runner = SegmentationFallbackRunner()
+    metrics = {"pipeline_events": []}
+
+    result = await ScanPipeline(settings, runner=runner).remove_backgrounds(
+        images,
+        object_dir,
+        tmp_path,
+        settings.preset_config("balanced"),
+        metrics,
+        tmp_path / "metrics.json",
+    )
+
+    assert result["selected"] == "rembg"
+    assert result["attempts"][0]["reason"] == "too_few_outputs"
+    assert result["attempts"][0]["output_files"] == 1
+    assert result["attempts"][1]["output_files"] == 3
+    assert metrics["pipeline_events"][0]["stage"] == "segmentation"
 
 
 def test_balanced_preset_keeps_stable_default_backend_chain(tmp_path) -> None:
@@ -700,6 +793,33 @@ async def test_process_data_can_use_custom_colmap_command(tmp_path) -> None:
     ]
 
 
+async def test_colmap_pose_backend_can_force_exhaustive_matching(tmp_path) -> None:
+    settings = Settings(data_dir=tmp_path, pose_backends="colmap-exhaustive")
+    runner = SuccessfulColmapRunner()
+    pipeline = ScanPipeline(settings, runner=runner)
+    images = tmp_path / "images"
+    processed = tmp_path / "processed"
+    images.mkdir()
+    for idx in range(20):
+        (images / f"frame_{idx + 1:05d}.jpg").write_bytes(b"image")
+    metrics = {"frames": {"selected": 20}, "colmap": {}, "pipeline_events": []}
+
+    await pipeline.process_data_with_quality_gate(
+        input_images_dir=images,
+        processed_dir=processed,
+        matching_method="sequential",
+        metrics=metrics,
+        metrics_path=tmp_path / "metrics.json",
+        preset=settings.preset_config("balanced"),
+        mode=ScanMode.SCENE,
+        original_images_dir=images,
+        object_images_dir=None,
+    )
+
+    assert runner.calls[0][runner.calls[0].index("--matching-method") + 1] == "exhaustive"
+    assert metrics["pose_backend"] == "colmap-exhaustive"
+
+
 async def test_object_colmap_fallback_uses_original_poses_and_object_images(tmp_path) -> None:
     settings = Settings(data_dir=tmp_path)
     runner = ColmapFallbackRunner()
@@ -917,6 +1037,19 @@ def test_quality_aware_sample_preserves_coverage_and_picks_best(tmp_path) -> Non
     selected = quality_aware_sample(profiles, 3)
 
     assert [profile.index for profile in selected] == [1, 3, 5]
+
+
+def test_quality_diverse_sample_prefers_distinct_frame_signatures(tmp_path) -> None:
+    profiles = [
+        FrameQuality(path=tmp_path / "0.jpg", index=0, score=95, signature=(0.0, 0.0)),
+        FrameQuality(path=tmp_path / "1.jpg", index=1, score=94, signature=(0.1, 0.1)),
+        FrameQuality(path=tmp_path / "2.jpg", index=2, score=80, signature=(3.0, 3.0)),
+        FrameQuality(path=tmp_path / "3.jpg", index=3, score=79, signature=(3.1, 3.1)),
+    ]
+
+    selected = quality_diverse_sample(profiles, 2)
+
+    assert [profile.index for profile in selected] == [0, 2]
 
 
 def test_replace_processed_images_with_object_images_updates_transforms(tmp_path) -> None:

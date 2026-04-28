@@ -33,25 +33,31 @@ class CommandRunner:
         self.timeout_seconds = timeout_seconds
         self.tail_bytes = tail_bytes
 
-    async def run(self, argv: list[str], cwd: Path | None = None) -> CommandResult:
+    async def run(
+        self,
+        argv: list[str],
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+    ) -> CommandResult:
         if _truthy_env("SPLATBOT_LOG_COMMAND_OUTPUT"):
             print(f"running command: {shlex.join(argv)}", flush=True)
         proc = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(cwd) if cwd else None,
+            env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(
+            stdout, stderr, returncode = await asyncio.wait_for(
                 asyncio.gather(
                     _read_tail(proc.stdout, self.tail_bytes),
                     _read_tail(proc.stderr, self.tail_bytes),
+                    proc.wait(),
                 ),
                 timeout=self.timeout_seconds,
             )
-            returncode = await proc.wait()
         except TimeoutError as exc:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(proc.pid, signal.SIGKILL)

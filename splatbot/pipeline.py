@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shlex
 import shutil
 import struct
@@ -42,6 +43,7 @@ class FrameQuality:
     overexposed_ratio: float | None = None
     underexposed_ratio: float | None = None
     difference_from_previous: float | None = None
+    signature: tuple[float, ...] | None = None
     reject_reasons: tuple[str, ...] = ()
 
 
@@ -193,6 +195,7 @@ class ScanPipeline:
             "video": {},
             "colmap": {},
             "ply": {},
+            "pipeline_events": [],
         }
         write_json(
             settings_path,
@@ -202,6 +205,7 @@ class ScanPipeline:
                 "max_video_frames": preset_config.max_video_frames,
                 "max_video_candidate_fps": self.settings.max_video_candidate_fps,
                 "adaptive_frame_selection": preset_config.adaptive_frame_selection,
+                "frame_selection_strategy": frame_selection_strategy_for_preset(self.settings, preset_config),
                 "frame_quality_reject_threshold": self.settings.frame_quality_reject_threshold,
                 "blur_reject_threshold": self.settings.blur_reject_threshold,
                 "low_contrast_reject_threshold": self.settings.low_contrast_reject_threshold,
@@ -211,18 +215,27 @@ class ScanPipeline:
                 "colmap_retry_frame_counts": parse_int_list(self.settings.colmap_retry_frame_counts),
                 "colmap_retry_matching_methods": parse_csv_list(self.settings.colmap_retry_matching_methods),
                 "segmentation_backend": self.settings.segmentation_backend,
+                "best_segmentation_backends": self.settings.best_segmentation_backends,
+                "experimental_sam3_enabled": self.settings.experimental_sam3_enabled,
+                "segmentation_min_output_ratio": self.settings.segmentation_min_output_ratio,
                 "object_mask_backend": self.settings.object_mask_backend,
                 "object_mask_qa_enabled": self.settings.object_mask_qa_enabled,
                 "object_mask_refine_enabled": self.settings.object_mask_refine_enabled,
                 "pose_backends": parse_csv_list(self.settings.pose_backends),
+                "best_pose_backends": parse_csv_list(self.settings.best_pose_backends),
                 "train_method": preset_config.train_method,
                 "train_backends": parse_csv_list(self.settings.train_backends),
+                "best_train_backends": parse_csv_list(self.settings.best_train_backends),
+                "experimental_dn_splatter_enabled": self.settings.experimental_dn_splatter_enabled,
+                "depth_backends": parse_csv_list(self.settings.depth_backends),
+                "best_depth_backends": parse_csv_list(self.settings.best_depth_backends),
                 "train_max_iterations": preset_config.train_max_iterations,
                 "train_steps_per_save": preset_config.train_steps_per_save,
                 "train_extra_args": list(preset_config.train_extra_args),
                 "mesh_export_enabled": self.settings.mesh_export_enabled,
                 "mesh_backend": self.settings.mesh_backend,
                 "colmap_use_gpu": self.settings.colmap_use_gpu,
+                "colmap_global_calibrate": self.settings.colmap_global_calibrate,
                 "colmap_bin": self.settings.colmap_bin,
                 "silhouette_cleanup": {
                     "max_views": self.settings.silhouette_cleanup_max_views,
@@ -258,7 +271,15 @@ class ScanPipeline:
             object_dir = job_dir / "object_images"
             object_dir.mkdir(parents=True, exist_ok=True)
             stage_start = time.perf_counter()
-            mask_backend = await self.remove_backgrounds(images_dir, object_dir, job_dir, preset_config)
+            ensure_required_segmentation_backends_configured(self.settings, preset_config)
+            mask_backend = await self.remove_backgrounds(
+                images_dir,
+                object_dir,
+                job_dir,
+                preset_config,
+                metrics,
+                metrics_path,
+            )
             refinement = refine_object_masks(object_dir, self.settings)
             record_stage(metrics, "rembg", stage_start)
             input_images_dir = object_dir
@@ -287,6 +308,7 @@ class ScanPipeline:
         if on_status:
             await on_status(job_id, JobStatus.COLMAP)
         stage_start = time.perf_counter()
+        ensure_required_pose_backends_configured(self.settings, preset_config)
         await self.process_data_with_quality_gate(
             input_images_dir=input_images_dir,
             processed_dir=processed_dir,
@@ -307,9 +329,23 @@ class ScanPipeline:
             metrics.setdefault("masks", {})["training_mask_paths"] = mask_paths
         write_json(metrics_path, metrics)
         log_directory_summary("processed data", processed_dir)
+        depth_backends = configured_depth_backends(self.settings, preset_config)
+        if depth_backends:
+            stage_start = time.perf_counter()
+            ensure_required_depth_backends_configured(self.settings, preset_config)
+            await self.prepare_depth_priors(
+                processed_dir=processed_dir,
+                images_dir=input_images_dir,
+                preset=preset_config,
+                metrics=metrics,
+                metrics_path=metrics_path,
+            )
+            record_stage(metrics, "depth", stage_start)
+            write_json(metrics_path, metrics)
         if on_status:
             await on_status(job_id, JobStatus.TRAINING)
         stage_start = time.perf_counter()
+        ensure_required_train_backends_configured(self.settings, preset_config)
         await self.train_reconstruction(processed_dir, ns_dir, preset_config, metrics, metrics_path)
         record_stage(metrics, "training", stage_start)
         write_json(metrics_path, metrics)
@@ -337,6 +373,16 @@ class ScanPipeline:
             mesh_path, mesh_metrics = await self.export_mesh(processed_dir, ns_dir, export_dir, cleaned_ply)
             record_stage(metrics, "mesh", stage_start)
             metrics["mesh"] = mesh_metrics
+            if mesh_metrics.get("applied") is False:
+                record_pipeline_event(
+                    metrics,
+                    stage="mesh",
+                    backend=str(mesh_metrics.get("backend") or self.settings.mesh_backend),
+                    status="fallback",
+                    reason=str(mesh_metrics.get("reason") or "mesh_not_exported"),
+                    error=mesh_metrics.get("error"),
+                    recovered=not self.settings.mesh_export_required,
+                )
             write_json(metrics_path, metrics)
         preview_mp4 = None
         if self.settings.render_preview:
@@ -383,6 +429,7 @@ class ScanPipeline:
                 overexposed_threshold=self.settings.overexposed_reject_threshold,
                 underexposed_threshold=self.settings.underexposed_reject_threshold,
                 duplicate_threshold=self.settings.duplicate_frame_threshold,
+                strategy=frame_selection_strategy_for_preset(self.settings, preset),
             )
             metrics["video"] = {
                 **metrics.get("video", {}),
@@ -390,6 +437,22 @@ class ScanPipeline:
                 **extraction_metrics,
                 **selection.metrics,
             }
+            if selection.metrics.get("quality_selection_fallback"):
+                record_pipeline_event(
+                    metrics,
+                    stage="preprocessing",
+                    status="fallback",
+                    reason="too_few_high_quality_frames",
+                    recovered=True,
+                    details={
+                        "accepted_frame_candidates": selection.metrics.get("accepted_frame_candidates"),
+                        "selected_frames": selection.metrics.get("selected_frames"),
+                        "min_selected_video_frames": min(
+                            self.settings.min_selected_video_frames,
+                            preset.max_video_frames,
+                        ),
+                    },
+                )
             return
         fps = await self.video_sample_fps(video, preset.max_video_frames)
         await self.runner.run(
@@ -506,8 +569,14 @@ class ScanPipeline:
         object_dir: Path,
         job_dir: Path,
         preset: ScanPresetConfig,
+        metrics: dict | None = None,
+        metrics_path: Path | None = None,
     ) -> dict:
         attempts: list[dict] = []
+        input_count = count_files(images_dir)
+        required_outputs = minimum_segmentation_outputs(self.settings, input_count)
+        failures_before_success = 0
+        required_backends = set(required_segmentation_backends(self.settings, preset))
         for backend in configured_segmentation_backends(self.settings, preset):
             if object_dir.exists():
                 shutil.rmtree(object_dir)
@@ -516,12 +585,36 @@ class ScanPipeline:
                 command = object_mask_command_for_backend(self.settings, backend, images_dir, object_dir)
                 if command is None:
                     attempts.append({"backend": backend, "applied": False, "reason": "missing_command"})
+                    failures_before_success += 1
+                    recovered = backend not in required_backends
+                    if metrics is not None:
+                        record_pipeline_event(
+                            metrics,
+                            stage="segmentation",
+                            backend=backend,
+                            status="skip" if recovered else "failure",
+                            reason="missing_command",
+                            recovered=recovered,
+                        )
+                        if metrics_path is not None:
+                            write_json(metrics_path, metrics)
+                    if backend in required_backends:
+                        raise ValueError(f"required best segmentation backend {backend!r} is missing a command")
                     continue
                 await self.runner.run(command)
                 output_count = count_files(object_dir)
-                attempt = {"backend": backend, "applied": True, "output_files": output_count}
+                accepted = output_count >= required_outputs
+                attempt = {
+                    "backend": backend,
+                    "applied": accepted,
+                    "output_files": output_count,
+                    "required_output_files": required_outputs,
+                    "input_files": input_count,
+                }
+                if not accepted:
+                    attempt["reason"] = "too_few_outputs"
                 attempts.append(attempt)
-                if output_count > 0:
+                if accepted:
                     qa = apply_object_mask_qa(images_dir, object_dir, job_dir, self.settings, preset)
                     attempt["qa"] = {
                         "applied": qa.get("applied"),
@@ -532,14 +625,87 @@ class ScanPipeline:
                     if qa.get("reason") in {"no_masks", "too_few_accepted_masks"}:
                         attempt["applied"] = False
                         attempt["reason"] = qa.get("reason")
+                        failures_before_success += 1
+                        recovered = backend not in required_backends
+                        if metrics is not None:
+                            record_pipeline_event(
+                                metrics,
+                                stage="segmentation",
+                                backend=backend,
+                                status="fallback" if recovered else "failure",
+                                reason=str(qa.get("reason")),
+                                recovered=recovered,
+                                details=attempt,
+                            )
+                            if metrics_path is not None:
+                                write_json(metrics_path, metrics)
+                        if backend in required_backends:
+                            raise ValueError(
+                                f"required best segmentation backend {backend!r} failed mask QA: {qa.get('reason')}"
+                            )
                         continue
+                    if failures_before_success and metrics is not None:
+                        record_pipeline_event(
+                            metrics,
+                            stage="segmentation",
+                            backend=backend,
+                            status="recovered",
+                            reason="selected_after_previous_backend_failure",
+                            recovered=True,
+                            details={"attempts": len(attempts)},
+                        )
+                        if metrics_path is not None:
+                            write_json(metrics_path, metrics)
                     return {"selected": backend, "attempts": attempts, "qa": qa}
+                failures_before_success += 1
+                recovered = backend not in required_backends
+                if metrics is not None:
+                    record_pipeline_event(
+                        metrics,
+                        stage="segmentation",
+                        backend=backend,
+                        status="fallback" if recovered else "failure",
+                        reason="too_few_outputs",
+                        recovered=recovered,
+                        details=attempt,
+                    )
+                    if metrics_path is not None:
+                        write_json(metrics_path, metrics)
+                if backend in required_backends:
+                    raise ValueError(f"required best segmentation backend {backend!r} produced too few outputs")
             except Exception as exc:  # noqa: BLE001
                 attempts.append({"backend": backend, "applied": False, "error": str(exc)})
+                failures_before_success += 1
+                recovered = backend not in required_backends
+                if metrics is not None:
+                    record_pipeline_event(
+                        metrics,
+                        stage="segmentation",
+                        backend=backend,
+                        status="fallback" if recovered else "failure",
+                        reason="backend_failed",
+                        error=str(exc),
+                        recovered=recovered,
+                    )
+                    if metrics_path is not None:
+                        write_json(metrics_path, metrics)
+                if backend in required_backends:
+                    raise
         detail = "; ".join(
             f"{attempt['backend']}: {attempt.get('error') or attempt.get('reason') or 'no outputs'}"
             for attempt in attempts
         )
+        if metrics is not None:
+            record_pipeline_event(
+                metrics,
+                stage="segmentation",
+                status="failure",
+                reason="all_backends_failed",
+                recovered=False,
+                details={"attempts": attempts},
+            )
+            if metrics_path is not None:
+                write_json(metrics_path, metrics)
         raise ValueError(f"all object segmentation backends failed ({detail})")
 
     async def process_data(
@@ -547,6 +713,7 @@ class ScanPipeline:
         images_dir: Path,
         processed_dir: Path,
         matching_method: str | None = None,
+        mapper: str | None = None,
     ) -> None:
         argv = [
             self.settings.ns_process_data_bin,
@@ -562,7 +729,14 @@ class ScanPipeline:
             argv.extend(["--colmap-cmd", self.settings.colmap_bin])
         if not self.settings.colmap_use_gpu:
             argv.append("--no-gpu")
-        await self.runner.run(argv)
+        env = None
+        if mapper:
+            env = os.environ.copy()
+            env["SPLATBOT_COLMAP_MAPPER"] = mapper
+        if env is None:
+            await self.runner.run(argv)
+        else:
+            await self.runner.run(argv, env=env)
 
     async def process_data_external_pose_backend(
         self,
@@ -571,7 +745,7 @@ class ScanPipeline:
         processed_dir: Path,
         matching_method: str | None,
     ) -> None:
-        command = self.settings.pose_backend_command.strip()
+        command = pose_command_for_backend(self.settings, backend)
         if not command:
             raise ValueError(
                 f"SPLATBOT_POSE_BACKEND_COMMAND is required for pose backend {backend!r}"
@@ -601,16 +775,20 @@ class ScanPipeline:
         object_images_dir: Path | None,
     ) -> None:
         errors: list[str] = []
+        required_backends = set(required_pose_backends(self.settings, preset))
         for backend in configured_pose_backends(self.settings, preset):
             metrics.setdefault("pose_backend_attempts", []).append(
                 {"backend": backend, "input_dir": str(input_images_dir)}
             )
             try:
-                if backend in {"colmap", "nerfstudio-colmap", "ns-process-data"}:
+                if is_colmap_pose_backend(backend):
+                    colmap_matching_method = colmap_matching_method_for_pose_backend(backend, matching_method)
+                    colmap_mapper = colmap_mapper_for_pose_backend(backend)
                     await self.process_data_colmap_with_quality_gate(
                         input_images_dir=input_images_dir,
                         processed_dir=processed_dir,
-                        matching_method=matching_method,
+                        matching_method=colmap_matching_method,
+                        mapper=colmap_mapper,
                         metrics=metrics,
                         metrics_path=metrics_path,
                         preset=preset,
@@ -636,15 +814,46 @@ class ScanPipeline:
                     metrics["colmap"] = metrics["colmap_attempts"][-1]["result"]
                     validate_colmap_quality(metrics, preset.max_video_frames, self.settings)
                 metrics["pose_backend"] = backend
+                if errors:
+                    record_pipeline_event(
+                        metrics,
+                        stage="pose",
+                        backend=backend,
+                        status="recovered",
+                        reason="selected_after_previous_backend_failure",
+                        recovered=True,
+                        details={"failed_backends": len(errors)},
+                    )
                 write_json(metrics_path, metrics)
                 return
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{backend}: {exc}")
                 metrics.setdefault("pose_backend_failures", []).append({"backend": backend, "error": str(exc)})
+                recovered = backend not in required_backends
+                record_pipeline_event(
+                    metrics,
+                    stage="pose",
+                    backend=backend,
+                    status="fallback" if recovered else "failure",
+                    reason="backend_failed",
+                    error=str(exc),
+                    recovered=recovered,
+                )
                 write_json(metrics_path, metrics)
+                if backend in required_backends:
+                    raise
                 if processed_dir.exists():
                     shutil.rmtree(processed_dir)
                 processed_dir.mkdir(parents=True, exist_ok=True)
+        record_pipeline_event(
+            metrics,
+            stage="pose",
+            status="failure",
+            reason="all_backends_failed",
+            recovered=False,
+            details={"errors": errors},
+        )
+        write_json(metrics_path, metrics)
         raise ValueError("all pose backends failed: " + " | ".join(errors))
 
     async def process_data_colmap_with_quality_gate(
@@ -652,6 +861,7 @@ class ScanPipeline:
         input_images_dir: Path,
         processed_dir: Path,
         matching_method: str | None,
+        mapper: str | None,
         metrics: dict,
         metrics_path: Path,
         preset: ScanPresetConfig,
@@ -659,7 +869,7 @@ class ScanPipeline:
         original_images_dir: Path,
         object_images_dir: Path | None,
     ) -> None:
-        await self.process_data(input_images_dir, processed_dir, matching_method=matching_method)
+        await self.process_data(input_images_dir, processed_dir, matching_method=matching_method, mapper=mapper)
         selected_frames = metrics.get("frames", {}).get("selected") or preset.max_video_frames
         input_source_label = (
             "object" if mode == ScanMode.OBJECT and input_images_dir == object_images_dir else "original"
@@ -696,6 +906,7 @@ class ScanPipeline:
                     selected_frames=selected_frames,
                     source_label=input_source_label,
                     final_object_images_dir=None,
+                    mapper=mapper,
                 ):
                     return
                 raise
@@ -706,12 +917,20 @@ class ScanPipeline:
             "pose_images": "original",
             "training_images": "object",
         }
+        record_pipeline_event(
+            metrics,
+            stage="pose",
+            backend="object_colmap_original_pose_fallback",
+            status="fallback",
+            reason=masked_error_message,
+            recovered=True,
+        )
         write_json(metrics_path, metrics)
 
         if processed_dir.exists():
             shutil.rmtree(processed_dir)
         processed_dir.mkdir(parents=True, exist_ok=True)
-        await self.process_data(original_images_dir, processed_dir, matching_method=matching_method)
+        await self.process_data(original_images_dir, processed_dir, matching_method=matching_method, mapper=mapper)
         record_colmap_attempt(
             metrics,
             source="original",
@@ -735,6 +954,7 @@ class ScanPipeline:
                 selected_frames=selected_frames,
                 source_label="original",
                 final_object_images_dir=object_images_dir,
+                mapper=mapper,
             ):
                 raise ValueError(
                     f"{masked_error_message} Original-frame pose fallback also failed: {fallback_error}"
@@ -765,6 +985,7 @@ class ScanPipeline:
         selected_frames: int,
         source_label: str,
         final_object_images_dir: Path | None,
+        mapper: str | None = None,
     ) -> bool:
         image_files = sorted(
             path
@@ -793,7 +1014,12 @@ class ScanPipeline:
                 if processed_dir.exists():
                     shutil.rmtree(processed_dir)
                 processed_dir.mkdir(parents=True, exist_ok=True)
-                await self.process_data(subset_dir, processed_dir, matching_method=effective_matching)
+                await self.process_data(
+                    subset_dir,
+                    processed_dir,
+                    matching_method=effective_matching,
+                    mapper=mapper,
+                )
                 result = inspect_processed_dataset(processed_dir)
                 record_colmap_attempt(
                     metrics,
@@ -821,6 +1047,19 @@ class ScanPipeline:
                     "frame_count": frame_count,
                     "matching_method": effective_matching or "default",
                 }
+                record_pipeline_event(
+                    metrics,
+                    stage="pose",
+                    backend="colmap_retry_subset",
+                    status="recovered",
+                    reason="registered_subset_passed_quality_gate",
+                    recovered=True,
+                    details={
+                        "source": source_label,
+                        "frame_count": frame_count,
+                        "matching_method": effective_matching or "default",
+                    },
+                )
                 if final_object_images_dir is not None:
                     replaced = replace_processed_images_with_object_images(
                         processed_dir,
@@ -838,6 +1077,92 @@ class ScanPipeline:
                 return True
         return False
 
+    async def prepare_depth_priors(
+        self,
+        processed_dir: Path,
+        images_dir: Path,
+        preset: ScanPresetConfig,
+        metrics: dict,
+        metrics_path: Path,
+    ) -> None:
+        errors: list[str] = []
+        required_backends = set(required_depth_backends(self.settings, preset))
+        for backend in configured_depth_backends(self.settings, preset):
+            try:
+                if not depth_command_for_backend(self.settings, backend):
+                    if backend in required_backends:
+                        raise ValueError(f"required best depth backend {backend!r} is missing a command")
+                    metrics.setdefault("depth_backend_skips", []).append(
+                        {"backend": backend, "reason": "missing_command"}
+                    )
+                    record_pipeline_event(
+                        metrics,
+                        stage="depth",
+                        backend=backend,
+                        status="skip",
+                        reason="missing_command",
+                        recovered=True,
+                    )
+                    write_json(metrics_path, metrics)
+                    continue
+                await self.prepare_external_depth_backend(backend, processed_dir, images_dir)
+                metrics["depth_backend"] = backend
+                record_pipeline_event(
+                    metrics,
+                    stage="depth",
+                    backend=backend,
+                    status="success",
+                    reason="depth_priors_created",
+                    recovered=True,
+                )
+                write_json(metrics_path, metrics)
+                return
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{backend}: {exc}")
+                metrics.setdefault("depth_backend_failures", []).append({"backend": backend, "error": str(exc)})
+                recovered = backend not in required_backends
+                record_pipeline_event(
+                    metrics,
+                    stage="depth",
+                    backend=backend,
+                    status="fallback" if recovered else "failure",
+                    reason="backend_failed_or_unavailable",
+                    error=str(exc),
+                    recovered=recovered,
+                )
+                write_json(metrics_path, metrics)
+                if backend in required_backends:
+                    raise
+        if errors:
+            metrics["depth_backend"] = None
+            record_pipeline_event(
+                metrics,
+                stage="depth",
+                status="skip",
+                reason="all_depth_backends_unavailable",
+                recovered=True,
+                details={"errors": errors},
+            )
+            write_json(metrics_path, metrics)
+
+    async def prepare_external_depth_backend(
+        self,
+        backend: str,
+        processed_dir: Path,
+        images_dir: Path,
+    ) -> None:
+        command = depth_command_for_backend(self.settings, backend)
+        if not command:
+            raise ValueError(f"depth backend {backend!r} is not configured")
+        rendered = command.format(
+            backend=shlex.quote(backend),
+            processed_dir=shlex.quote(str(processed_dir)),
+            data_dir=shlex.quote(str(processed_dir)),
+            images_dir=shlex.quote(str(images_dir)),
+            input_dir=shlex.quote(str(images_dir)),
+        )
+        await self.runner.run(shlex.split(rendered))
+
     async def train_reconstruction(
         self,
         processed_dir: Path,
@@ -847,6 +1172,7 @@ class ScanPipeline:
         metrics_path: Path,
     ) -> None:
         errors: list[str] = []
+        required_backends = set(required_train_backends(self.settings, preset))
         for backend in configured_train_backends(self.settings, preset):
             try:
                 if backend in {"splatfacto", "splatfacto-big", preset.train_method.lower()}:
@@ -855,15 +1181,46 @@ class ScanPipeline:
                 else:
                     await self.train_external_backend(backend, processed_dir, ns_dir, preset)
                 metrics["train_backend"] = backend
+                if errors:
+                    record_pipeline_event(
+                        metrics,
+                        stage="training",
+                        backend=backend,
+                        status="recovered",
+                        reason="selected_after_previous_backend_failure",
+                        recovered=True,
+                        details={"failed_backends": len(errors)},
+                    )
                 write_json(metrics_path, metrics)
                 return
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{backend}: {exc}")
                 metrics.setdefault("train_backend_failures", []).append({"backend": backend, "error": str(exc)})
+                recovered = backend not in required_backends
+                record_pipeline_event(
+                    metrics,
+                    stage="training",
+                    backend=backend,
+                    status="fallback" if recovered else "failure",
+                    reason="backend_failed",
+                    error=str(exc),
+                    recovered=recovered,
+                )
                 write_json(metrics_path, metrics)
+                if backend in required_backends:
+                    raise
                 if ns_dir.exists():
                     shutil.rmtree(ns_dir)
                 ns_dir.mkdir(parents=True, exist_ok=True)
+        record_pipeline_event(
+            metrics,
+            stage="training",
+            status="failure",
+            reason="all_backends_failed",
+            recovered=False,
+            details={"errors": errors},
+        )
+        write_json(metrics_path, metrics)
         raise ValueError("all train backends failed: " + " | ".join(errors))
 
     async def train_splatfacto(
@@ -897,7 +1254,7 @@ class ScanPipeline:
         ns_dir: Path,
         preset: ScanPresetConfig,
     ) -> None:
-        command = self.settings.train_backend_command.strip()
+        command = train_command_for_backend(self.settings, backend)
         if not command:
             raise ValueError(
                 f"SPLATBOT_TRAIN_BACKEND_COMMAND is required for train backend {backend!r}"
@@ -1022,6 +1379,7 @@ def shell_join(argv: tuple[str, ...] | list[str]) -> str:
 def build_quality_report(metrics: dict, settings: Settings) -> dict:
     issues: list[str] = []
     warnings: list[str] = []
+    events = metrics.get("pipeline_events", [])
     frames = metrics.get("frames", {})
     video = metrics.get("video", {})
     masks = metrics.get("masks", {})
@@ -1036,6 +1394,14 @@ def build_quality_report(metrics: dict, settings: Settings) -> dict:
         warnings.append("low_selected_frame_count")
     if masks.get("qa", {}).get("reason") == "too_few_accepted_masks":
         issues.append("too_few_accepted_object_masks")
+    if pipeline_events_by_status(events, {"fallback", "recovered", "skip"}):
+        warnings.append("pipeline_fallbacks_or_skips")
+    if metrics.get("depth_backend_failures"):
+        warnings.append("depth_backend_fallback_used")
+    if metrics.get("pose_backend_failures"):
+        warnings.append("pose_backend_fallback_used")
+    if metrics.get("train_backend_failures"):
+        warnings.append("train_backend_fallback_used")
     if metrics.get("colmap_fallback", {}).get("applied"):
         warnings.append("object_pose_used_original_frame_fallback")
     registered = colmap.get("active_registered_images") or colmap.get("transforms_frames")
@@ -1054,9 +1420,13 @@ def build_quality_report(metrics: dict, settings: Settings) -> dict:
         "passed": not issues,
         "issues": issues,
         "warnings": warnings,
+        "pipeline_events": events,
+        "event_summary": summarize_pipeline_events(events),
         "stage_seconds": metrics.get("stages", {}),
         "frames": frames,
+        "depth_backend": metrics.get("depth_backend"),
         "pose_backend": metrics.get("pose_backend"),
+        "train_backend": metrics.get("train_backend"),
         "segmentation_backend": masks.get("backend", {}).get("selected"),
         "ply": metrics.get("ply", {}),
         "mesh": mesh,
@@ -1064,18 +1434,23 @@ def build_quality_report(metrics: dict, settings: Settings) -> dict:
 
 
 def build_candidate_report(metrics: dict, settings: Settings) -> dict:
+    preset = settings.preset_config(metrics.get("preset"))
     return {
         "job_id": metrics.get("job_id"),
         "configured": {
-            "segmentation_backends": configured_segmentation_backends(settings),
-            "pose_backends": configured_pose_backends(settings),
-            "train_backends": parse_csv_list(settings.train_backends),
+            "segmentation_backends": configured_segmentation_backends(settings, preset),
+            "depth_backends": configured_depth_backends(settings, preset),
+            "pose_backends": configured_pose_backends(settings, preset),
+            "train_backends": configured_train_backends(settings, preset),
             "mesh_backend": settings.mesh_backend,
         },
         "video": metrics.get("video", {}),
         "masks": metrics.get("masks", {}),
+        "pipeline_events": metrics.get("pipeline_events", []),
+        "depth_backend_failures": metrics.get("depth_backend_failures", []),
         "pose_backend_attempts": metrics.get("pose_backend_attempts", []),
         "pose_backend_failures": metrics.get("pose_backend_failures", []),
+        "train_backend_failures": metrics.get("train_backend_failures", []),
         "colmap_attempts": metrics.get("colmap_attempts", []),
         "cleanup": metrics.get("ply", {}).get("cleanup", {}),
         "mesh": metrics.get("mesh", {}),
@@ -1088,18 +1463,95 @@ def record_stage(metrics: dict, name: str, started: float) -> None:
     }
 
 
+def record_pipeline_event(
+    metrics: dict,
+    stage: str,
+    status: str,
+    reason: str,
+    backend: str | None = None,
+    error: str | None = None,
+    recovered: bool | None = None,
+    details: dict | None = None,
+) -> None:
+    event = {
+        "stage": stage,
+        "status": status,
+        "reason": reason,
+    }
+    if backend:
+        event["backend"] = backend
+    if error:
+        event["error"] = truncate_text(error, 1200)
+    if recovered is not None:
+        event["recovered"] = recovered
+    if details:
+        event["details"] = details
+    metrics.setdefault("pipeline_events", []).append(event)
+
+
+def pipeline_events_by_status(events: list[dict], statuses: set[str]) -> list[dict]:
+    return [
+        event
+        for event in events
+        if isinstance(event, dict) and str(event.get("status") or "") in statuses
+    ]
+
+
+def summarize_pipeline_events(events: list[dict], limit: int = 6) -> list[str]:
+    summary: list[str] = []
+    for event in pipeline_events_by_status(events, {"fallback", "recovered", "skip", "failure"}):
+        stage = str(event.get("stage") or "pipeline")
+        status = str(event.get("status") or "event")
+        backend = str(event.get("backend") or "").strip()
+        reason = str(event.get("reason") or "no reason").strip()
+        label = f"{stage}/{backend}" if backend else stage
+        summary.append(f"{label}: {status} ({reason})")
+        if len(summary) >= limit:
+            break
+    remaining = max(0, len(pipeline_events_by_status(events, {"fallback", "recovered", "skip", "failure"})) - len(summary))
+    if remaining:
+        summary.append(f"{remaining} more pipeline event(s)")
+    return summary
+
+
+def truncate_text(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "..."
+
+
 def count_files(path: Path) -> int:
     return sum(1 for item in path.iterdir() if item.is_file())
+
+
+def minimum_segmentation_outputs(settings: Settings, input_count: int) -> int:
+    ratio = clamp(settings.segmentation_min_output_ratio, 0.0, 1.0)
+    ratio_count = math.ceil(max(0, input_count) * ratio)
+    required = max(settings.segmentation_min_output_files, ratio_count)
+    return min(max(1, required), max(1, input_count))
 
 
 def configured_segmentation_backends(settings: Settings, preset: ScanPresetConfig | None = None) -> list[str]:
     configured = settings.segmentation_backend.strip() or settings.object_mask_backend.strip() or "rembg"
     backends = parse_csv_list(configured)
-    if not backends:
-        backends = parse_csv_list(settings.object_mask_backend) or ["rembg"]
     if preset is not None and preset.preset == ScanPreset.BEST and backends == ["rembg"]:
-        backends = ["sam2", "rembg"]
+        backends = parse_csv_list(settings.best_segmentation_backends) or ["sam2", "rembg"]
+    if not settings.experimental_sam3_enabled:
+        backends = [backend for backend in backends if backend not in {"sam3", "sam3-video"}]
+    if not backends:
+        backends = ["rembg"]
     return list(dict.fromkeys(backends))
+
+
+def ensure_required_segmentation_backends_configured(settings: Settings, preset: ScanPresetConfig) -> None:
+    if preset.preset != ScanPreset.BEST:
+        return
+    configured = configured_segmentation_backends(settings, preset)
+    missing = [backend for backend in required_segmentation_backends(settings, preset) if backend not in configured]
+    if missing:
+        raise ValueError(f"best preset requires configured segmentation backend(s): {', '.join(missing)}")
+
+
+def required_segmentation_backends(settings: Settings, preset: ScanPresetConfig) -> list[str]:
+    return parse_csv_list(settings.best_segmentation_required_backends) if preset.preset == ScanPreset.BEST else []
 
 
 def object_mask_command_for_backend(
@@ -1137,19 +1589,159 @@ def object_mask_command_for_backend(
 def configured_pose_backends(settings: Settings, preset: ScanPresetConfig | None = None) -> list[str]:
     configured = parse_csv_list(settings.pose_backends) or ["colmap"]
     if preset is not None and preset.preset == ScanPreset.BEST and configured == ["colmap"]:
-        configured = ["colmap-global", "colmap"]
+        configured = parse_csv_list(settings.best_pose_backends) or [
+            "colmap-global",
+            "colmap-sequential",
+            "colmap-exhaustive",
+            "colmap",
+        ]
     return list(dict.fromkeys(configured))
+
+
+def ensure_required_pose_backends_configured(settings: Settings, preset: ScanPresetConfig) -> None:
+    if preset.preset != ScanPreset.BEST:
+        return
+    configured = configured_pose_backends(settings, preset)
+    missing_from_chain = [
+        backend for backend in required_pose_backends(settings, preset) if backend not in configured
+    ]
+    missing_commands = [
+        backend
+        for backend in required_pose_backends(settings, preset)
+        if not is_colmap_pose_backend(backend) and not pose_command_for_backend(settings, backend)
+    ]
+    missing = missing_from_chain + missing_commands
+    if missing:
+        raise ValueError(f"best preset requires configured pose backend(s): {', '.join(dict.fromkeys(missing))}")
+
+
+def required_pose_backends(settings: Settings, preset: ScanPresetConfig) -> list[str]:
+    return parse_csv_list(settings.best_pose_required_backends) if preset.preset == ScanPreset.BEST else []
+
+
+def is_colmap_pose_backend(backend: str) -> bool:
+    return backend in {
+        "colmap",
+        "nerfstudio-colmap",
+        "ns-process-data",
+        "colmap-global",
+        "colmap-sequential",
+        "colmap-exhaustive",
+        "colmap-vocab-tree",
+        "colmap-spatial",
+    }
+
+
+def colmap_matching_method_for_pose_backend(backend: str, default: str | None) -> str | None:
+    return {
+        "colmap": default,
+        "nerfstudio-colmap": default,
+        "ns-process-data": default,
+        "colmap-global": default,
+        "colmap-sequential": "sequential",
+        "colmap-exhaustive": "exhaustive",
+        "colmap-vocab-tree": "vocab_tree",
+        "colmap-spatial": "spatial",
+    }.get(backend, default)
+
+
+def colmap_mapper_for_pose_backend(backend: str) -> str | None:
+    if backend in {"colmap-global", "global", "glomap"}:
+        return "global"
+    return None
+
+
+def configured_depth_backends(settings: Settings, preset: ScanPresetConfig) -> list[str]:
+    configured = parse_csv_list(settings.depth_backends)
+    if not configured and preset.preset == ScanPreset.BEST:
+        configured = parse_csv_list(settings.best_depth_backends)
+    return list(dict.fromkeys(configured))
+
+
+def ensure_required_depth_backends_configured(settings: Settings, preset: ScanPresetConfig) -> None:
+    if preset.preset != ScanPreset.BEST:
+        return
+    configured = configured_depth_backends(settings, preset)
+    missing_from_chain = [
+        backend for backend in required_depth_backends(settings, preset) if backend not in configured
+    ]
+    missing_commands = [
+        backend
+        for backend in required_depth_backends(settings, preset)
+        if not depth_command_for_backend(settings, backend)
+    ]
+    missing = missing_from_chain + missing_commands
+    if missing:
+        raise ValueError(f"best preset requires configured depth backend(s): {', '.join(dict.fromkeys(missing))}")
+
+
+def required_depth_backends(settings: Settings, preset: ScanPresetConfig) -> list[str]:
+    return parse_csv_list(settings.best_depth_required_backends) if preset.preset == ScanPreset.BEST else []
+
+
+def depth_command_for_backend(settings: Settings, backend: str) -> str:
+    backend = backend.strip().lower()
+    if backend.startswith("da3"):
+        return settings.da3_depth_command.strip()
+    if backend.startswith("depth-anything-v2"):
+        return settings.depth_anything_v2_command.strip()
+    return settings.depth_backend_command.strip()
+
+
+def pose_command_for_backend(settings: Settings, backend: str) -> str:
+    backend = backend.strip().lower()
+    if backend == "da3-colmap" and settings.da3_pose_command.strip():
+        return settings.da3_pose_command.strip()
+    if backend == "vggt-colmap" and settings.vggt_pose_command.strip():
+        return settings.vggt_pose_command.strip()
+    if backend == "mast3r-sfm" and settings.mast3r_pose_command.strip():
+        return settings.mast3r_pose_command.strip()
+    return settings.pose_backend_command.strip()
+
+
+def train_command_for_backend(settings: Settings, backend: str) -> str:
+    backend = backend.strip().lower()
+    if backend == "3dgs-mcmc" and settings.mcmc_train_command.strip():
+        return settings.mcmc_train_command.strip()
+    if backend == "mip-splatting" and settings.mip_splatting_train_command.strip():
+        return settings.mip_splatting_train_command.strip()
+    if backend == "2dgs" and settings.twodgs_train_command.strip():
+        return settings.twodgs_train_command.strip()
+    return settings.train_backend_command.strip()
 
 
 def configured_train_backends(settings: Settings, preset: ScanPresetConfig) -> list[str]:
     configured = parse_csv_list(settings.train_backends)
     if not configured:
-        configured = (
-            ["dn-splatter-big", preset.train_method.lower()]
-            if preset.preset == ScanPreset.BEST
-            else [preset.train_method.lower()]
-        )
+        if preset.preset == ScanPreset.BEST:
+            configured = parse_csv_list(settings.best_train_backends) or [preset.train_method.lower()]
+            if settings.experimental_dn_splatter_enabled and "dn-splatter-big" not in configured:
+                configured.insert(0, "dn-splatter-big")
+        else:
+            configured = [preset.train_method.lower()]
     return list(dict.fromkeys(configured))
+
+
+def ensure_required_train_backends_configured(settings: Settings, preset: ScanPresetConfig) -> None:
+    if preset.preset != ScanPreset.BEST:
+        return
+    configured = configured_train_backends(settings, preset)
+    missing_from_chain = [
+        backend for backend in required_train_backends(settings, preset) if backend not in configured
+    ]
+    missing_commands = [
+        backend
+        for backend in required_train_backends(settings, preset)
+        if backend not in {"splatfacto", "splatfacto-big", preset.train_method.lower()}
+        and not train_command_for_backend(settings, backend)
+    ]
+    missing = missing_from_chain + missing_commands
+    if missing:
+        raise ValueError(f"best preset requires configured training backend(s): {', '.join(dict.fromkeys(missing))}")
+
+
+def required_train_backends(settings: Settings, preset: ScanPresetConfig) -> list[str]:
+    return parse_csv_list(settings.best_train_required_backends) if preset.preset == ScanPreset.BEST else []
 
 
 def select_video_frames(
@@ -1163,6 +1755,7 @@ def select_video_frames(
     overexposed_threshold: float,
     underexposed_threshold: float,
     duplicate_threshold: float,
+    strategy: str = "quality",
 ) -> FrameSelectionResult:
     if not candidates:
         raise ValueError("video frame extraction produced no candidate frames")
@@ -1186,7 +1779,12 @@ def select_video_frames(
         by_index.update({profile.index: profile for profile in top_profiles})
         selection_pool = sorted(by_index.values(), key=lambda profile: profile.index)
 
-    selected = quality_aware_sample(selection_pool, min(target_count, len(selection_pool)))
+    selected_count = min(target_count, len(selection_pool))
+    normalized_strategy = normalize_frame_selection_strategy(strategy)
+    if normalized_strategy == "quality-diversity":
+        selected = quality_diverse_sample(selection_pool, selected_count)
+    else:
+        selected = quality_aware_sample(selection_pool, selected_count)
     for idx, src in enumerate(selected, start=1):
         shutil.copy2(src.path, images_dir / f"frame_{idx:05d}.jpg")
 
@@ -1195,6 +1793,7 @@ def select_video_frames(
         metrics={
             "candidate_frames": len(candidates),
             "selected_frames": len(selected),
+            "frame_selection_strategy": normalized_strategy,
             "accepted_frame_candidates": len(accepted),
             "quality_selection_fallback": fallback_used,
             "quality_rejected_frames": len(profiles) - len(accepted),
@@ -1424,6 +2023,21 @@ def object_mask_rejected_reason_counts(profiles: list[ObjectMaskProfile]) -> dic
     return counts
 
 
+def frame_selection_strategy_for_preset(settings: Settings, preset: ScanPresetConfig) -> str:
+    if preset.preset == ScanPreset.BEST:
+        return normalize_frame_selection_strategy(
+            settings.best_frame_selection_strategy or settings.frame_selection_strategy
+        )
+    return normalize_frame_selection_strategy(settings.frame_selection_strategy)
+
+
+def normalize_frame_selection_strategy(strategy: str) -> str:
+    normalized = (strategy or "quality").strip().lower().replace("_", "-")
+    if normalized in {"diverse", "quality-diverse", "quality-diversity"}:
+        return "quality-diversity"
+    return "quality"
+
+
 def quality_aware_sample(profiles: list[FrameQuality], count: int) -> list[FrameQuality]:
     if count >= len(profiles):
         return sorted(profiles, key=lambda profile: profile.index)
@@ -1443,6 +2057,78 @@ def quality_aware_sample(profiles: list[FrameQuality], count: int) -> list[Frame
             if len(selected) >= count:
                 break
     return sorted(selected.values(), key=lambda profile: profile.index)
+
+
+def quality_diverse_sample(profiles: list[FrameQuality], count: int) -> list[FrameQuality]:
+    if count >= len(profiles):
+        return sorted(profiles, key=lambda profile: profile.index)
+    if count <= 0:
+        return []
+    if not any(profile.signature for profile in profiles):
+        return quality_aware_sample(profiles, count)
+
+    selected: dict[int, FrameQuality] = {}
+    total = len(profiles)
+    score_values = [profile.score for profile in profiles]
+    min_score = min(score_values)
+    max_score = max(score_values)
+    for slot in range(count):
+        start = math.floor(slot * total / count)
+        end = math.floor((slot + 1) * total / count)
+        bucket = profiles[start:max(end, start + 1)]
+        best = max(
+            bucket,
+            key=lambda profile: diverse_frame_score(
+                profile,
+                list(selected.values()),
+                min_score=min_score,
+                max_score=max_score,
+                total=max(1, total - 1),
+            ),
+        )
+        selected[best.index] = best
+    if len(selected) < count:
+        for profile in sorted(
+            profiles,
+            key=lambda candidate: diverse_frame_score(
+                candidate,
+                list(selected.values()),
+                min_score=min_score,
+                max_score=max_score,
+                total=max(1, total - 1),
+            ),
+            reverse=True,
+        ):
+            selected.setdefault(profile.index, profile)
+            if len(selected) >= count:
+                break
+    return sorted(selected.values(), key=lambda profile: profile.index)
+
+
+def diverse_frame_score(
+    profile: FrameQuality,
+    selected: list[FrameQuality],
+    min_score: float,
+    max_score: float,
+    total: int,
+) -> float:
+    quality = (profile.score - min_score) / (max_score - min_score) if max_score > min_score else 1.0
+    if not selected:
+        return quality
+    signature_distance = min(frame_signature_distance(profile, other) for other in selected)
+    temporal_distance = min(abs(profile.index - other.index) / total for other in selected)
+    motion = clamp((profile.difference_from_previous or 0.0) / 25.0, 0.0, 1.0)
+    return (0.58 * quality) + (0.27 * signature_distance) + (0.10 * temporal_distance) + (0.05 * motion)
+
+
+def frame_signature_distance(first: FrameQuality, second: FrameQuality) -> float:
+    if not first.signature or not second.signature or len(first.signature) != len(second.signature):
+        return 0.5
+    distance = math.sqrt(
+        sum((left - right) ** 2 for left, right in zip(first.signature, second.signature, strict=True))
+        / len(first.signature)
+    )
+    return clamp(distance / 3.0, 0.0, 1.0)
 
 
 def score_video_frames(
@@ -1469,6 +2155,7 @@ def score_video_frames(
             continue
         gray = resize_gray_for_metrics(cv2, image)
         small = cv2.resize(gray, (32, 32))
+        signature = frame_signature(cv2, gray)
         blur = float(cv2.Laplacian(gray, cv2.CV_64F).var())
         contrast = float(gray.std())
         brightness = float(gray.mean())
@@ -1505,6 +2192,7 @@ def score_video_frames(
                 overexposed_ratio=overexposed,
                 underexposed_ratio=underexposed,
                 difference_from_previous=difference,
+                signature=signature,
                 reject_reasons=tuple(reasons),
             )
         )
@@ -1537,6 +2225,17 @@ def resize_gray_for_metrics(cv2, image, max_side: int = 640):
         return image
     scale = max_side / largest
     return cv2.resize(image, (max(1, round(width * scale)), max(1, round(height * scale))))
+
+
+def frame_signature(cv2, gray) -> tuple[float, ...]:
+    small = cv2.resize(gray, (8, 8)).astype("float32")
+    mean = float(small.mean())
+    std = float(small.std())
+    if std > 1e-6:
+        small = (small - mean) / std
+    else:
+        small = small - mean
+    return tuple(round(float(value), 4) for value in small.reshape(-1))
 
 
 def frame_quality_score(
@@ -2587,18 +3286,20 @@ def iter_ply_vertex_values(path: Path, layout: PlyLayout | None = None):
     if layout is None:
         return
     if layout.format == "format ascii 1.0":
-        raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        try:
-            end_header_idx = raw.index("end_header")
-        except ValueError:
-            return
-        for line in raw[end_header_idx + 1 : end_header_idx + 1 + layout.vertex_count]:
-            try:
-                values = tuple(float(part) for part in line.split())
-            except ValueError:
-                continue
-            if len(values) >= len(layout.properties) and all(math.isfinite(value) for value in values):
-                yield values
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for _ in range(len(layout.header_lines)):
+                if not handle.readline():
+                    return
+            for _ in range(layout.vertex_count):
+                line = handle.readline()
+                if not line:
+                    return
+                try:
+                    values = tuple(float(part) for part in line.split())
+                except ValueError:
+                    continue
+                if len(values) >= len(layout.properties) and all(math.isfinite(value) for value in values):
+                    yield values
         return
     if layout.format == "format binary_little_endian 1.0" and layout.row_size:
         struct_format = "<" + "".join(ply_struct_code(kind) for kind, _ in layout.properties)
@@ -2712,40 +3413,51 @@ def clean_ascii_ply(
     layout: PlyLayout,
     row_filter: Callable[[tuple[float, ...]], bool] | None,
 ) -> dict:
-    raw = src.read_text(encoding="utf-8", errors="replace").splitlines()
-    try:
-        end_header_idx = raw.index("end_header")
-    except ValueError as exc:
-        raise ValueError(f"{src} is missing a PLY header") from exc
-    body = raw[end_header_idx + 1 :]
-    vertex_rows = body[: layout.vertex_count]
-    tail = body[layout.vertex_count :]
-    cleaned: list[str] = []
+    temp_body = dest.with_suffix(dest.suffix + ".body.tmp")
     invalid = 0
     filtered = 0
-    for line in vertex_rows:
-        parts = line.split()
-        if not parts:
-            invalid += 1
-            continue
-        try:
-            values = tuple(float(part) for part in parts)
-        except ValueError:
-            invalid += 1
-            continue
-        if not all(math.isfinite(value) for value in values):
-            invalid += 1
-            continue
-        if row_filter is not None and not row_filter(values):
-            filtered += 1
-            continue
-        cleaned.append(line)
+    kept = 0
+    with src.open("r", encoding="utf-8", errors="replace") as source, temp_body.open("w", encoding="utf-8") as body:
+        for _ in range(len(layout.header_lines)):
+            if not source.readline():
+                raise ValueError(f"{src} is missing a PLY header")
+        for _ in range(layout.vertex_count):
+            line = source.readline()
+            if not line:
+                invalid += 1
+                break
+            stripped = line.rstrip("\n")
+            parts = stripped.split()
+            if not parts:
+                invalid += 1
+                continue
+            try:
+                values = tuple(float(part) for part in parts)
+            except ValueError:
+                invalid += 1
+                continue
+            if not all(math.isfinite(value) for value in values):
+                invalid += 1
+                continue
+            if row_filter is not None and not row_filter(values):
+                filtered += 1
+                continue
+            body.write(stripped + "\n")
+            kept += 1
+        tail = source.read()
 
-    updated_header = updated_ply_header(layout.header_lines, len(cleaned))
-    dest.write_text("\n".join(updated_header + cleaned + tail) + "\n", encoding="utf-8")
+    updated_header = "\n".join(updated_ply_header(layout.header_lines, kept)) + "\n"
+    try:
+        with dest.open("w", encoding="utf-8") as output:
+            output.write(updated_header)
+            with temp_body.open("r", encoding="utf-8") as body:
+                shutil.copyfileobj(body, output)
+            output.write(tail)
+    finally:
+        temp_body.unlink(missing_ok=True)
     return {
         "input_vertices": layout.vertex_count,
-        "output_vertices": len(cleaned),
+        "output_vertices": kept,
         "invalid_vertices_removed": invalid,
         "filtered_vertices_removed": filtered,
     }
@@ -2760,10 +3472,11 @@ def clean_binary_ply(
     assert layout.row_size is not None
     struct_format = "<" + "".join(ply_struct_code(kind) for kind, _ in layout.properties)
     vertex_data_end = layout.header_bytes + (layout.vertex_count * layout.row_size)
-    kept_rows: list[bytes] = []
+    temp_body = dest.with_suffix(dest.suffix + ".body.tmp")
     invalid = 0
     filtered = 0
-    with src.open("rb") as handle:
+    kept = 0
+    with src.open("rb") as handle, temp_body.open("wb") as body:
         handle.seek(layout.header_bytes)
         for _ in range(layout.vertex_count):
             row = handle.read(layout.row_size)
@@ -2777,19 +3490,23 @@ def clean_binary_ply(
             if row_filter is not None and not row_filter(values):
                 filtered += 1
                 continue
-            kept_rows.append(row)
+            body.write(row)
+            kept += 1
         handle.seek(vertex_data_end)
         tail = handle.read()
 
-    header = "\n".join(updated_ply_header(layout.header_lines, len(kept_rows))) + "\n"
-    with dest.open("wb") as handle:
-        handle.write(header.encode("ascii"))
-        for row in kept_rows:
-            handle.write(row)
-        handle.write(tail)
+    header = "\n".join(updated_ply_header(layout.header_lines, kept)) + "\n"
+    try:
+        with dest.open("wb") as handle:
+            handle.write(header.encode("ascii"))
+            with temp_body.open("rb") as body:
+                shutil.copyfileobj(body, handle)
+            handle.write(tail)
+    finally:
+        temp_body.unlink(missing_ok=True)
     return {
         "input_vertices": layout.vertex_count,
-        "output_vertices": len(kept_rows),
+        "output_vertices": kept,
         "invalid_vertices_removed": invalid,
         "filtered_vertices_removed": filtered,
     }
@@ -2901,11 +3618,15 @@ def point_mask_support(
         if projection is None:
             continue
         u, v, alt_v = projection
-        if u < 0 or u >= frame.mask.width or v < 0 or v >= frame.mask.height:
+        if u < 0 or u >= frame.mask.width:
+            continue
+        v_in_bounds = 0 <= v < frame.mask.height
+        alt_v_in_bounds = alt_v is not None and 0 <= alt_v < frame.mask.height
+        if not v_in_bounds and not alt_v_in_bounds:
             continue
         observed += 1
-        foreground = frame.mask.is_foreground(u, v, alpha_threshold, padding_px)
-        if not foreground and alt_v is not None and 0 <= alt_v < frame.mask.height:
+        foreground = v_in_bounds and frame.mask.is_foreground(u, v, alpha_threshold, padding_px)
+        if not foreground and alt_v_in_bounds:
             # Be conservative across camera-y conventions: an alternate-y hit
             # means this point may be legitimate, so do not count it outside.
             foreground = frame.mask.is_foreground(u, alt_v, alpha_threshold, padding_px)

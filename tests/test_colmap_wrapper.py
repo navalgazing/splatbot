@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from splatbot.colmap_wrapper import _mapped_argv, promote_largest_sparse_model
+from splatbot.colmap_wrapper import _mapped_argv, _maybe_calibrate_global_mapper, promote_largest_sparse_model
 
 
 def _write_model(path: Path, image_count: int, point_bytes: int) -> None:
@@ -51,3 +51,23 @@ def test_mapped_argv_falls_back_when_global_mapper_missing(monkeypatch) -> None:
     monkeypatch.setattr("splatbot.colmap_wrapper._has_colmap_command", lambda command: False)
 
     assert _mapped_argv(["mapper", "--database_path", "db"]) == ["mapper", "--database_path", "db"]
+
+
+def test_global_mapper_can_run_view_graph_calibrator(monkeypatch) -> None:
+    calls = []
+
+    class Result:
+        returncode = 0
+
+    def fake_run(argv, check=False, stdout=None, stderr=None):
+        calls.append(argv)
+        return Result()
+
+    monkeypatch.setenv("SPLATBOT_COLMAP_GLOBAL_CALIBRATE", "true")
+    monkeypatch.setattr("splatbot.colmap_wrapper._has_colmap_command", lambda command: command == "view_graph_calibrator")
+    monkeypatch.setattr("splatbot.colmap_wrapper._real_colmap", lambda: "colmap-test")
+    monkeypatch.setattr("splatbot.colmap_wrapper.subprocess.run", fake_run)
+
+    _maybe_calibrate_global_mapper(["global_mapper", "--database_path", "db"])
+
+    assert calls == [["colmap-test", "view_graph_calibrator", "--database_path", "db"]]
