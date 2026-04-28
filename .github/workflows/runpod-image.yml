@@ -36,6 +36,9 @@ jobs:
           docker buildx build \
             --progress=plain \
             --push \
+            --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
             --no-cache \
             --file Dockerfile.runpod \
             --tag ghcr.io/navalgazing/splatbot-runpod:latest \
