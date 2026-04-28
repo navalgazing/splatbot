@@ -76,9 +76,17 @@ if "CUDAExecutionProvider" not in ort.get_available_providers():
 PY
 for cmd in splatbot-segment splatbot-pose splatbot-depth splatbot-train splatbot-mesh splatbot-da3; do
   command -v "$cmd"
-  "$cmd" --help >/tmp/"$cmd"-help.txt
+  "$cmd" --help >/tmp/"$cmd"-help.txt 2>&1 || {
+    echo "$cmd --help failed"
+    tail -n 80 /tmp/"$cmd"-help.txt
+    exit 1
+  }
 done
-splatbot-segment --backend sam2 --self-test
+splatbot-segment --backend sam2 --self-test >/tmp/sam2-self-test.txt 2>&1 || {
+  echo "sam2 self-test failed"
+  tail -n 120 /tmp/sam2-self-test.txt
+  exit 1
+}
 ns-train splatfacto-big --help | grep -q -- "--pipeline.model.strategy"
 splatbot-da3 --help >/tmp/splatbot-da3-help.txt
 if /opt/splatbot/venv/bin/python - <<'PY'
