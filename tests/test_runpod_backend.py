@@ -93,7 +93,7 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     assert "export SPLATBOT_OBJECT_COLMAP_ORIGINAL_POSE_FALLBACK=true" in command
     assert "export SPLATBOT_BEST_SEGMENTATION_BACKENDS=sam2,rembg" in command
     assert "export SPLATBOT_EXPERIMENTAL_SAM3_ENABLED=false" in command
-    assert "export SPLATBOT_BEST_POSE_BACKENDS=vggt-colmap,mast3r-sfm" in command
+    assert "export SPLATBOT_BEST_POSE_BACKENDS=colmap-global,vggt-colmap,mast3r-sfm" in command
     assert "export SPLATBOT_DA3_MODEL=depth-anything/DA3-LARGE-1.1" in command
     assert "export SPLATBOT_DA3_USE_RAY_POSE=true" in command
     assert "export SPLATBOT_DA3_REF_VIEW_STRATEGY=middle" in command
@@ -104,7 +104,7 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     assert "export SPLATBOT_MAST3R_REPO=/opt/mast3r" in command
     assert "export SPLATBOT_MAST3R_MAX_IMAGES=80" in command
     assert "export SPLATBOT_GLOMAP_BIN=splatbot-glomap" in command
-    assert "export SPLATBOT_GLOMAP_MAPPER_ARGS='--log_to_stderr=1 --ba_iteration_num=1 --skip_retriangulation=1 --GlobalPositioning.max_num_iterations=60 --BundleAdjustment.max_num_iterations=80'" in command
+    assert "export SPLATBOT_GLOMAP_MAPPER_ARGS='--log_to_stderr=1 --ba_iteration_num=1 --GlobalPositioning.max_num_iterations=60 --BundleAdjustment.max_num_iterations=80'" in command
     assert "export SPLATBOT_MAST3R_PAIR_WINDOW=5" in command
     assert "export SPLATBOT_MAST3R_USE_GLOMAP=true" in command
     assert "export SPLATBOT_SILHOUETTE_CLEANUP_ENABLED=true" in command
@@ -114,7 +114,8 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     assert "export SPLATBOT_SPATIAL_CLEANUP_ENABLED=true" in command
     assert "export SPLATBOT_POSTPROCESS_VALIDATION_ENABLED=true" in command
     assert "export SPLATBOT_BEST_DEPTH_BACKENDS=da3,depth-anything-v2-large" in command
-    assert "export SPLATBOT_BEST_TRAIN_BACKENDS=3dgs-mcmc,splatfacto-big" in command
+    assert "export SPLATBOT_BEST_TRAIN_BACKENDS=splatfacto-big,3dgs-mcmc" in command
+    assert "export SPLATBOT_MIN_EXPORT_GAUSSIAN_RETENTION=0.02" in command
     assert "export SPLATBOT_TRAIN_MAX_ITERATIONS=10000" in command
     assert "export SPLATBOT_COLMAP_USE_GPU=false" in command
     assert "export SPLATBOT_REMBG_REQUIRE_GPU=false" in command

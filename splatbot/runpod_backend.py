@@ -391,6 +391,7 @@ def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str) 
             "SPLATBOT_SILHOUETTE_CLEANUP_MAX_REMOVE_FRACTION": settings.silhouette_cleanup_max_remove_fraction,
             "SPLATBOT_MIN_SPLAT_VERTICES": settings.min_splat_vertices,
             "SPLATBOT_MAX_FLATTENED_AXIS_RATIO": settings.max_flattened_axis_ratio,
+            "SPLATBOT_MIN_EXPORT_GAUSSIAN_RETENTION": settings.min_export_gaussian_retention,
             "SPLATBOT_FFMPEG_BIN": settings.ffmpeg_bin,
             "SPLATBOT_FFPROBE_BIN": settings.ffprobe_bin,
             "SPLATBOT_COLMAP_BIN": settings.colmap_bin,

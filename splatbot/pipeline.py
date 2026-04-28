@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shlex
 import shutil
 import struct
@@ -21,6 +22,7 @@ from .models import JobStatus, MediaItem, MediaKind
 
 StatusCallback = Callable[[str, JobStatus], Awaitable[None]]
 MAX_PLY_HEADER_BYTES = 64 * 1024
+EXPORT_RETENTION_RE = re.compile(r"only export\s+(\d+)\s*/\s*(\d+)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,13 @@ class FrameQuality:
 class FrameSelectionResult:
     selected_count: int
     metrics: dict
+
+
+@dataclass(frozen=True)
+class ReconstructionArtifacts:
+    raw_ply: Path
+    cleaned_ply: Path
+    cleanup: dict
 
 
 @dataclass(frozen=True)
@@ -343,36 +352,33 @@ class ScanPipeline:
             )
             record_stage(metrics, "depth", stage_start)
             write_json(metrics_path, metrics)
+        ensure_required_train_backends_configured(self.settings, preset_config)
         if on_status:
             await on_status(job_id, JobStatus.TRAINING)
-        stage_start = time.perf_counter()
-        ensure_required_train_backends_configured(self.settings, preset_config)
-        await self.train_reconstruction(processed_dir, ns_dir, preset_config, metrics, metrics_path)
-        record_stage(metrics, "training", stage_start)
-        write_json(metrics_path, metrics)
+        reconstruction = await self.train_export_reconstruction(
+            processed_dir=processed_dir,
+            ns_dir=ns_dir,
+            export_dir=export_dir,
+            mode=mode,
+            preset=preset_config,
+            metrics=metrics,
+            metrics_path=metrics_path,
+            job_id=job_id,
+            on_status=on_status,
+        )
         log_directory_summary("nerfstudio outputs", ns_dir)
-        if on_status:
-            await on_status(job_id, JobStatus.EXPORTING)
-        stage_start = time.perf_counter()
-        raw_ply = await self.export_ply(ns_dir, export_dir)
-        cleaned_ply = export_dir / "cleaned_splat.ply"
-        ply_cleanup = clean_exported_ply(raw_ply, cleaned_ply, processed_dir, mode, self.settings)
-        record_stage(metrics, "exporting", stage_start)
-        log_ply_summary("raw splat", raw_ply)
-        log_ply_summary("cleaned splat", cleaned_ply)
-        metrics["ply"] = {
-            "raw": inspect_ply(raw_ply),
-            "cleaned": inspect_ply(cleaned_ply),
-            "cleanup": ply_cleanup,
-        }
-        write_json(metrics_path, metrics)
-        validate_ply_quality(metrics, self.settings)
-        write_json(metrics_path, metrics)
+        log_ply_summary("raw splat", reconstruction.raw_ply)
+        log_ply_summary("cleaned splat", reconstruction.cleaned_ply)
         mesh_path = None
         mesh_metrics = {"enabled": False, "reason": "disabled"}
         if self.settings.mesh_export_enabled:
             stage_start = time.perf_counter()
-            mesh_path, mesh_metrics = await self.export_mesh(processed_dir, ns_dir, export_dir, cleaned_ply)
+            mesh_path, mesh_metrics = await self.export_mesh(
+                processed_dir,
+                ns_dir,
+                export_dir,
+                reconstruction.cleaned_ply,
+            )
             record_stage(metrics, "mesh", stage_start)
             metrics["mesh"] = mesh_metrics
             if mesh_metrics.get("applied") is False:
@@ -402,7 +408,7 @@ class ScanPipeline:
             write_json(quality_report_path, build_quality_report(metrics, self.settings))
             write_json(candidate_report_path, build_candidate_report(metrics, self.settings))
         return PipelineOutputs(
-            cleaned_ply=cleaned_ply,
+            cleaned_ply=reconstruction.cleaned_ply,
             preview_mp4=preview_mp4,
             metrics_path=metrics_path,
             mesh_path=mesh_path,
@@ -1231,6 +1237,132 @@ class ScanPipeline:
         write_json(metrics_path, metrics)
         raise ValueError("all train backends failed: " + " | ".join(errors))
 
+    async def train_export_reconstruction(
+        self,
+        processed_dir: Path,
+        ns_dir: Path,
+        export_dir: Path,
+        mode: ScanMode,
+        preset: ScanPresetConfig,
+        metrics: dict,
+        metrics_path: Path,
+        job_id: str,
+        on_status: StatusCallback | None,
+    ) -> ReconstructionArtifacts:
+        errors: list[str] = []
+        required_backends = set(required_train_backends(self.settings, preset))
+        total_training_seconds = 0.0
+        total_exporting_seconds = 0.0
+        for backend in configured_train_backends(self.settings, preset):
+            attempt: dict = {"backend": backend}
+            metrics.setdefault("train_backend_attempts", []).append(attempt)
+            attempt_stage = "training"
+            if ns_dir.exists():
+                shutil.rmtree(ns_dir)
+            if export_dir.exists():
+                shutil.rmtree(export_dir)
+            ns_dir.mkdir(parents=True, exist_ok=True)
+            export_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                metrics["train_backend"] = backend
+                training_started = time.perf_counter()
+                if backend in {"splatfacto", "splatfacto-big", preset.train_method.lower()}:
+                    method = backend if backend.startswith("splatfacto") else preset.train_method
+                    await self.train_splatfacto(processed_dir, ns_dir, preset, method=method)
+                else:
+                    await self.train_external_backend(backend, processed_dir, ns_dir, preset)
+                training_seconds = time.perf_counter() - training_started
+                total_training_seconds += training_seconds
+                attempt["training_seconds"] = round(training_seconds, 3)
+                metrics.setdefault("stage_attempts", {}).setdefault("training", []).append(
+                    {"backend": backend, "duration_seconds": round(training_seconds, 3)}
+                )
+                metrics.setdefault("stages", {})["training"] = {
+                    "duration_seconds": round(total_training_seconds, 3)
+                }
+                write_json(metrics_path, metrics)
+
+                if on_status:
+                    await on_status(job_id, JobStatus.EXPORTING)
+                attempt_stage = "exporting"
+                exporting_started = time.perf_counter()
+                raw_ply, export_metrics = await self.export_ply(ns_dir, export_dir)
+                cleaned_ply = export_dir / "cleaned_splat.ply"
+                attempt_stage = "postprocess"
+                ply_cleanup = clean_exported_ply(raw_ply, cleaned_ply, processed_dir, mode, self.settings)
+                exporting_seconds = time.perf_counter() - exporting_started
+                total_exporting_seconds += exporting_seconds
+                attempt["exporting_seconds"] = round(exporting_seconds, 3)
+                metrics.setdefault("stage_attempts", {}).setdefault("exporting", []).append(
+                    {"backend": backend, "duration_seconds": round(exporting_seconds, 3)}
+                )
+                metrics.setdefault("stages", {})["exporting"] = {
+                    "duration_seconds": round(total_exporting_seconds, 3)
+                }
+                metrics["ply"] = {
+                    "raw": inspect_ply(raw_ply),
+                    "cleaned": inspect_ply(cleaned_ply),
+                    "cleanup": ply_cleanup,
+                }
+                if export_metrics:
+                    metrics["ply"]["export"] = export_metrics
+                attempt["raw_vertices"] = metrics["ply"]["raw"].get("vertices")
+                attempt["cleaned_vertices"] = metrics["ply"]["cleaned"].get("vertices")
+                attempt_stage = "quality"
+                validate_ply_quality(metrics, self.settings)
+                attempt["passed_quality"] = True
+                if errors:
+                    record_pipeline_event(
+                        metrics,
+                        stage="training",
+                        backend=backend,
+                        status="recovered",
+                        reason="selected_after_previous_backend_failure",
+                        recovered=True,
+                        details={"failed_backends": len(errors)},
+                    )
+                write_json(metrics_path, metrics)
+                return ReconstructionArtifacts(raw_ply=raw_ply, cleaned_ply=cleaned_ply, cleanup=ply_cleanup)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{backend}: {exc}")
+                attempt["passed_quality"] = False
+                attempt["failed_stage"] = attempt_stage
+                attempt["error"] = truncate_text(str(exc), 1200)
+                metrics.setdefault("train_backend_failures", []).append(
+                    {"backend": backend, "stage": attempt_stage, "error": str(exc)}
+                )
+                recovered = backend not in required_backends
+                reason = {
+                    "training": "backend_failed",
+                    "exporting": "export_failed",
+                    "postprocess": "postprocess_failed",
+                    "quality": "output_quality_failed",
+                }.get(attempt_stage, "backend_failed")
+                record_pipeline_event(
+                    metrics,
+                    stage="training" if attempt_stage == "training" else attempt_stage,
+                    backend=backend,
+                    status="fallback" if recovered else "failure",
+                    reason=reason,
+                    error=str(exc),
+                    recovered=recovered,
+                )
+                write_json(metrics_path, metrics)
+                if backend in required_backends:
+                    raise
+                if on_status:
+                    await on_status(job_id, JobStatus.TRAINING)
+        record_pipeline_event(
+            metrics,
+            stage="training",
+            status="failure",
+            reason="all_backends_failed",
+            recovered=False,
+            details={"errors": errors},
+        )
+        write_json(metrics_path, metrics)
+        raise ValueError("all train/export backends failed: " + " | ".join(errors))
+
     async def train_splatfacto(
         self,
         processed_dir: Path,
@@ -1282,9 +1414,9 @@ class ScanPipeline:
         )
         await self.runner.run(argv)
 
-    async def export_ply(self, ns_dir: Path, export_dir: Path) -> Path:
+    async def export_ply(self, ns_dir: Path, export_dir: Path) -> tuple[Path, dict]:
         raw_ply = export_dir / "raw_splat.ply"
-        await self.runner.run(
+        result = await self.runner.run(
             [
                 self.settings.ns_export_bin,
                 "gaussian-splat",
@@ -1296,7 +1428,7 @@ class ScanPipeline:
                 raw_ply.name,
             ]
         )
-        return raw_ply
+        return raw_ply, parse_export_metrics(result.stdout, result.stderr)
 
     async def render_turntable(self, ns_dir: Path, render_dir: Path) -> Path:
         preview = render_dir / "turntable.mp4"
@@ -1390,6 +1522,23 @@ def shell_join(argv: tuple[str, ...] | list[str]) -> str:
     return " ".join(shlex.quote(arg) for arg in argv)
 
 
+def parse_export_metrics(stdout: str, stderr: str) -> dict:
+    text = "\n".join(part for part in (stdout, stderr) if part)
+    match = None
+    for match in EXPORT_RETENTION_RE.finditer(text):
+        pass
+    if match is None:
+        return {}
+    exported = int(match.group(1))
+    total = int(match.group(2))
+    retention = exported / total if total else 0.0
+    return {
+        "exported_gaussians": exported,
+        "total_gaussians": total,
+        "retention_ratio": round(retention, 6),
+    }
+
+
 def build_quality_report(metrics: dict, settings: Settings) -> dict:
     issues: list[str] = []
     warnings: list[str] = []
@@ -1400,6 +1549,7 @@ def build_quality_report(metrics: dict, settings: Settings) -> dict:
     colmap = metrics.get("colmap", {})
     cleanup = metrics.get("ply", {}).get("cleanup", {})
     cleaned_ply = metrics.get("ply", {}).get("cleaned", {})
+    export_metrics = metrics.get("ply", {}).get("export", {})
     validation = cleanup.get("validation", {})
     mesh = metrics.get("mesh", {})
 
@@ -1437,6 +1587,12 @@ def build_quality_report(metrics: dict, settings: Settings) -> dict:
     vertices = cleaned_ply.get("vertices")
     if isinstance(vertices, int) and vertices < max(10_000, int(settings.min_splat_vertices * 1.5)):
         warnings.append("low_splat_vertex_count")
+    retention = export_metrics.get("retention_ratio")
+    if (
+        isinstance(retention, int | float)
+        and retention < settings.min_export_gaussian_retention
+    ):
+        issues.append("low_exported_gaussian_retention")
     ratio = cleaned_ply.get("flat_axis_ratio")
     if (
         ratio is not None
@@ -2787,7 +2943,9 @@ def update_bounds(mins: list[float], maxs: list[float], xyz: list[float]) -> Non
 
 
 def validate_ply_quality(metrics: dict, settings: Settings) -> None:
-    cleaned = metrics.get("ply", {}).get("cleaned", {})
+    ply = metrics.get("ply", {})
+    cleaned = ply.get("cleaned", {})
+    export_metrics = ply.get("export", {})
     vertices = cleaned.get("vertices")
     if cleaned.get("parseable") is not True:
         raise ValueError("Exported splat is not a parseable PLY file.")
@@ -2797,14 +2955,39 @@ def validate_ply_quality(metrics: dict, settings: Settings) -> None:
         raise ValueError("Exported splat PLY does not declare a vertex count.")
     if not cleaned.get("has_xyz"):
         raise ValueError("Exported splat PLY does not contain x/y/z vertex properties.")
+    retention = export_metrics.get("retention_ratio")
+    exported = export_metrics.get("exported_gaussians")
+    total = export_metrics.get("total_gaussians")
+    if isinstance(retention, int | float) and retention < settings.min_export_gaussian_retention:
+        record_pipeline_event(
+            metrics,
+            stage="exporting",
+            status="failure",
+            reason="low_exported_gaussian_retention",
+            recovered=False,
+            details={
+                "exported_gaussians": exported,
+                "total_gaussians": total,
+                "retention_ratio": retention,
+                "expected_min_retention_ratio": settings.min_export_gaussian_retention,
+            },
+        )
+        raise ValueError(
+            "Export retained too few Gaussians "
+            f"({exported}/{total}, retention {retention:.4f}); expected at least "
+            f"{settings.min_export_gaussian_retention:.4f}."
+        )
     if vertices is not None and vertices < settings.min_splat_vertices:
         record_pipeline_event(
             metrics,
             stage="exporting",
-            status="warning",
+            status="failure",
             reason="low_splat_vertex_count",
-            recovered=True,
+            recovered=False,
             details={"vertices": vertices, "expected_min_vertices": settings.min_splat_vertices},
+        )
+        raise ValueError(
+            f"Exported splat has only {vertices} vertices; expected at least {settings.min_splat_vertices}."
         )
     ratio = cleaned.get("flat_axis_ratio")
     if (
@@ -2816,14 +2999,17 @@ def validate_ply_quality(metrics: dict, settings: Settings) -> None:
         record_pipeline_event(
             metrics,
             stage="exporting",
-            status="warning",
+            status="failure",
             reason="flattened_splat_geometry",
-            recovered=True,
+            recovered=False,
             details={
                 "flat_axis_ratio": ratio,
                 "min_axis_ratio": settings.max_flattened_axis_ratio,
                 "vertices": vertices,
             },
+        )
+        raise ValueError(
+            f"Exported splat appears flattened (axis ratio {ratio:.4f}, vertices {vertices})."
         )
     validation = metrics.get("ply", {}).get("cleanup", {}).get("validation", {})
     if validation.get("applied") and validation.get("passed") is False:
@@ -2833,10 +3019,14 @@ def validate_ply_quality(metrics: dict, settings: Settings) -> None:
         record_pipeline_event(
             metrics,
             stage="postprocess",
-            status="warning",
+            status="failure",
             reason="object_mask_validation_failed",
-            recovered=True,
+            recovered=False,
             details={"outside": outside, "low_support": low_support, "unobserved": unobserved},
+        )
+        raise ValueError(
+            "Exported splat failed object-mask validation "
+            f"(outside={outside}, low_support={low_support}, unobserved={unobserved})."
         )
 
 

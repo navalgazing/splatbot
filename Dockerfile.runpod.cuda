@@ -30,6 +30,7 @@ RUN apt-get update \
       libboost-program-options-dev \
       libboost-system-dev \
       libceres-dev \
+      libcgal-dev \
       libeigen3-dev \
       libflann-dev \
       libfreeimage-dev \
@@ -67,7 +68,7 @@ RUN python3 -m pip install --no-cache-dir --upgrade "cmake>=3.28,<4" \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_INSTALL_PREFIX=/opt/glomap \
       -DCUDA_ENABLED=OFF \
-      -DCGAL_ENABLED=OFF \
+      -DCGAL_ENABLED=ON \
       -DGUI_ENABLED=OFF \
       -DOPENGL_ENABLED=OFF \
       -DTESTS_ENABLED=OFF \

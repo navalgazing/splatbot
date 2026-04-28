@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from splatbot.commands import CommandResult
-from splatbot.config import ScanMode, Settings
+from splatbot.config import ScanMode, ScanPreset, Settings
 from splatbot.models import JobStatus, MediaItem, MediaKind
 from splatbot.pipeline import (
     AlphaMask,
@@ -26,6 +26,7 @@ from splatbot.pipeline import (
     inspect_processed_dataset,
     latest_nerfstudio_config,
     object_mask_command_for_backend,
+    parse_export_metrics,
     parse_ffprobe_duration,
     parse_ffprobe_frame_rate,
     parse_int_list,
@@ -83,6 +84,52 @@ class FakeRunner:
                 + "\n",
                 encoding="utf-8",
             )
+        return CommandResult(argv=argv, returncode=0, stdout="", stderr="")
+
+
+class TrainQualityRetryRunner:
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+        self.train_calls = 0
+        self.export_calls = 0
+
+    async def run(self, argv: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> CommandResult:
+        self.calls.append(argv)
+        if argv[0] == "ns-train":
+            self.train_calls += 1
+            output_dir = Path(argv[argv.index("--output-dir") + 1])
+            config_dir = output_dir / f"attempt_{self.train_calls}" / "run"
+            config_dir.mkdir(parents=True, exist_ok=True)
+            (config_dir / "config.yml").write_text("fake: true\n", encoding="utf-8")
+        if argv[0] == "ns-export":
+            self.export_calls += 1
+            output_dir = Path(argv[argv.index("--output-dir") + 1])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            vertices = 5 if self.export_calls == 1 else 20
+            rows = [
+                f"{idx % 5}.0 {(idx // 5) % 4}.0 {(idx // 10) % 2}.0 0.5"
+                for idx in range(vertices)
+            ]
+            (output_dir / "raw_splat.ply").write_text(
+                "\n".join(
+                    [
+                        "ply",
+                        "format ascii 1.0",
+                        f"element vertex {vertices}",
+                        "property float x",
+                        "property float y",
+                        "property float z",
+                        "property float opacity",
+                        "end_header",
+                        *rows,
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            if self.export_calls == 1:
+                return CommandResult(argv=argv, returncode=0, stdout="", stderr="only export 5/1000\n")
+            return CommandResult(argv=argv, returncode=0, stdout="", stderr="only export 20/100\n")
         return CommandResult(argv=argv, returncode=0, stdout="", stderr="")
 
 
@@ -443,7 +490,7 @@ def test_silhouette_cleanup_skips_when_remove_fraction_is_too_high(tmp_path) -> 
     assert b"element vertex 2" in dest.read_bytes().split(b"end_header", 1)[0]
 
 
-def test_validate_ply_quality_records_failed_mask_validation(tmp_path) -> None:
+def test_validate_ply_quality_rejects_failed_mask_validation(tmp_path) -> None:
     metrics = {
         "ply": {
             "cleaned": {
@@ -464,7 +511,8 @@ def test_validate_ply_quality_records_failed_mask_validation(tmp_path) -> None:
         }
     }
 
-    validate_ply_quality(metrics, Settings(data_dir=tmp_path, min_splat_vertices=1))
+    with pytest.raises(ValueError, match="object-mask validation"):
+        validate_ply_quality(metrics, Settings(data_dir=tmp_path, min_splat_vertices=1))
     report = build_quality_report(metrics, Settings(data_dir=tmp_path, min_splat_vertices=1))
     assert "postprocess_validation_failed" in report["issues"]
     assert metrics["pipeline_events"][-1]["reason"] == "object_mask_validation_failed"
@@ -477,7 +525,7 @@ def test_validate_ply_quality_rejects_unparseable_summary(tmp_path) -> None:
         validate_ply_quality(metrics, Settings(data_dir=tmp_path, min_splat_vertices=1))
 
 
-def test_validate_ply_quality_accepts_borderline_vertex_count(tmp_path) -> None:
+def test_validate_ply_quality_rejects_borderline_vertex_count(tmp_path) -> None:
     metrics = {
         "ply": {
             "cleaned": {
@@ -491,12 +539,13 @@ def test_validate_ply_quality_accepts_borderline_vertex_count(tmp_path) -> None:
         }
     }
 
-    validate_ply_quality(metrics, Settings(data_dir=tmp_path))
+    with pytest.raises(ValueError, match="only 9752 vertices"):
+        validate_ply_quality(metrics, Settings(data_dir=tmp_path))
     report = build_quality_report(metrics, Settings(data_dir=tmp_path))
     assert "low_splat_vertex_count" in report["warnings"]
 
 
-def test_validate_ply_quality_records_too_few_vertices(tmp_path) -> None:
+def test_validate_ply_quality_rejects_too_few_vertices(tmp_path) -> None:
     metrics = {
         "ply": {
             "cleaned": {
@@ -509,10 +558,48 @@ def test_validate_ply_quality_records_too_few_vertices(tmp_path) -> None:
         }
     }
 
-    validate_ply_quality(metrics, Settings(data_dir=tmp_path))
+    with pytest.raises(ValueError, match="only 5000 vertices"):
+        validate_ply_quality(metrics, Settings(data_dir=tmp_path))
     report = build_quality_report(metrics, Settings(data_dir=tmp_path))
     assert "low_splat_vertex_count" in report["warnings"]
     assert metrics["pipeline_events"][-1]["reason"] == "low_splat_vertex_count"
+
+
+def test_validate_ply_quality_rejects_low_export_retention(tmp_path) -> None:
+    metrics = {
+        "ply": {
+            "cleaned": {
+                "parseable": True,
+                "format": "format binary_little_endian 1.0",
+                "vertices": 20_000,
+                "has_xyz": True,
+                "flat_axis_ratio": 0.25,
+            },
+            "export": {
+                "exported_gaussians": 11_612,
+                "total_gaussians": 1_000_000,
+                "retention_ratio": 0.011612,
+            },
+        }
+    }
+
+    with pytest.raises(ValueError, match="retained too few Gaussians"):
+        validate_ply_quality(metrics, Settings(data_dir=tmp_path))
+    report = build_quality_report(metrics, Settings(data_dir=tmp_path))
+    assert "low_exported_gaussian_retention" in report["issues"]
+
+
+def test_parse_export_metrics_reads_nerfstudio_retention_line() -> None:
+    metrics = parse_export_metrics(
+        "",
+        "0 Gaussians have NaN/Inf and 988388 have low opacity, only export 11612/1000000",
+    )
+
+    assert metrics == {
+        "exported_gaussians": 11612,
+        "total_gaussians": 1000000,
+        "retention_ratio": 0.011612,
+    }
 
 
 def test_best_preset_enables_sota_backend_chain_by_default(tmp_path) -> None:
@@ -521,8 +608,8 @@ def test_best_preset_enables_sota_backend_chain_by_default(tmp_path) -> None:
 
     assert configured_segmentation_backends(settings, best) == ["sam2", "rembg"]
     assert configured_depth_backends(settings, best) == ["da3", "depth-anything-v2-large"]
-    assert configured_pose_backends(settings, best) == ["vggt-colmap", "mast3r-sfm"]
-    assert configured_train_backends(settings, best) == ["3dgs-mcmc", "splatfacto-big"]
+    assert configured_pose_backends(settings, best) == ["colmap-global", "vggt-colmap", "mast3r-sfm"]
+    assert configured_train_backends(settings, best) == ["splatfacto-big", "3dgs-mcmc"]
 
 
 def test_experimental_backends_are_explicit_opt_in(tmp_path) -> None:
@@ -534,7 +621,7 @@ def test_experimental_backends_are_explicit_opt_in(tmp_path) -> None:
     best = settings.preset_config("best")
 
     assert configured_segmentation_backends(settings, best) == ["sam2", "rembg"]
-    assert configured_train_backends(settings, best) == ["dn-splatter-big", "3dgs-mcmc", "splatfacto-big"]
+    assert configured_train_backends(settings, best) == ["dn-splatter-big", "splatfacto-big", "3dgs-mcmc"]
 
 
 def test_sota_object_mask_command_renders_adapter_cli(tmp_path) -> None:
@@ -1091,6 +1178,44 @@ async def test_mcmc_default_train_command_preserves_best_extra_args(tmp_path) ->
             "two words",
         ]
     ]
+
+
+async def test_train_export_retries_backend_that_fails_quality_gate(tmp_path) -> None:
+    settings = Settings(
+        data_dir=tmp_path,
+        min_splat_vertices=10,
+        best_train_backends="splatfacto-big,3dgs-mcmc",
+        best_train_required_backends="",
+        best_train_extra_args="",
+    )
+    runner = TrainQualityRetryRunner()
+    pipeline = ScanPipeline(settings, runner=runner)
+    processed = tmp_path / "processed"
+    processed.mkdir()
+    metrics = {"pipeline_events": [], "stages": {}, "ply": {}}
+
+    artifacts = await pipeline.train_export_reconstruction(
+        processed_dir=processed,
+        ns_dir=tmp_path / "nerfstudio",
+        export_dir=tmp_path / "export",
+        mode=ScanMode.SCENE,
+        preset=settings.preset_config(ScanPreset.BEST),
+        metrics=metrics,
+        metrics_path=tmp_path / "metrics.json",
+        job_id="job1",
+        on_status=None,
+    )
+
+    assert artifacts.cleaned_ply.exists()
+    assert runner.train_calls == 2
+    assert runner.export_calls == 2
+    assert metrics["train_backend"] == "3dgs-mcmc"
+    assert metrics["train_backend_failures"][0]["backend"] == "splatfacto-big"
+    assert metrics["train_backend_failures"][0]["stage"] == "quality"
+    assert metrics["train_backend_attempts"][0]["cleaned_vertices"] == 5
+    assert metrics["train_backend_attempts"][1]["cleaned_vertices"] == 20
+    assert metrics["ply"]["cleaned"]["vertices"] == 20
+    assert any(event["reason"] == "output_quality_failed" for event in metrics["pipeline_events"])
 
 
 def test_latest_nerfstudio_config_selects_newest(tmp_path) -> None:

@@ -130,7 +130,7 @@ class Settings(BaseSettings):
     object_mask_min_keep_ratio: float = 0.55
     object_mask_training_alpha_threshold: int = 16
     pose_backends: str = "colmap"
-    best_pose_backends: str = "vggt-colmap,mast3r-sfm"
+    best_pose_backends: str = "colmap-global,vggt-colmap,mast3r-sfm"
     best_pose_required_backends: str = ""
     pose_backend_command: str = "splatbot-pose --backend {backend} --input {images_dir} --output {processed_dir} --matching-method {matching_method}"
     da3_model: str = "depth-anything/DA3-LARGE-1.1"
@@ -163,7 +163,7 @@ class Settings(BaseSettings):
     mast3r_use_glomap: bool = True
     glomap_bin: str = "splatbot-glomap"
     glomap_mapper_args: str = (
-        "--log_to_stderr=1 --ba_iteration_num=1 --skip_retriangulation=1 "
+        "--log_to_stderr=1 --ba_iteration_num=1 "
         "--GlobalPositioning.max_num_iterations=60 "
         "--BundleAdjustment.max_num_iterations=80"
     )
@@ -227,8 +227,9 @@ class Settings(BaseSettings):
     postprocess_validation_sample_limit: int = 200_000
     render_validation_command: str = ""
     quality_report_enabled: bool = True
-    min_splat_vertices: int = 7500
+    min_splat_vertices: int = 10_000
     max_flattened_axis_ratio: float = 0.015
+    min_export_gaussian_retention: float = 0.02
     depth_backends: str = ""
     best_depth_backends: str = "da3,depth-anything-v2-large"
     best_depth_required_backends: str = "da3"
@@ -236,8 +237,8 @@ class Settings(BaseSettings):
     da3_depth_command: str = "splatbot-da3 --images {images_dir} --processed {processed_dir} --depth-only"
     depth_anything_v2_command: str = ""
     train_backends: str = ""
-    best_train_backends: str = "3dgs-mcmc,splatfacto-big"
-    best_train_required_backends: str = "3dgs-mcmc"
+    best_train_backends: str = "splatfacto-big,3dgs-mcmc"
+    best_train_required_backends: str = ""
     experimental_dn_splatter_enabled: bool = False
     mcmc_train_command: str = (
         "ns-train splatfacto-mcmc --data {processed_dir} --output-dir {ns_dir} "

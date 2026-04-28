@@ -88,9 +88,8 @@ background-removed frames are too unstable for registration. If COLMAP still
 registers too few frames, the pipeline retries smaller evenly sampled subsets
 from `SPLATBOT_COLMAP_RETRY_FRAME_COUNTS` with methods from
 `SPLATBOT_COLMAP_RETRY_MATCHING_METHODS` before failing the job. The default
-`best` pose chain does not include COLMAP fallback; it requires a learned pose
-adapter to succeed. The 24 GB production profile tries MASt3R before VGGT
-because the official VGGT COLMAP demo can exceed 24 GB even after downsampling.
+`best` pose chain starts with the dense COLMAP-global baseline, then tries
+learned pose adapters when the baseline cannot pass quality gates.
 
 Object exports also run conservative silhouette cleanup. The exported Gaussian
 centers are projected back into up to `SPLATBOT_SILHOUETTE_CLEANUP_MAX_VIEWS`
@@ -111,7 +110,7 @@ SPLATBOT_OBJECT_MASK_PROMPT='main object'
 SPLATBOT_SAM2_MASK_COMMAND='splatbot-segment --backend sam2 --input {images_dir} --output {object_dir}'
 SPLATBOT_SAM2_CHECKPOINT=/opt/splatbot/models/sam2.1_hiera_large.pt
 SPLATBOT_SAM2_CONFIG=configs/sam2.1/sam2.1_hiera_l.yaml
-SPLATBOT_BEST_POSE_BACKENDS=vggt-colmap,mast3r-sfm
+SPLATBOT_BEST_POSE_BACKENDS=colmap-global,vggt-colmap,mast3r-sfm
 SPLATBOT_BEST_POSE_REQUIRED_BACKENDS=
 SPLATBOT_POSE_BACKEND_COMMAND='splatbot-pose --backend {backend} --input {images_dir} --output {processed_dir} --matching-method {matching_method}'
 SPLATBOT_DA3_MODEL=depth-anything/DA3-LARGE-1.1
@@ -122,12 +121,13 @@ SPLATBOT_VGGT_POSE_COMMAND='splatbot-vggt --images {images_dir} --processed {pro
 SPLATBOT_VGGT_ARGS='--use_ba --max_query_pts 2048 --query_frame_num 5'
 SPLATBOT_MAST3R_POSE_COMMAND='splatbot-mast3r --images {images_dir} --processed {processed_dir} --matching-method {matching_method}'
 SPLATBOT_MAST3R_USE_GLOMAP=true
+SPLATBOT_MIN_EXPORT_GAUSSIAN_RETENTION=0.02
 SPLATBOT_BEST_DEPTH_BACKENDS=da3,depth-anything-v2-large
 SPLATBOT_BEST_DEPTH_REQUIRED_BACKENDS=da3
 SPLATBOT_DEPTH_BACKEND_COMMAND='splatbot-depth --backend {backend} --processed {processed_dir} --images {images_dir}'
 SPLATBOT_DA3_DEPTH_COMMAND='splatbot-da3 --images {images_dir} --processed {processed_dir} --depth-only'
-SPLATBOT_BEST_TRAIN_BACKENDS=3dgs-mcmc,splatfacto-big
-SPLATBOT_BEST_TRAIN_REQUIRED_BACKENDS=3dgs-mcmc
+SPLATBOT_BEST_TRAIN_BACKENDS=splatfacto-big,3dgs-mcmc
+SPLATBOT_BEST_TRAIN_REQUIRED_BACKENDS=
 SPLATBOT_TRAIN_BACKEND_COMMAND='splatbot-train --backend {backend} --data {processed_dir} --output {ns_dir} --max-iterations {max_iterations} --steps-per-save {steps_per_save} {extra_args}'
 SPLATBOT_MCMC_TRAIN_COMMAND='ns-train splatfacto-mcmc --data {processed_dir} --output-dir {ns_dir} --max-num-iterations {max_iterations} --steps-per-save {steps_per_save} --viewer.quit-on-train-completion True {extra_args}'
 SPLATBOT_MESH_EXPORT_ENABLED=true
@@ -136,12 +136,12 @@ SPLATBOT_MESH_EXPORT_COMMAND='splatbot-mesh --backend {backend} --ns-dir {ns_dir
 ```
 
 Backends are attempted in order for non-required stages. In `best` mode, SAM2
-segmentation, DA3 depth, and 3DGS-MCMC training are required by default. VGGT and
-MASt3R are first-choice pose adapters when their runtime repos are installed;
-their adapters require a real COLMAP sparse model and reject transform-only
-output. SAM3 is disabled by default because it requires access approval.
-DN-Splatter remains explicitly opt-in because its dependency stack can conflict
-with Nerfstudio/gsplat.
+segmentation and DA3 depth are required by default; train backends are retried
+when the exported splat fails hard quality gates. VGGT and MASt3R remain
+available learned pose adapters, but production success is gated on output
+quality rather than backend labels. SAM3 is disabled by default because it
+requires access approval. DN-Splatter remains explicitly opt-in because its
+dependency stack can conflict with Nerfstudio/gsplat.
 
 Every skipped, failed, or recovered backend attempt is written into
 `quality_report.json` and summarized in the Telegram completion/failure message.
