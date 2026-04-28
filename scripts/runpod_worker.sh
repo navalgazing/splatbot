@@ -13,7 +13,11 @@ export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
 export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
 export PATH="$CUDA_HOME/bin:/usr/local/cuda/bin:$PATH"
 export LD_LIBRARY_PATH="$CUDA_HOME/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
-export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.9}"
+if [ -z "${TORCH_CUDA_ARCH_LIST:-}" ] || [ "${TORCH_CUDA_ARCH_LIST:-}" = "8.9" ]; then
+  export TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"
+else
+  export TORCH_CUDA_ARCH_LIST
+fi
 export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD="${TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD:-1}"
 export TORCH_EXTENSIONS_DIR="${TORCH_EXTENSIONS_DIR:-/workspace/torch_extensions}"
 export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-/workspace/torch_inductor}"
@@ -134,13 +138,35 @@ if "CUDAExecutionProvider" not in active_providers:
 PY
 }
 
+check_required_glomap() {
+  if [ "${SPLATBOT_SCAN_PRESET:-balanced}" != "best" ]; then
+    return 0
+  fi
+  if ! truthy "${SPLATBOT_MAST3R_USE_GLOMAP:-true}"; then
+    return 0
+  fi
+  local glomap_cmd="${SPLATBOT_GLOMAP_BIN:-glomap}"
+  if ! command -v "$glomap_cmd" >/dev/null; then
+    echo "best preset requires MASt3R+GLOMAP, but '$glomap_cmd' is not installed or not in PATH" >&2
+    exit 2
+  fi
+  "$glomap_cmd" -h >/tmp/glomap-help.txt 2>&1 || {
+    echo "best preset requires MASt3R+GLOMAP, but '$glomap_cmd -h' failed" >&2
+    tail -n 80 /tmp/glomap-help.txt >&2
+    exit 2
+  }
+}
+
 print_runtime_diagnostics() {
   echo "runtime diagnostics:"
   echo "  job=$SPLATBOT_JOB_ID mode=$SPLATBOT_SCAN_MODE preset=$SPLATBOT_SCAN_PRESET"
   echo "  venv=$VENV_DIR cache_enabled=$RUNTIME_CACHE_ENABLED cache_ready=$RUNTIME_CACHE_READY cache_marker=$CACHE_MARKER"
   echo "  python=$(command -v python || true)"
   echo "  colmap=$(command -v colmap || true)"
+  echo "  glomap=$(command -v "${SPLATBOT_GLOMAP_BIN:-glomap}" || true)"
+  echo "  torch_cuda_arch_list=${TORCH_CUDA_ARCH_LIST:-}"
   colmap -h 2>&1 | sed -n '1p' || true
+  "${SPLATBOT_GLOMAP_BIN:-glomap}" -h 2>&1 | sed -n '1p' || true
   ffmpeg -version 2>&1 | sed -n '1p' || true
   "$VENV_DIR/bin/python" - <<'PY'
 import importlib.metadata as metadata
@@ -248,6 +274,7 @@ fi
 command -v nvcc >/dev/null
 check_colmap_cuda
 check_rembg_cuda
+check_required_glomap
 "$VENV_DIR/bin/python" - <<'PY'
 import torch
 

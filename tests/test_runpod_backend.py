@@ -319,3 +319,17 @@ def test_runpod_heartbeat_suppresses_cleanup_race_noise() -> None:
 
     assert '"$VPS_JOBCTL heartbeat $SPLATBOT_JOB_ID" >/dev/null 2>&1 || true' in worker
     assert 'wait "$HEARTBEAT_PID" 2>/dev/null || true' in worker
+
+
+def test_runpod_worker_requires_glomap_for_best_mast3r() -> None:
+    worker = (Path(__file__).parents[1] / "scripts" / "runpod_worker.sh").read_text(encoding="utf-8")
+
+    assert 'check_required_glomap' in worker
+    assert "best preset requires MASt3R+GLOMAP" in worker
+    assert "check_rembg_cuda\ncheck_required_glomap\n\"$VENV_DIR/bin/python\" - <<'PY'" in worker
+
+
+def test_runpod_worker_cuda_arch_default_supports_h100() -> None:
+    worker = (Path(__file__).parents[1] / "scripts" / "runpod_worker.sh").read_text(encoding="utf-8")
+
+    assert 'TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"' in worker

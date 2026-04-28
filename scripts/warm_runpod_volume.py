@@ -37,7 +37,11 @@ export QT_QPA_PLATFORM="${{QT_QPA_PLATFORM:-offscreen}}"
 export CUDA_HOME="${{CUDA_HOME:-/usr/local/cuda}}"
 export PATH="$CUDA_HOME/bin:/usr/local/cuda/bin:$PATH"
 export LD_LIBRARY_PATH="$CUDA_HOME/lib64:/usr/local/cuda/lib64:${{LD_LIBRARY_PATH:-}}"
-export TORCH_CUDA_ARCH_LIST="${{TORCH_CUDA_ARCH_LIST:-8.9}}"
+if [ -z "${{TORCH_CUDA_ARCH_LIST:-}}" ] || [ "${{TORCH_CUDA_ARCH_LIST:-}}" = "8.9" ]; then
+  export TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"
+else
+  export TORCH_CUDA_ARCH_LIST
+fi
 export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD="${{TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD:-1}}"
 export TORCH_EXTENSIONS_DIR="${{TORCH_EXTENSIONS_DIR:-/workspace/torch_extensions}}"
 export TORCHINDUCTOR_CACHE_DIR="${{TORCHINDUCTOR_CACHE_DIR:-/workspace/torch_inductor}}"
@@ -53,6 +57,8 @@ export U2NET_HOME="${{U2NET_HOME:-/workspace/.u2net}}"
 {shell_export("SETUP_COMMAND", settings.runpod_setup_command.strip())}
 {shell_export("SPLATBOT_COLMAP_USE_GPU", str(settings.colmap_use_gpu).lower())}
 {shell_export("SPLATBOT_REMBG_REQUIRE_GPU", str(settings.rembg_require_gpu).lower())}
+{shell_export("SPLATBOT_MAST3R_USE_GLOMAP", str(settings.mast3r_use_glomap).lower())}
+{shell_export("SPLATBOT_GLOMAP_BIN", settings.glomap_bin)}
 
 echo "warming runtime cache version: $CACHE_VERSION"
 echo "venv: $VENV_DIR"
@@ -107,6 +113,10 @@ command -v ns-train
 command -v ns-export
 command -v ns-render
 command -v rembg
+if [ "$SPLATBOT_MAST3R_USE_GLOMAP" = "true" ]; then
+  command -v "$SPLATBOT_GLOMAP_BIN"
+  "$SPLATBOT_GLOMAP_BIN" -h >/tmp/glomap-help.txt
+fi
 for cmd in ns-process-data ns-train ns-export ns-render rembg; do
   "$cmd" --help >/tmp/"$cmd"-help.txt
 done

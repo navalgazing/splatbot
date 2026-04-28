@@ -4,16 +4,19 @@ ARG SPLATBOT_BASE_REFRESH=2026-04-28-wheel
 ARG NERFSTUDIO_COMMIT=50e0e3c70c775e89333256213363badbf074f29d
 ARG VGGT_COMMIT=44b3afbd1869d8bde4894dd8ea1e293112dd5eba
 ARG MAST3R_COMMIT=f5209afc300cec36239a7ac992263f36847bbba0
+ARG GLOMAP_COMMIT=0edb1b8435e0f9a594318908b81a31f078a51bf7
 
 FROM ${RUNPOD_BASE} AS colmap-builder
 
 ARG COLMAP_VERSION=3.9.1
-ARG CUDA_ARCHITECTURES=89
+ARG CUDA_ARCHITECTURES=80;86;89;90
+ARG GLOMAP_COMMIT
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=/usr/local/cuda/bin:$PATH
 ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+ENV TORCH_CUDA_ARCH_LIST=8.0;8.6;8.9;9.0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -21,6 +24,7 @@ RUN apt-get update \
       ca-certificates \
       cmake \
       git \
+      libgflags-dev \
       libboost-filesystem-dev \
       libboost-graph-dev \
       libboost-program-options-dev \
@@ -36,6 +40,7 @@ RUN apt-get update \
       libsqlite3-dev \
       libsuitesparse-dev \
       ninja-build \
+      python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 RUN git clone --branch "${COLMAP_VERSION}" --depth 1 https://github.com/colmap/colmap.git /tmp/colmap \
@@ -55,6 +60,22 @@ RUN git clone --branch "${COLMAP_VERSION}" --depth 1 https://github.com/colmap/c
       || { tail -n 200 /tmp/colmap-install.log; exit 1; } \
     && rm -rf /tmp/colmap
 
+RUN python3 -m pip install --no-cache-dir --upgrade "cmake>=3.28,<4" \
+    && git clone https://github.com/colmap/glomap.git /tmp/glomap \
+    && git -C /tmp/glomap checkout "$GLOMAP_COMMIT" \
+    && cmake -S /tmp/glomap -B /tmp/glomap/build -GNinja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/opt/glomap \
+      -DCUDA_ENABLED=OFF \
+      -DTESTS_ENABLED=OFF \
+      -DCMAKE_INSTALL_MESSAGE=NEVER \
+    && cmake --build /tmp/glomap/build --parallel "$(nproc)" > /tmp/glomap-build.log 2>&1 \
+      || { tail -n 240 /tmp/glomap-build.log; exit 1; } \
+    && cmake --install /tmp/glomap/build > /tmp/glomap-install.log 2>&1 \
+      || { tail -n 200 /tmp/glomap-install.log; exit 1; } \
+    && /opt/glomap/bin/glomap -h >/tmp/glomap-help.txt \
+    && rm -rf /tmp/glomap
+
 FROM ${SPLATBOT_STABLE_IMAGE}
 
 ARG NERFSTUDIO_COMMIT
@@ -64,6 +85,7 @@ ARG MAST3R_COMMIT
 ENV DEBIAN_FRONTEND=noninteractive
 ENV SPLATBOT_VGGT_REPO=/opt/vggt
 ENV SPLATBOT_MAST3R_REPO=/opt/mast3r
+ENV TORCH_CUDA_ARCH_LIST=8.0;8.6;8.9;9.0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -74,6 +96,7 @@ RUN apt-get update \
       libceres2 \
       libflann1.9 \
       libfreeimage3 \
+      libgflags2.2 \
       libgl1 \
       libglew2.2 \
       libgomp1 \
@@ -87,6 +110,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=colmap-builder /opt/colmap-cuda/ /usr/local/
+COPY --from=colmap-builder /opt/glomap/ /usr/local/
 
 ENV SPLATBOT_SAM2_CHECKPOINT=/opt/splatbot/models/sam2.1_hiera_large.pt
 ENV SPLATBOT_SAM2_CONFIG=configs/sam2.1/sam2.1_hiera_l.yaml
@@ -157,7 +181,7 @@ PY
 RUN set -eu; \
     export PATH="/opt/splatbot/venv/bin:$PATH"; \
     ldconfig; \
-    for cmd in ffmpeg ffprobe colmap nvcc ns-process-data ns-train ns-export ns-render rembg da3; do \
+    for cmd in ffmpeg ffprobe colmap glomap nvcc ns-process-data ns-train ns-export ns-render rembg da3; do \
       path="$(command -v "$cmd" || true)"; \
       if [ -z "$path" ]; then \
         echo "missing command: $cmd"; \
@@ -184,6 +208,8 @@ RUN set -eu; \
       tail -n 40 /tmp/colmap-feature-extractor-help.txt; \
       exit 1; \
     fi; \
+    glomap -h > /tmp/glomap-help.txt 2>&1 \
+      || { echo "glomap -h failed"; cat /tmp/glomap-help.txt; exit 1; }; \
     ns-train --help > /tmp/ns-train-methods.txt 2>&1; \
     if ! grep -q "splatfacto-mcmc" /tmp/ns-train-methods.txt; then \
       echo "ns-train method list did not include splatfacto-mcmc"; \
