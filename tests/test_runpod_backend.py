@@ -1,5 +1,7 @@
 import os
+import subprocess
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -210,3 +212,39 @@ def test_create_pod_uses_network_volume_and_datacenter_filters(tmp_path) -> None
     assert client.payload["dataCenterIds"] == ["EU-RO-1", "EUR-IS-2"]
     assert client.payload["dataCenterPriority"] == "availability"
     assert client.payload["ports"] == ["22/tcp"]
+
+
+def test_run_worker_flushes_log_header_before_ssh_output(tmp_path, monkeypatch) -> None:
+    settings = make_runpod_settings(tmp_path)
+    settings.data_dir = tmp_path
+    launcher = RunPodLauncher(settings)
+    job = ScanJob(
+        id="job123",
+        session_id="session123",
+        telegram_user_id=42,
+        mode=ScanMode.SCENE,
+        status=JobStatus.QUEUED,
+        error=None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    monkeypatch.setattr(launcher, "_install_vps_ssh_key", lambda target: None)
+
+    def fake_run(cmd, input, stdout, stderr, timeout, check):
+        stdout.write(b"remote output\n")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr("splatbot.runpod_backend.subprocess.run", fake_run)
+
+    launcher.run_worker(job, "pod123", RunPodSshTarget("198.51.100.2", 30022))
+
+    log = (tmp_path / "jobs" / job.id / "runpod-worker.log").read_text(encoding="utf-8")
+    assert log.startswith("\n--- RunPod worker pod123 on 198.51.100.2:30022 ---\nremote output\n")
+
+
+def test_runpod_heartbeat_suppresses_cleanup_race_noise() -> None:
+    worker = (Path(__file__).parents[1] / "scripts" / "runpod_worker.sh").read_text(encoding="utf-8")
+
+    assert '"$VPS_JOBCTL heartbeat $SPLATBOT_JOB_ID" >/dev/null 2>&1 || true' in worker
+    assert 'wait "$HEARTBEAT_PID" 2>/dev/null || true' in worker

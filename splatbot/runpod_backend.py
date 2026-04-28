@@ -309,6 +309,7 @@ class RunPodLauncher:
         ssh_command = ["ssh", *self._pod_ssh_args(target), "bash", "-s"]
         with log_path.open("ab") as log:
             log.write(f"\n--- RunPod worker {pod_id} on {target.host}:{target.port} ---\n".encode())
+            log.flush()
             result = subprocess.run(
                 ssh_command,
                 input=command.encode(),

@@ -62,8 +62,9 @@ trap fail_job ERR
 heartbeat_loop() {
   while true; do
     ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
-      "$VPS_JOBCTL heartbeat $SPLATBOT_JOB_ID" || true
-    sleep 60
+      "$VPS_JOBCTL heartbeat $SPLATBOT_JOB_ID" >/dev/null 2>&1 || true
+    sleep 60 &
+    wait "$!" || true
   done
 }
 
@@ -73,6 +74,7 @@ HEARTBEAT_PID="$!"
 cleanup_worker() {
   if [ -n "${HEARTBEAT_PID:-}" ]; then
     kill "$HEARTBEAT_PID" 2>/dev/null || true
+    wait "$HEARTBEAT_PID" 2>/dev/null || true
   fi
   rm -f /root/.ssh/id_ed25519
 }
