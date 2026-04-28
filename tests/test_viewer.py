@@ -95,6 +95,20 @@ def test_publish_viewer_copies_mesh_and_quality_report(tmp_path) -> None:
     assert "GLTFLoader" in html
 
 
+def test_publish_viewer_rejects_unsupported_mesh_extension(tmp_path) -> None:
+    ply = tmp_path / "cleaned_splat.ply"
+    mesh = tmp_path / "mesh.html"
+    ply.write_text("ply\nformat ascii 1.0\nend_header\n", encoding="utf-8")
+    mesh.write_text("<p>no</p>", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unsupported viewer mesh extension"):
+        publish_viewer(
+            Settings(public_results_dir=tmp_path / "public"),
+            "job1",
+            PipelineOutputs(cleaned_ply=ply, preview_mp4=None, mesh_path=mesh),
+        )
+
+
 def test_write_viewer_point_cloud_converts_gaussian_dc_color(tmp_path) -> None:
     src = tmp_path / "gaussian.ply"
     dest = tmp_path / "viewer_points.ply"

@@ -66,9 +66,9 @@ async def complete(job_id: str, notify: bool) -> None:
         raise SystemExit(f"job disappeared before completion could be recorded: {job_id}")
     if updated.status != JobStatus.DONE:
         raise SystemExit(f"job {job_id} was not marked done: {updated.status.value}")
-    if notify and settings.telegram_token:
+    if notify and settings.telegram_token_value:
         try:
-            await TelegramNotifier(settings.telegram_token).job_done(updated, artifacts)
+            await TelegramNotifier(settings.telegram_token_value).job_done(updated, artifacts)
         except Exception:  # noqa: BLE001
             LOGGER.exception("failed to send completion notification for job %s", job_id)
 
@@ -78,9 +78,9 @@ async def fail(job_id: str, error: str, notify: bool) -> None:
     store = Store(settings.database_path)
     await store.init()
     job = await store.set_job_failed_unless_terminal(job_id, error)
-    if notify and settings.telegram_token and job and job.status == JobStatus.FAILED and job.error == error:
+    if notify and settings.telegram_token_value and job and job.status == JobStatus.FAILED and job.error == error:
         try:
-            await TelegramNotifier(settings.telegram_token).job_failed(
+            await TelegramNotifier(settings.telegram_token_value).job_failed(
                 job,
                 error,
                 metrics_path=settings.job_dir(job_id) / "metrics.json",

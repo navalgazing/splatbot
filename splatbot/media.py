@@ -14,12 +14,36 @@ class MediaValidationError(ValueError):
 
 
 def classify_path(path: Path) -> MediaKind:
+    sniffed = sniff_media_kind(path)
+    if sniffed is not None:
+        return sniffed
     suffix = path.suffix.lower()
     if suffix in SUPPORTED_IMAGE_SUFFIXES:
         return MediaKind.PHOTO
     if suffix in SUPPORTED_VIDEO_SUFFIXES:
         return MediaKind.VIDEO
     raise MediaValidationError(f"unsupported media type: {path.name}")
+
+
+def sniff_media_kind(path: Path) -> MediaKind | None:
+    try:
+        header = path.read_bytes()[:32]
+    except OSError:
+        return None
+    if header.startswith(b"\xff\xd8\xff") or header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return MediaKind.PHOTO
+    if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+        return MediaKind.PHOTO
+    if header.startswith(b"RIFF") and header[8:12] == b"AVI ":
+        return MediaKind.VIDEO
+    if header.startswith(b"\x1a\x45\xdf\xa3"):
+        return MediaKind.VIDEO
+    if len(header) >= 12 and header[4:8] == b"ftyp":
+        brand = header[8:12].lower()
+        if brand in {b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1"}:
+            return MediaKind.PHOTO
+        return MediaKind.VIDEO
+    return None
 
 
 def validate_submission(items: list[MediaItem], min_images: int, max_images: int) -> None:
@@ -35,4 +59,3 @@ def validate_submission(items: list[MediaItem], min_images: int, max_images: int
         raise MediaValidationError(f"max {max_images} photos per job")
     if not photos and not videos:
         raise MediaValidationError("no media uploaded")
-

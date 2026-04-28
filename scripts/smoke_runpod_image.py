@@ -142,7 +142,7 @@ def main() -> None:
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
     )
-    client = RunPodClient(settings.runpod_api_key)
+    client = RunPodClient(settings.runpod_api_key_value)
     launcher = RunPodLauncher(settings, client=client)
     public_key = settings.runpod_pod_ssh_key.with_suffix(".pub").read_text().strip()
     pod = None

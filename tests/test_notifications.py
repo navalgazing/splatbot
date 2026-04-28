@@ -1,8 +1,10 @@
 import json
 from datetime import UTC, datetime
 
+from telegram.error import RetryAfter
+
 from splatbot.models import ArtifactKind, JobArtifact, JobStatus, ScanJob, ScanMode
-from splatbot.notifications import format_failure_summary, format_quality_summary
+from splatbot.notifications import TELEGRAM_MESSAGE_LIMIT, _fit_message, format_failure_summary, format_quality_summary, send_message_with_retry
 
 
 def test_format_quality_summary_includes_pipeline_events(tmp_path) -> None:
@@ -71,3 +73,34 @@ def test_quality_report_artifact_shape_is_compatible(tmp_path) -> None:
     )
 
     assert artifact.local_path == str(report_path)
+
+
+def test_fit_message_caps_to_telegram_limit() -> None:
+    message = _fit_message("x" * (TELEGRAM_MESSAGE_LIMIT + 50))
+
+    assert len(message) == TELEGRAM_MESSAGE_LIMIT
+    assert message.endswith("...")
+
+
+async def test_send_message_with_retry_handles_rate_limit(monkeypatch) -> None:
+    sleeps: list[int] = []
+
+    async def fake_sleep(seconds: int) -> None:
+        sleeps.append(seconds)
+
+    class FakeBot:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, str]] = []
+
+        async def send_message(self, *, chat_id: int, text: str) -> None:
+            self.calls.append((chat_id, text))
+            if len(self.calls) == 1:
+                raise RetryAfter(2)
+
+    bot = FakeBot()
+    monkeypatch.setattr("splatbot.notifications.asyncio.sleep", fake_sleep)
+
+    await send_message_with_retry(bot, chat_id=123, text="hello")
+
+    assert sleeps == [2]
+    assert bot.calls == [(123, "hello"), (123, "hello")]

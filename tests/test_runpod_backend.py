@@ -56,8 +56,8 @@ def test_pod_ssh_args_are_noninteractive_and_ephemeral(tmp_path) -> None:
 
     assert "BatchMode=yes" in args
     assert "IdentitiesOnly=yes" in args
-    assert "StrictHostKeyChecking=no" in args
-    assert "UserKnownHostsFile=/dev/null" in args
+    assert "StrictHostKeyChecking=accept-new" in args
+    assert f"UserKnownHostsFile={settings.runpod_pod_known_hosts_path}" in args
     assert "ServerAliveInterval=30" in args
     assert "ServerAliveCountMax=6" in args
     assert args[-2:] == ["30022", "root@198.51.100.2"]
@@ -107,7 +107,29 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     assert "export SPLATBOT_RUNPOD_RUNTIME_CACHE_VERSION=splatbot-runtime-2026-04-26-v1" in command
     assert "export SPLATBOT_RUNPOD_RUNTIME_CACHE_MARKER=/workspace/.splatbot-runtime-cache-version" in command
     assert "export SPLATBOT_LOG_COMMAND_OUTPUT=true" in command
+    assert "StrictHostKeyChecking=yes" in command
+    assert "UserKnownHostsFile=$SPLATBOT_VPS_KNOWN_HOSTS_FILE" in command
     assert "SPLATBOT_RUNPOD_API_KEY" not in command
+
+
+def test_remote_worker_command_can_pin_vps_host_key(tmp_path) -> None:
+    settings = make_runpod_settings(tmp_path)
+    settings.runpod_vps_known_hosts = "203.0.113.10 ssh-ed25519 AAAAexample"
+    job = ScanJob(
+        id="job123",
+        session_id="session123",
+        telegram_user_id=42,
+        mode=ScanMode.OBJECT,
+        status=JobStatus.QUEUED,
+        error=None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    command = render_remote_worker_command(settings, job, "pod123", "a2V5")
+
+    assert "export SPLATBOT_VPS_KNOWN_HOSTS='203.0.113.10 ssh-ed25519 AAAAexample'" in command
+    assert "ssh-keyscan -T 15 -H" in command
 
 
 def test_launch_recycles_pods_without_public_ssh_endpoint(tmp_path) -> None:

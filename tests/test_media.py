@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from splatbot.media import MediaValidationError, validate_submission
+from splatbot.media import MediaValidationError, classify_path, validate_submission
 from splatbot.models import MediaItem, MediaKind
 
 
@@ -34,3 +34,16 @@ def test_validate_submission_rejects_mixed_media() -> None:
             max_images=300,
         )
 
+
+def test_classify_path_prefers_magic_bytes_over_extension(tmp_path) -> None:
+    disguised = tmp_path / "frame.mp4"
+    disguised.write_bytes(b"\xff\xd8\xff\xe0jpeg")
+
+    assert classify_path(disguised) == MediaKind.PHOTO
+
+
+def test_classify_path_detects_mp4_ftyp(tmp_path) -> None:
+    video = tmp_path / "scan.bin"
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+
+    assert classify_path(video) == MediaKind.VIDEO

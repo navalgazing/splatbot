@@ -53,24 +53,36 @@ class RunPodClient:
 
     def request(self, method: str, path: str, payload: dict | None = None) -> dict | list:
         data = None if payload is None else json.dumps(payload).encode()
-        request = urllib.request.Request(
-            f"https://rest.runpod.io/v1{path}",
-            data=data,
-            headers={
-                "accept": "application/json",
-                "authorization": f"Bearer {self.api_key}",
-                "content-type": "application/json",
-                "user-agent": "splatbot/0.1 (+https://github.com/navalgazing/splatbot)",
-            },
-            method=method,
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                body = response.read().decode()
-                return json.loads(body) if body else {}
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode(errors="replace")
-            raise RunPodApiError(exc.code, body) from exc
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            request = urllib.request.Request(
+                f"https://rest.runpod.io/v1{path}",
+                data=data,
+                headers={
+                    "accept": "application/json",
+                    "authorization": f"Bearer {self.api_key}",
+                    "content-type": "application/json",
+                    "user-agent": "splatbot/0.1 (+https://github.com/navalgazing/splatbot)",
+                },
+                method=method,
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=60) as response:
+                    body = response.read().decode()
+                    return json.loads(body) if body else {}
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode(errors="replace")
+                error = RunPodApiError(exc.code, body)
+                if exc.code not in {429, 500, 502, 503, 504} or attempt >= 3:
+                    raise error from exc
+                last_error = error
+            except urllib.error.URLError as exc:
+                if attempt >= 3:
+                    raise RunPodError(f"RunPod REST API request failed: {exc}") from exc
+                last_error = exc
+            LOGGER.warning("RunPod REST API %s %s failed on attempt %s/3: %s", method, path, attempt, last_error)
+            time.sleep(2**attempt)
+        raise RunPodError(f"RunPod REST API request failed after retries: {last_error}")
 
     def create_ssh_pod(self, settings: Settings, job: ScanJob, public_key: str) -> RunPodPod:
         cloud_type = settings.runpod_cloud_type
@@ -125,7 +137,7 @@ class RunPodClient:
 class RunPodLauncher:
     def __init__(self, settings: Settings, client: RunPodClient | None = None) -> None:
         self.settings = settings
-        self.client = client or RunPodClient(settings.runpod_api_key)
+        self.client = client or RunPodClient(settings.runpod_api_key_value)
 
     def launch(self, job: ScanJob, on_pod_id: Callable[[str | None], None] | None = None) -> RunPodPod:
         self._validate()
@@ -155,7 +167,7 @@ class RunPodLauncher:
                     try:
                         self.client.delete_pod(pod.id)
                     except Exception:  # noqa: BLE001
-                        LOGGER.exception("failed to delete RunPod pod %s", pod.id)
+                        LOGGER.critical("failed to delete RunPod pod %s; manual cleanup required", pod.id, exc_info=True)
                     else:
                         if on_pod_id:
                             try:
@@ -166,7 +178,7 @@ class RunPodLauncher:
         raise last_error
 
     def _validate(self) -> None:
-        if not self.settings.runpod_api_key:
+        if not self.settings.runpod_api_key_value:
             raise RunPodError("SPLATBOT_RUNPOD_API_KEY is required for RunPod backend")
         if not self.settings.runpod_vps_host:
             raise RunPodError("SPLATBOT_RUNPOD_VPS_HOST is required for RunPod backend")
@@ -235,11 +247,11 @@ class RunPodLauncher:
             "-o",
             "IdentitiesOnly=yes",
             "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            f"UserKnownHostsFile={self.settings.runpod_pod_known_hosts_path}",
+            "-o",
             "LogLevel=ERROR",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
             "-o",
             "ConnectTimeout=10",
             "-o",
@@ -278,6 +290,7 @@ def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str, 
     setup_command = shlex.quote(settings.runpod_setup_command.strip())
     runtime_cache_version = shlex.quote(settings.runpod_runtime_cache_version.strip())
     runtime_cache_marker = shlex.quote(settings.runpod_runtime_cache_marker.strip())
+    vps_known_hosts = shlex.quote(settings.runpod_vps_known_hosts.strip())
     venv_export = (
         f"export SPLATBOT_RUNPOD_VENV={shlex.quote(settings.runpod_venv.strip())}"
         if settings.runpod_venv.strip()
@@ -441,7 +454,15 @@ if ! command -v ssh >/dev/null || ! command -v rsync >/dev/null || ! command -v 
 fi
 printf %s {shlex.quote(key_b64)} | base64 -d > /root/.ssh/id_ed25519
 chmod 600 /root/.ssh/id_ed25519
-SSH_OPTS="-i /root/.ssh/id_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=6"
+export SPLATBOT_VPS_KNOWN_HOSTS={vps_known_hosts}
+export SPLATBOT_VPS_KNOWN_HOSTS_FILE=/root/.ssh/known_hosts
+if [ -n "$SPLATBOT_VPS_KNOWN_HOSTS" ]; then
+  printf '%s\n' "$SPLATBOT_VPS_KNOWN_HOSTS" > "$SPLATBOT_VPS_KNOWN_HOSTS_FILE"
+else
+  ssh-keyscan -T 15 -H {host} > "$SPLATBOT_VPS_KNOWN_HOSTS_FILE"
+fi
+chmod 600 "$SPLATBOT_VPS_KNOWN_HOSTS_FILE"
+SSH_OPTS="-i /root/.ssh/id_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SPLATBOT_VPS_KNOWN_HOSTS_FILE -o LogLevel=ERROR -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=6"
 rsync -r --delete --no-perms --no-owner --no-group --omit-dir-times --exclude "__pycache__" --exclude "*.egg-info" -e "ssh $SSH_OPTS" {user}@{host}:/opt/splatbot/app/pyproject.toml /workspace/splatbot-app/
 rsync -r --delete --no-perms --no-owner --no-group --omit-dir-times --exclude "__pycache__" --exclude "*.egg-info" -e "ssh $SSH_OPTS" {user}@{host}:/opt/splatbot/app/splatbot/ /workspace/splatbot-app/splatbot/
 rsync -r --delete --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" {user}@{host}:/opt/splatbot/app/scripts/ /workspace/splatbot-app/scripts/

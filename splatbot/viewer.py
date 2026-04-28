@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import math
+import os
 import shutil
 import struct
 from pathlib import Path
@@ -10,27 +11,33 @@ from pathlib import Path
 from .config import Settings
 from .pipeline import PipelineOutputs
 
+ALLOWED_MESH_EXTENSIONS = {".glb", ".gltf", ".obj"}
+
 
 def publish_viewer(settings: Settings, job_id: str, outputs: PipelineOutputs) -> Path:
     target = safe_result_dir(settings.public_results_dir, job_id)
-    target.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(outputs.cleaned_ply, target / "cleaned_splat.ply")
-    write_viewer_point_cloud(outputs.cleaned_ply, target / "viewer_points.ply")
+    tmp_target = target.with_name(f".{target.name}.tmp-{os.getpid()}")
+    shutil.rmtree(tmp_target, ignore_errors=True)
+    tmp_target.mkdir(parents=True, exist_ok=False)
+    shutil.copy2(outputs.cleaned_ply, tmp_target / "cleaned_splat.ply")
+    write_viewer_point_cloud(outputs.cleaned_ply, tmp_target / "viewer_points.ply")
     mesh_name = None
     if outputs.mesh_path is not None and outputs.mesh_path.exists():
+        if outputs.mesh_path.suffix.lower() not in ALLOWED_MESH_EXTENSIONS:
+            raise ValueError(f"unsupported viewer mesh extension: {outputs.mesh_path.suffix}")
         mesh_name = outputs.mesh_path.name
-        shutil.copy2(outputs.mesh_path, target / mesh_name)
+        shutil.copy2(outputs.mesh_path, tmp_target / mesh_name)
     has_preview = outputs.preview_mp4 is not None and outputs.preview_mp4.exists()
     if has_preview and outputs.preview_mp4 is not None:
-        shutil.copy2(outputs.preview_mp4, target / "turntable.mp4")
+        shutil.copy2(outputs.preview_mp4, tmp_target / "turntable.mp4")
     if outputs.metrics_path is not None and outputs.metrics_path.exists():
-        shutil.copy2(outputs.metrics_path, target / "metrics.json")
+        shutil.copy2(outputs.metrics_path, tmp_target / "metrics.json")
     has_quality_report = outputs.quality_report_path is not None and outputs.quality_report_path.exists()
     if has_quality_report and outputs.quality_report_path is not None:
-        shutil.copy2(outputs.quality_report_path, target / "quality_report.json")
+        shutil.copy2(outputs.quality_report_path, tmp_target / "quality_report.json")
     if outputs.candidate_report_path is not None and outputs.candidate_report_path.exists():
-        shutil.copy2(outputs.candidate_report_path, target / "candidate_report.json")
-    (target / "index.html").write_text(
+        shutil.copy2(outputs.candidate_report_path, tmp_target / "candidate_report.json")
+    (tmp_target / "index.html").write_text(
         render_viewer_html(
             job_id,
             has_preview=has_preview,
@@ -39,7 +46,23 @@ def publish_viewer(settings: Settings, job_id: str, outputs: PipelineOutputs) ->
         ),
         encoding="utf-8",
     )
+    replace_result_dir(tmp_target, target)
     return target / "index.html"
+
+
+def replace_result_dir(tmp_target: Path, target: Path) -> None:
+    backup = target.with_name(f".{target.name}.old-{os.getpid()}")
+    shutil.rmtree(backup, ignore_errors=True)
+    try:
+        if target.exists():
+            target.replace(backup)
+        tmp_target.replace(target)
+    except Exception:
+        if backup.exists() and not target.exists():
+            backup.replace(target)
+        raise
+    finally:
+        shutil.rmtree(backup, ignore_errors=True)
 
 
 def safe_result_dir(root: Path, job_id: str) -> Path:

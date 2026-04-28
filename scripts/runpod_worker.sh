@@ -23,7 +23,17 @@ export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/workspace/.cache}"
 export TORCH_HOME="${TORCH_HOME:-$XDG_CACHE_HOME/torch}"
 export U2NET_HOME="${U2NET_HOME:-/workspace/.u2net}"
 export SPLATBOT_LOG_COMMAND_OUTPUT="${SPLATBOT_LOG_COMMAND_OUTPUT:-1}"
-SSH_OPTS="-i /root/.ssh/id_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=6"
+KNOWN_HOSTS="${SPLATBOT_VPS_KNOWN_HOSTS_FILE:-/root/.ssh/known_hosts}"
+mkdir -p "$(dirname "$KNOWN_HOSTS")"
+if [ ! -s "$KNOWN_HOSTS" ]; then
+  if [ -n "${SPLATBOT_VPS_KNOWN_HOSTS:-}" ]; then
+    printf '%s\n' "$SPLATBOT_VPS_KNOWN_HOSTS" > "$KNOWN_HOSTS"
+  else
+    ssh-keyscan -T 15 -H "$SPLATBOT_VPS_HOST" > "$KNOWN_HOSTS"
+  fi
+  chmod 600 "$KNOWN_HOSTS"
+fi
+SSH_OPTS="-i /root/.ssh/id_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KNOWN_HOSTS -o LogLevel=ERROR -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=6"
 VENV_DIR="${SPLATBOT_RUNPOD_VENV:-/workspace/venv}"
 CACHE_MARKER="${SPLATBOT_RUNPOD_RUNTIME_CACHE_MARKER:-/workspace/.splatbot-runtime-cache-version}"
 VPS_APP_DIR="${SPLATBOT_VPS_APP_DIR:-/opt/splatbot/app}"
@@ -272,8 +282,8 @@ status="$2"
 ssh -i /root/.ssh/id_ed25519 \
   -o BatchMode=yes \
   -o IdentitiesOnly=yes \
-  -o StrictHostKeyChecking=no \
-  -o UserKnownHostsFile=/dev/null \
+  -o StrictHostKeyChecking=yes \
+  -o UserKnownHostsFile="${SPLATBOT_VPS_KNOWN_HOSTS_FILE:-/root/.ssh/known_hosts}" \
   -o LogLevel=ERROR \
   -o ConnectTimeout=20 \
   -o ServerAliveInterval=30 \

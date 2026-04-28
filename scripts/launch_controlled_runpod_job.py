@@ -101,7 +101,7 @@ def main() -> None:
     def record_pod_id(pod_id: str | None) -> None:
         asyncio.run(store.set_job_runpod_pod_id(job.id, pod_id))
 
-    launcher = RunPodLauncher(settings, client=RunPodClient(settings.runpod_api_key))
+    launcher = RunPodLauncher(settings, client=RunPodClient(settings.runpod_api_key_value))
     try:
         pod = launcher.launch(job, record_pod_id)
         print(f"completed controlled job {job.id} on pod {pod.id}", flush=True)

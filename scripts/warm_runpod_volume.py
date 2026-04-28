@@ -186,7 +186,7 @@ def warm_volume(settings: Settings, args: argparse.Namespace) -> int:
     log_path = args.log_path or settings.data_dir / "network-volume-warm.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    client = RunPodClient(settings.runpod_api_key)
+    client = RunPodClient(settings.runpod_api_key_value)
     launcher = RunPodLauncher(settings, client=client)
     launcher._validate()
 

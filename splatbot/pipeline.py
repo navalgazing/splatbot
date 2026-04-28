@@ -14,12 +14,13 @@ from pathlib import Path, PurePosixPath
 from statistics import median
 from typing import Awaitable, Callable
 
-from .commands import CommandRunner
+from .commands import CommandRunner, render_argv_template
 from .config import ScanMode, ScanPreset, ScanPresetConfig, Settings
 from .models import JobStatus, MediaItem, MediaKind
 
 
 StatusCallback = Callable[[str, JobStatus], Awaitable[None]]
+MAX_PLY_HEADER_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -750,17 +751,20 @@ class ScanPipeline:
             raise ValueError(
                 f"SPLATBOT_POSE_BACKEND_COMMAND is required for pose backend {backend!r}"
             )
-        rendered = command.format(
-            backend=shlex.quote(backend),
-            input_dir=shlex.quote(str(input_images_dir)),
-            images_dir=shlex.quote(str(input_images_dir)),
-            output_dir=shlex.quote(str(processed_dir)),
-            processed_dir=shlex.quote(str(processed_dir)),
-            matching_method=shlex.quote(matching_method or ""),
-            colmap_bin=shlex.quote(self.settings.colmap_bin),
-            glomap_bin=shlex.quote(self.settings.glomap_bin),
+        argv = render_argv_template(
+            command,
+            {
+                "backend": backend,
+                "input_dir": str(input_images_dir),
+                "images_dir": str(input_images_dir),
+                "output_dir": str(processed_dir),
+                "processed_dir": str(processed_dir),
+                "matching_method": matching_method or "",
+                "colmap_bin": self.settings.colmap_bin,
+                "glomap_bin": self.settings.glomap_bin,
+            },
         )
-        await self.runner.run(shlex.split(rendered))
+        await self.runner.run(argv)
 
     async def process_data_with_quality_gate(
         self,
@@ -1154,14 +1158,17 @@ class ScanPipeline:
         command = depth_command_for_backend(self.settings, backend)
         if not command:
             raise ValueError(f"depth backend {backend!r} is not configured")
-        rendered = command.format(
-            backend=shlex.quote(backend),
-            processed_dir=shlex.quote(str(processed_dir)),
-            data_dir=shlex.quote(str(processed_dir)),
-            images_dir=shlex.quote(str(images_dir)),
-            input_dir=shlex.quote(str(images_dir)),
+        argv = render_argv_template(
+            command,
+            {
+                "backend": backend,
+                "processed_dir": str(processed_dir),
+                "data_dir": str(processed_dir),
+                "images_dir": str(images_dir),
+                "input_dir": str(images_dir),
+            },
         )
-        await self.runner.run(shlex.split(rendered))
+        await self.runner.run(argv)
 
     async def train_reconstruction(
         self,
@@ -1259,17 +1266,20 @@ class ScanPipeline:
             raise ValueError(
                 f"SPLATBOT_TRAIN_BACKEND_COMMAND is required for train backend {backend!r}"
             )
-        rendered = command.format(
-            backend=shlex.quote(backend),
-            processed_dir=shlex.quote(str(processed_dir)),
-            data_dir=shlex.quote(str(processed_dir)),
-            ns_dir=shlex.quote(str(ns_dir)),
-            output_dir=shlex.quote(str(ns_dir)),
-            max_iterations=shlex.quote(str(preset.train_max_iterations)),
-            steps_per_save=shlex.quote(str(preset.train_steps_per_save)),
-            extra_args=shell_join(preset.train_extra_args),
+        argv = render_argv_template(
+            command,
+            {
+                "backend": backend,
+                "processed_dir": str(processed_dir),
+                "data_dir": str(processed_dir),
+                "ns_dir": str(ns_dir),
+                "output_dir": str(ns_dir),
+                "max_iterations": preset.train_max_iterations,
+                "steps_per_save": preset.train_steps_per_save,
+                "extra_args": preset.train_extra_args,
+            },
         )
-        await self.runner.run(shlex.split(rendered))
+        await self.runner.run(argv)
 
     async def export_ply(self, ns_dir: Path, export_dir: Path) -> Path:
         raw_ply = export_dir / "raw_splat.ply"
@@ -1326,16 +1336,19 @@ class ScanPipeline:
             if self.settings.mesh_export_required:
                 raise ValueError("mesh export is required but SPLATBOT_MESH_EXPORT_COMMAND is empty")
             return None, metrics
-        rendered = command.format(
-            backend=shlex.quote(backend),
-            processed_dir=shlex.quote(str(processed_dir)),
-            ns_dir=shlex.quote(str(ns_dir)),
-            export_dir=shlex.quote(str(export_dir)),
-            splat_ply=shlex.quote(str(splat_ply)),
-            mesh_path=shlex.quote(str(mesh_path)),
+        argv = render_argv_template(
+            command,
+            {
+                "backend": backend,
+                "processed_dir": str(processed_dir),
+                "ns_dir": str(ns_dir),
+                "export_dir": str(export_dir),
+                "splat_ply": str(splat_ply),
+                "mesh_path": str(mesh_path),
+            },
         )
         try:
-            await self.runner.run(shlex.split(rendered))
+            await self.runner.run(argv)
             if not mesh_path.exists():
                 raise ValueError(f"mesh backend {backend!r} did not create {mesh_path}")
         except Exception as exc:  # noqa: BLE001
@@ -1575,15 +1588,17 @@ def object_mask_command_for_backend(
     command = (command or settings.object_mask_command).strip()
     if not command:
         return None
-    rendered = command.format(
-        backend=shlex.quote(backend),
-        images_dir=shlex.quote(str(images_dir)),
-        object_dir=shlex.quote(str(object_dir)),
-        input_dir=shlex.quote(str(images_dir)),
-        output_dir=shlex.quote(str(object_dir)),
-        prompt=shlex.quote(settings.object_mask_prompt),
+    return render_argv_template(
+        command,
+        {
+            "backend": backend,
+            "images_dir": str(images_dir),
+            "object_dir": str(object_dir),
+            "input_dir": str(images_dir),
+            "output_dir": str(object_dir),
+            "prompt": settings.object_mask_prompt,
+        },
     )
-    return shlex.split(rendered)
 
 
 def configured_pose_backends(settings: Settings, preset: ScanPresetConfig | None = None) -> list[str]:
@@ -1781,6 +1796,9 @@ def select_video_frames(
 
     selected_count = min(target_count, len(selection_pool))
     normalized_strategy = normalize_frame_selection_strategy(strategy)
+    diversity_fallback_used = normalized_strategy == "quality-diversity" and not any(
+        profile.signature for profile in selection_pool
+    )
     if normalized_strategy == "quality-diversity":
         selected = quality_diverse_sample(selection_pool, selected_count)
     else:
@@ -1796,6 +1814,7 @@ def select_video_frames(
             "frame_selection_strategy": normalized_strategy,
             "accepted_frame_candidates": len(accepted),
             "quality_selection_fallback": fallback_used,
+            "diversity_selection_fallback": diversity_fallback_used,
             "quality_rejected_frames": len(profiles) - len(accepted),
             "rejected_by_reason": rejected_reason_counts(profiles),
             "quality_score": summarize_profile_values(profiles, "score"),
@@ -2300,9 +2319,10 @@ def frame_difference(previous: Path | None, current: Path) -> float | None:
             current_size = current.stat().st_size
         except OSError:
             return None
-        if max(previous_size, current_size) == 0:
+        largest_size = max(previous_size, current_size)
+        if largest_size == 0:
             return 0.0
-        return abs(previous_size - current_size) * 100.0 / max(previous_size, current_size)
+        return abs(previous_size - current_size) * 100.0 / largest_size
     prev = cv2.imread(str(previous), cv2.IMREAD_GRAYSCALE)
     curr = cv2.imread(str(current), cv2.IMREAD_GRAYSCALE)
     if prev is None or curr is None:
@@ -2816,7 +2836,11 @@ def log_ply_summary(label: str, path: Path) -> None:
         fmt = None
         vertices = None
         with path.open("rb") as handle:
+            header_bytes = 0
             for raw_line in handle:
+                header_bytes += len(raw_line)
+                if header_bytes > MAX_PLY_HEADER_BYTES:
+                    raise OSError(f"PLY header exceeds {MAX_PLY_HEADER_BYTES} bytes")
                 line = raw_line.decode("ascii", errors="ignore").strip()
                 if line.startswith("format "):
                     fmt = line
@@ -2933,8 +2957,10 @@ def clean_exported_ply(
     cleanup["validation"] = validate_postprocess_against_masks(dest, frames, settings)
     final_summary = clean_ply(dest, dest.with_suffix(dest.suffix + ".validated.tmp"))
     validated = dest.with_suffix(dest.suffix + ".validated.tmp")
-    if validated.exists():
-        validated.replace(dest)
+    if not validated.exists():
+        raise RuntimeError(f"final PLY validation did not create {validated}")
+    validated.replace(dest)
+    cleanup["final_validation"] = final_summary
     cleanup["output_vertices"] = final_summary.get("output_vertices", cleanup.get("output_vertices"))
     cleanup["filtered_vertices_removed"] = (
         (cleanup.get("filtered_vertices_removed") or 0)
@@ -3239,6 +3265,8 @@ def read_ply_layout(path: Path) -> PlyLayout | None:
             if not raw:
                 return None
             header_bytes += len(raw)
+            if header_bytes > MAX_PLY_HEADER_BYTES:
+                return None
             line = raw.decode("ascii", errors="ignore").strip()
             header_lines.append(line)
             if line == "end_header":
@@ -3618,10 +3646,13 @@ def point_mask_support(
         if projection is None:
             continue
         u, v, alt_v = projection
-        if u < 0 or u >= frame.mask.width:
+        u_px = round(u)
+        if u_px < 0 or u_px >= frame.mask.width:
             continue
-        v_in_bounds = 0 <= v < frame.mask.height
-        alt_v_in_bounds = alt_v is not None and 0 <= alt_v < frame.mask.height
+        v_px = round(v)
+        alt_v_px = round(alt_v) if alt_v is not None else None
+        v_in_bounds = 0 <= v_px < frame.mask.height
+        alt_v_in_bounds = alt_v_px is not None and 0 <= alt_v_px < frame.mask.height
         if not v_in_bounds and not alt_v_in_bounds:
             continue
         observed += 1

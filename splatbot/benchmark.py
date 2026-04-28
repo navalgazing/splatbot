@@ -14,6 +14,8 @@ def load_json(path: Path) -> dict[str, Any]:
 
 
 def summarize_job(job_dir: Path) -> dict[str, Any]:
+    if not job_dir.is_dir():
+        raise ValueError(f"job dir does not exist or is not a directory: {job_dir}")
     metrics = load_json(job_dir / "metrics.json")
     quality = load_json(job_dir / "quality_report.json")
     cleanup = metrics.get("ply", {}).get("cleanup", {})

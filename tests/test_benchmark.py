@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from splatbot.benchmark import build_benchmark_report
 
 
@@ -46,3 +48,8 @@ def test_benchmark_report_ranks_passing_outputs_first(tmp_path) -> None:
     assert report["best_job_id"] == "good"
     assert report["jobs"][0]["passed"] is True
     assert report["jobs"][1]["issues"] == ["postprocess_validation_failed"]
+
+
+def test_benchmark_report_rejects_missing_job_dirs(tmp_path) -> None:
+    with pytest.raises(ValueError, match="job dir does not exist"):
+        build_benchmark_report([tmp_path / "missing"])

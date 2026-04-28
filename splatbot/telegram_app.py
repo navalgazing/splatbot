@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+import signal
 from pathlib import Path
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -471,7 +472,7 @@ async def amain() -> None:
     store = Store(settings.database_path)
     await store.init()
 
-    app = Application.builder().token(settings.telegram_token).build()
+    app = Application.builder().token(settings.telegram_token_value).build()
     app.bot_data["settings"] = settings
     app.bot_data["store"] = store
     await app.bot.set_my_commands(
@@ -496,12 +497,18 @@ async def amain() -> None:
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CallbackQueryHandler(handle_button))
     app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.Document.ALL, receive_media))
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop_event.set)
+        except NotImplementedError:
+            pass
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
     try:
-        while True:
-            await asyncio.sleep(3600)
+        await stop_event.wait()
     finally:
         await app.updater.stop()
         await app.stop()

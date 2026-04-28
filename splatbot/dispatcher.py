@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 
 from .artifacts import ArtifactStore
 from .config import Settings, WorkerBackend
@@ -102,11 +103,17 @@ class Dispatcher:
                 await self._notify_failed(updated, str(exc))
         return True
 
-    async def run_forever(self, interval_seconds: float = 5.0) -> None:
-        while True:
+    async def run_forever(self, interval_seconds: float = 5.0, stop_event: asyncio.Event | None = None) -> None:
+        while stop_event is None or not stop_event.is_set():
             worked = await self.run_once()
             if not worked:
-                await asyncio.sleep(interval_seconds)
+                try:
+                    if stop_event:
+                        await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+                    else:
+                        await asyncio.sleep(interval_seconds)
+                except TimeoutError:
+                    pass
 
 
 async def amain() -> None:
@@ -114,11 +121,18 @@ async def amain() -> None:
     settings = Settings()
     store = Store(settings.database_path)
     await store.init()
-    notifier = TelegramNotifier(settings.telegram_token) if settings.telegram_token else None
+    notifier = TelegramNotifier(settings.telegram_token_value) if settings.telegram_token_value else None
     interrupted = await recover_interrupted_jobs(settings, store, notifier)
     if interrupted:
         LOGGER.warning("marked %s interrupted job(s) failed on dispatcher startup", interrupted)
-    await Dispatcher(settings, store, notifier=notifier).run_forever()
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop_event.set)
+        except NotImplementedError:
+            pass
+    await Dispatcher(settings, store, notifier=notifier).run_forever(stop_event=stop_event)
 
 
 async def recover_interrupted_jobs(
@@ -130,7 +144,7 @@ async def recover_interrupted_jobs(
         "Job interrupted by bot restart; please resubmit.",
         grace_seconds=settings.interrupted_job_grace_seconds,
     )
-    if settings.worker_backend == WorkerBackend.RUNPOD and settings.runpod_api_key:
+    if settings.worker_backend == WorkerBackend.RUNPOD and settings.runpod_api_key_value:
         launcher = RunPodLauncher(settings)
         for job in interrupted:
             if job.runpod_pod_id:

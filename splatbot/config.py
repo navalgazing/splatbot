@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -49,7 +49,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    telegram_token: str = ""
+    telegram_token: SecretStr = SecretStr("")
     allowed_telegram_ids: set[int] = Field(default_factory=set)
     allow_all_telegram_users: bool = False
     telegram_mode: TelegramMode = TelegramMode.POLLING
@@ -60,8 +60,8 @@ class Settings(BaseSettings):
     s3_endpoint_url: str = ""
     s3_region: str = "auto"
     s3_bucket: str = ""
-    s3_access_key_id: str = ""
-    s3_secret_access_key: str = ""
+    s3_access_key_id: SecretStr = SecretStr("")
+    s3_secret_access_key: SecretStr = SecretStr("")
     signed_url_ttl_seconds: int = 7 * 24 * 60 * 60
 
     public_base_url: str = ""
@@ -224,7 +224,7 @@ class Settings(BaseSettings):
 
     worker_backend: WorkerBackend = WorkerBackend.LOCAL
 
-    runpod_api_key: str = ""
+    runpod_api_key: SecretStr = SecretStr("")
     runpod_gpu_type_id: str = "NVIDIA GeForce RTX 4090"
     runpod_cloud_type: str = "ALL"
     runpod_image_name: str = "ghcr.io/navalgazing/splatbot-runpod:cuda-colmap"
@@ -245,6 +245,8 @@ class Settings(BaseSettings):
     runpod_vps_host: str = ""
     runpod_vps_user: str = "root"
     runpod_vps_ssh_key: Path | None = None
+    runpod_vps_known_hosts: str = ""
+    runpod_pod_known_hosts_path: Path = Path("/tmp/splatbot-runpod-known-hosts")
     runpod_venv: str = ""
     runpod_runtime_cache_version: str = "splatbot-runtime-2026-04-26-v1"
     runpod_runtime_cache_marker: str = "/workspace/.splatbot-runtime-cache-version"
@@ -254,21 +256,47 @@ class Settings(BaseSettings):
     @field_validator("allowed_telegram_ids", mode="before")
     @classmethod
     def parse_allowed_ids(cls, value: object) -> set[int]:
+        def parse_item(item: object) -> int:
+            try:
+                return int(str(item).strip())
+            except (TypeError, ValueError) as exc:
+                raise ValueError("SPLATBOT_ALLOWED_TELEGRAM_IDS must contain only integer chat IDs") from exc
+
         if value is None or value == "":
             return set()
         if isinstance(value, int):
             return {value}
         if isinstance(value, set):
-            return {int(item) for item in value}
+            return {parse_item(item) for item in value}
         if isinstance(value, (list, tuple)):
-            return {int(item) for item in value}
+            return {parse_item(item) for item in value}
         if isinstance(value, str):
-            return {int(item.strip()) for item in value.split(",") if item.strip()}
+            return {parse_item(item) for item in value.split(",") if item.strip()}
         raise TypeError("allowed_telegram_ids must be a comma-separated string or collection")
 
     def require_telegram(self) -> None:
-        if not self.telegram_token:
+        if not self.telegram_token_value:
             raise ValueError("SPLATBOT_TELEGRAM_TOKEN is required")
+
+    @staticmethod
+    def _secret_value(value: SecretStr | str) -> str:
+        return value.get_secret_value() if isinstance(value, SecretStr) else value
+
+    @property
+    def telegram_token_value(self) -> str:
+        return self._secret_value(self.telegram_token)
+
+    @property
+    def s3_access_key_id_value(self) -> str:
+        return self._secret_value(self.s3_access_key_id)
+
+    @property
+    def s3_secret_access_key_value(self) -> str:
+        return self._secret_value(self.s3_secret_access_key)
+
+    @property
+    def runpod_api_key_value(self) -> str:
+        return self._secret_value(self.runpod_api_key)
 
     def preset_config(self, preset: ScanPreset | str | None = None) -> ScanPresetConfig:
         selected = ScanPreset(preset or self.default_scan_preset)

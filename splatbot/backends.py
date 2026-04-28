@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -93,8 +92,7 @@ def segment_with_rembg(input_dir: Path, output_dir: Path) -> None:
 
 
 def render_backend_command(command: str, **values: str) -> list[str]:
-    rendered = command.format(**{key: shlex.quote(str(value)) for key, value in values.items()})
-    return shlex.split(rendered)
+    return render_argv_template(command, values)
 
 
 def segment_with_external_command(input_dir: Path, output_dir: Path, backend: str, prompt: str) -> None:
@@ -555,17 +553,20 @@ def run_external_train_backend(
             f"training backend {backend!r} is not configured; set the matching SPLATBOT_*_TRAIN_COMMAND"
         )
     ns_dir.mkdir(parents=True, exist_ok=True)
-    rendered = command.format(
-        backend=shlex.quote(backend),
-        processed_dir=shlex.quote(str(processed_dir)),
-        data_dir=shlex.quote(str(processed_dir)),
-        ns_dir=shlex.quote(str(ns_dir)),
-        output_dir=shlex.quote(str(ns_dir)),
-        max_iterations=shlex.quote(str(max_iterations)),
-        steps_per_save=shlex.quote(str(steps_per_save or "")),
-        extra_args=" ".join(shlex.quote(arg) for arg in extra_args),
+    argv = render_argv_template(
+        command,
+        {
+            "backend": backend,
+            "processed_dir": str(processed_dir),
+            "data_dir": str(processed_dir),
+            "ns_dir": str(ns_dir),
+            "output_dir": str(ns_dir),
+            "max_iterations": max_iterations,
+            "steps_per_save": steps_per_save or "",
+            "extra_args": extra_args,
+        },
     )
-    run(shlex.split(rendered))
+    run(argv)
     latest_config(ns_dir)
 
 
@@ -597,3 +598,4 @@ def mesh_main() -> None:
     produced = candidates[-1]
     if produced != args.mesh_path:
         shutil.copy2(produced, args.mesh_path)
+from .commands import render_argv_template

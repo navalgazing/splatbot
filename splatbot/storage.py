@@ -4,7 +4,7 @@ import sqlite3
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import aiosqlite
@@ -52,6 +52,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   preset TEXT NOT NULL DEFAULT 'balanced',
   status TEXT NOT NULL,
   error TEXT,
+  runpod_pod_id TEXT,
+  claimed_at TEXT,
+  heartbeat_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -75,11 +78,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_job_kind_unique ON job_artifacts
 
 
 def _dt(value: str) -> datetime:
-    return datetime.fromisoformat(value)
+    parsed = datetime.fromisoformat(value)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def _dt_optional(value: str | None) -> datetime | None:
-    return datetime.fromisoformat(value) if value else None
+    return _dt(value) if value else None
 
 
 def _session(row: sqlite3.Row) -> UploadSession:
@@ -367,9 +371,17 @@ class Store:
                     ORDER BY created_at
                     LIMIT 1
                 )
+                AND status = ?
                 RETURNING *
                 """,
-                (JobStatus.PREPARING.value, now, now, now, JobStatus.QUEUED.value),
+                (
+                    JobStatus.PREPARING.value,
+                    now,
+                    now,
+                    now,
+                    JobStatus.QUEUED.value,
+                    JobStatus.QUEUED.value,
+                ),
             )
             row = await cursor.fetchone()
             await db.commit()

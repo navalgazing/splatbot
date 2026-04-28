@@ -5,8 +5,10 @@ import contextlib
 import os
 import shlex
 import signal
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -98,6 +100,33 @@ async def _read_tail(stream: asyncio.StreamReader | None, limit: int) -> bytes:
 
 def _truthy_env(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def render_argv_template(command: str, values: Mapping[str, Any]) -> list[str]:
+    text_values = {
+        key: str(value)
+        for key, value in values.items()
+        if not isinstance(value, (list, tuple))
+    }
+    argv: list[str] = []
+    for token in shlex.split(command):
+        expanded_list = False
+        for key, value in values.items():
+            if token != f"{{{key}}}" or not isinstance(value, (list, tuple)):
+                continue
+            argv.extend(str(item) for item in value)
+            expanded_list = True
+            break
+        if expanded_list:
+            continue
+        for key, value in values.items():
+            if isinstance(value, (list, tuple)) and f"{{{key}}}" in token:
+                raise ValueError(f"list placeholder {{{key}}} must be its own command token")
+        try:
+            argv.append(token.format(**text_values))
+        except KeyError as exc:
+            raise ValueError(f"unknown command placeholder: {exc.args[0]}") from exc
+    return argv
 
 
 def _print_command_output(result: CommandResult) -> None:
