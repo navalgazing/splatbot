@@ -156,6 +156,7 @@ def test_create_pod_uses_network_volume_and_datacenter_filters(tmp_path) -> None
     settings = make_runpod_settings(tmp_path)
     settings.runpod_network_volume_id = "vol123"
     settings.runpod_data_center_ids = "EU-RO-1, EUR-IS-2"
+    settings.runpod_ports = ""
     job = ScanJob(
         id="job123456789",
         session_id="session123",
@@ -184,3 +185,4 @@ def test_create_pod_uses_network_volume_and_datacenter_filters(tmp_path) -> None
     assert "volumeInGb" not in client.payload
     assert client.payload["dataCenterIds"] == ["EU-RO-1", "EUR-IS-2"]
     assert client.payload["dataCenterPriority"] == "availability"
+    assert client.payload["ports"] == ["22/tcp"]
