@@ -27,17 +27,13 @@ RUN apt-get update \
       ffmpeg \
       git \
       openssh-client \
-      software-properties-common \
+      python3 \
+      python3-pip \
+      python3-venv \
       rsync \
-    && add-apt-repository -y ppa:deadsnakes/ppa \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
-      python3.12 \
-      python3.12-dev \
-      python3.12-venv \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python3.12 -m venv /opt/splatbot/venv \
+RUN python3 -m venv /opt/splatbot/venv \
     && /opt/splatbot/venv/bin/pip install --upgrade pip \
     && /opt/splatbot/venv/bin/pip install --index-url https://download.pytorch.org/whl/cu128 \
       torch==2.8.0 \
