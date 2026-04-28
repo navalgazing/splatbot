@@ -95,6 +95,7 @@ class RunPodClient:
             "name": "splatbot-" + job.id[:12],
             "imageName": settings.runpod_image_name,
             "gpuTypeIds": runpod_gpu_type_ids(settings),
+            "gpuTypePriority": "availability",
             "gpuCount": 1,
             "cloudType": cloud_type,
             "computeType": "GPU",

@@ -41,6 +41,24 @@ class WorkerBackend(StrEnum):
     RUNPOD = "runpod"
 
 
+DEFAULT_RUNPOD_GPU_TYPE_ID = ",".join(
+    (
+        "NVIDIA H200",
+        "NVIDIA H200 NVL",
+        "NVIDIA H100 80GB HBM3",
+        "NVIDIA H100 PCIe",
+        "NVIDIA H100 NVL",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100 80GB PCIe",
+        "NVIDIA L40S",
+        "NVIDIA L40",
+        "NVIDIA RTX 6000 Ada Generation",
+        "NVIDIA RTX A6000",
+        "NVIDIA A40",
+    )
+)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="SPLATBOT_",
@@ -253,7 +271,7 @@ class Settings(BaseSettings):
     worker_backend: WorkerBackend = WorkerBackend.LOCAL
 
     runpod_api_key: SecretStr = SecretStr("")
-    runpod_gpu_type_id: str = "NVIDIA GeForce RTX 4090"
+    runpod_gpu_type_id: str = DEFAULT_RUNPOD_GPU_TYPE_ID
     runpod_cloud_type: str = "ALL"
     runpod_image_name: str = "ghcr.io/navalgazing/splatbot-runpod:cuda-colmap"
     runpod_container_disk_gb: int = 80
@@ -267,8 +285,8 @@ class Settings(BaseSettings):
     runpod_ssh_user: str = "root"
     runpod_pod_ssh_key: Path | None = None
     runpod_ssh_ready_timeout_seconds: int = 3600
-    runpod_no_endpoint_timeout_seconds: int = 3600
-    runpod_launch_attempts: int = 3
+    runpod_no_endpoint_timeout_seconds: int = 900
+    runpod_launch_attempts: int = 5
     runpod_worker_timeout_seconds: int = 6 * 60 * 60
     runpod_vps_host: str = ""
     runpod_vps_user: str = "root"

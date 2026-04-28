@@ -332,6 +332,7 @@ def test_create_pod_uses_network_volume_and_datacenter_filters(tmp_path) -> None
     assert client.payload["globalNetworking"] is True
     assert client.payload["supportPublicIp"] is True
     assert client.payload["gpuTypeIds"] == ["NVIDIA RTX A6000", "NVIDIA GeForce RTX 4090"]
+    assert client.payload["gpuTypePriority"] == "availability"
     assert "volumeInGb" not in client.payload
     assert client.payload["dataCenterIds"] == ["EU-RO-1", "EUR-IS-2"]
     assert client.payload["dataCenterPriority"] == "availability"
