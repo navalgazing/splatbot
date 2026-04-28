@@ -436,6 +436,7 @@ def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str) 
             "SPLATBOT_MAST3R_PAIR_CYCLIC": str(settings.mast3r_pair_cyclic).lower(),
             "SPLATBOT_MAST3R_DEVICE": settings.mast3r_device,
             "SPLATBOT_MAST3R_SHARED_CAMERA": str(settings.mast3r_shared_camera).lower(),
+            "SPLATBOT_MAST3R_USE_GLOMAP": str(settings.mast3r_use_glomap).lower(),
             "SPLATBOT_GLOMAP_BIN": settings.glomap_bin,
             "SPLATBOT_COLMAP_GLOBAL_CALIBRATE": str(settings.colmap_global_calibrate).lower(),
             "SPLATBOT_COLMAP_USE_GPU": str(settings.colmap_use_gpu).lower(),

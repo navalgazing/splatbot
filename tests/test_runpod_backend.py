@@ -103,6 +103,7 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     assert "export SPLATBOT_MAST3R_REPO=/opt/mast3r" in command
     assert "export SPLATBOT_MAST3R_MAX_IMAGES=120" in command
     assert "export SPLATBOT_MAST3R_PAIR_WINDOW=5" in command
+    assert "export SPLATBOT_MAST3R_USE_GLOMAP=true" in command
     assert "export SPLATBOT_SILHOUETTE_CLEANUP_ENABLED=true" in command
     assert "export SPLATBOT_SILHOUETTE_CLEANUP_MAX_REMOVE_FRACTION=0.6" in command
     assert "export SPLATBOT_OBJECT_MASK_QA_ENABLED=true" in command

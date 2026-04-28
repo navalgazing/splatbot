@@ -334,6 +334,7 @@ def mast3r_default_command(repo: Path, output_dir: Path, pairs_path: Path, stage
     glomap_bin = os.environ.get("SPLATBOT_GLOMAP_BIN", "").strip() or "glomap"
     weights = os.environ.get("SPLATBOT_MAST3R_WEIGHTS", "").strip()
     shared_camera = truthy(os.environ.get("SPLATBOT_MAST3R_SHARED_CAMERA", "").strip() or "true")
+    use_glomap = truthy(os.environ.get("SPLATBOT_MAST3R_USE_GLOMAP", "").strip() or "true")
     input_flag = "--dir_same_camera" if shared_camera else "--dir"
     if weights:
         model_args = f"--weights {weights}"
@@ -345,6 +346,8 @@ def mast3r_default_command(repo: Path, output_dir: Path, pairs_path: Path, stage
         f"{model_args} {input_flag} {staged_images} --output {output_dir} "
         f"--pairsfile_path {pairs_path} --device {device} --glomap_bin {glomap_bin}"
     )
+    if use_glomap:
+        command += " --use_glomap_mapper"
     if extra_args:
         command += f" {extra_args}"
     return command

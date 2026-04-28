@@ -116,7 +116,9 @@ SPLATBOT_DA3_USE_RAY_POSE=true
 SPLATBOT_DA3_REF_VIEW_STRATEGY=middle
 SPLATBOT_DA3_POSE_COMMAND='splatbot-da3 --images {images_dir} --processed {processed_dir}'
 SPLATBOT_VGGT_POSE_COMMAND='splatbot-vggt --images {images_dir} --processed {processed_dir} --matching-method {matching_method}'
+SPLATBOT_VGGT_ARGS='--use_ba --max_query_pts 2048 --query_frame_num 5'
 SPLATBOT_MAST3R_POSE_COMMAND='splatbot-mast3r --images {images_dir} --processed {processed_dir} --matching-method {matching_method}'
+SPLATBOT_MAST3R_USE_GLOMAP=true
 SPLATBOT_BEST_DEPTH_BACKENDS=da3,depth-anything-v2-large
 SPLATBOT_BEST_DEPTH_REQUIRED_BACKENDS=da3
 SPLATBOT_DEPTH_BACKEND_COMMAND='splatbot-depth --backend {backend} --processed {processed_dir} --images {images_dir}'
@@ -195,6 +197,7 @@ export SPLATBOT_MAST3R_POSE_COMMAND='splatbot-mast3r --images {images_dir} --pro
 export SPLATBOT_MAST3R_MAX_IMAGES=120
 export SPLATBOT_MAST3R_PAIR_WINDOW=5
 export SPLATBOT_MAST3R_PAIR_CYCLIC=true
+export SPLATBOT_MAST3R_USE_GLOMAP=true
 ```
 
 For either adapter, run a small non-artifact smoke dataset before making the

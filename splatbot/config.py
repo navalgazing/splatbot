@@ -127,7 +127,7 @@ class Settings(BaseSettings):
     vggt_repo: str = "/opt/vggt"
     vggt_demo_colmap: str = ""
     vggt_run_command: str = ""
-    vggt_args: str = ""
+    vggt_args: str = "--use_ba --max_query_pts 2048 --query_frame_num 5"
     vggt_max_images: int = 96
     mast3r_pose_command: str = (
         "splatbot-mast3r --images {images_dir} --processed {processed_dir} "
@@ -142,6 +142,7 @@ class Settings(BaseSettings):
     mast3r_pair_cyclic: bool = True
     mast3r_device: str = "cuda"
     mast3r_shared_camera: bool = True
+    mast3r_use_glomap: bool = True
     glomap_bin: str = "glomap"
     colmap_global_calibrate: bool = True
     colmap_use_gpu: bool = False

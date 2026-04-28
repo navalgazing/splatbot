@@ -158,3 +158,19 @@ def test_mast3r_adapter_writes_pairs_and_normalizes_reconstruction(
         "frame_00003.jpg frame_00004.jpg\n"
     ]
     assert (processed / "colmap" / "sparse" / "0" / "images.bin").read_text(encoding="utf-8") == "images=4"
+
+
+def test_mast3r_default_command_uses_glomap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SPLATBOT_MAST3R_USE_GLOMAP", raising=False)
+
+    argv = pose_adapters.render_argv_template(
+        pose_adapters.mast3r_default_command(
+            tmp_path / "mast3r",
+            tmp_path / "out",
+            tmp_path / "pairs.txt",
+            tmp_path / "images",
+        ),
+        {},
+    )
+
+    assert "--use_glomap_mapper" in argv
