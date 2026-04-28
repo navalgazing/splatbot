@@ -262,26 +262,6 @@ class RunPodLauncher:
             f"{self.settings.runpod_ssh_user}@{target.host}",
         ]
 
-    def _pod_scp_args(self, target: RunPodSshTarget) -> list[str]:
-        return [
-            "-i",
-            str(self.settings.runpod_pod_ssh_key),
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "IdentitiesOnly=yes",
-            "-o",
-            "StrictHostKeyChecking=accept-new",
-            "-o",
-            f"UserKnownHostsFile={self.settings.runpod_pod_known_hosts_path}",
-            "-o",
-            "LogLevel=ERROR",
-            "-o",
-            "ConnectTimeout=10",
-            "-P",
-            str(target.port),
-        ]
-
     def _install_vps_ssh_key(self, target: RunPodSshTarget) -> None:
         mkdir_result = subprocess.run(
             ["ssh", *self._pod_ssh_args(target), "install", "-d", "-m", "700", "/root/.ssh"],
@@ -296,12 +276,8 @@ class RunPodLauncher:
                 + mkdir_result.stderr.decode(errors="replace").strip()[-500:]
             )
         copy_result = subprocess.run(
-            [
-                "scp",
-                *self._pod_scp_args(target),
-                str(self.settings.runpod_vps_ssh_key),
-                f"{self.settings.runpod_ssh_user}@{target.host}:/root/.ssh/id_ed25519",
-            ],
+            ["ssh", *self._pod_ssh_args(target), "sh", "-c", "umask 077 && cat > /root/.ssh/id_ed25519"],
+            input=self.settings.runpod_vps_ssh_key.read_bytes(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=60,
