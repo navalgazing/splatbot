@@ -40,6 +40,8 @@ def test_publish_viewer_writes_static_result_page(tmp_path) -> None:
     assert (tmp_path / "public" / "job1" / "turntable.mp4").exists()
     html = path.read_text(encoding="utf-8")
     assert 'type="importmap"' in html
+    assert 'rel="modulepreload"' in html
+    assert "sha384-" in html
     assert 'from "three"' in html
     assert "viewer_points.ply" in html
     assert "PLYLoader" in html

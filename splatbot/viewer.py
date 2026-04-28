@@ -12,6 +12,14 @@ from .config import Settings
 from .pipeline import PipelineOutputs
 
 ALLOWED_MESH_EXTENSIONS = {".glb", ".gltf", ".obj"}
+MODULE_INTEGRITY = {
+    "https://unpkg.com/three@0.165.0/build/three.module.js": "sha384-Qvl1RLjZOCDFOOH2bKcGnaDHMM8MVv3zVtMvhy3juQdiIOs6RgQ/7zYdM1FbpHzI",
+    "https://unpkg.com/three@0.165.0/examples/jsm/controls/OrbitControls.js": "sha384-BZPDnhvqQ9HQ5XsmqEusjwpN9TIaiGbsJ5XWilDEuRu9Psbw4ZyYk67DUO0nbP3z",
+    "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js": "sha384-pK8zo1cGi3nIm4Yh/hrezBkXvN2riHD+7kg4agEXeMxDNqiAKGO2Ds20+xjzcYgZ",
+    "https://unpkg.com/three@0.165.0/examples/jsm/loaders/OBJLoader.js": "sha384-qOxu19eVIcHchuUw1oqOwdUJBMFRbuIik14tOMzsoBIa4yuIxVZYj4/YeaWokjND",
+    "https://unpkg.com/three@0.165.0/examples/jsm/loaders/PLYLoader.js": "sha384-O7ZFYS9EuaDFTByrnLgtegHfTUwTgluDq8VMh7JWJaAnXi6SQCu6YSuTs1voPqsg",
+    "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.6/build/gaussian-splats-3d.module.js": "sha384-wn1UKOYaDMuKGmgBbBxjN4akrwQN6pl+kT1KvGuyOOUeBn8bzo5UnnzJTWeljp2C",
+}
 
 
 def publish_viewer(settings: Settings, job_id: str, outputs: PipelineOutputs) -> Path:
@@ -89,6 +97,11 @@ def render_viewer_html(
     mesh_button = '<button id="mesh-button" type="button">Use mesh view</button>' if mesh_name else ""
     mesh_download = f'<a href="{html.escape(mesh_name)}" download>Download mesh</a>' if mesh_name else ""
     report_download = '<a href="quality_report.json" download>Download quality report</a>' if has_quality_report else ""
+    module_preloads = "\n".join(
+        f'  <link rel="modulepreload" href="{html.escape(url)}" '
+        f'integrity="{html.escape(integrity)}" crossorigin="anonymous">'
+        for url, integrity in MODULE_INTEGRITY.items()
+    )
     metadata = {
         "job_id": job_id,
         "mesh": mesh_name,
@@ -101,6 +114,7 @@ def render_viewer_html(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
   <title>{html.escape(title)}</title>
+{module_preloads}
   <style>
     * {{ box-sizing: border-box; }}
     body {{
