@@ -1209,3 +1209,38 @@ def test_postprocess_validation_rejects_unobserved_points(tmp_path) -> None:
     assert result["checked_points"] == 0
     assert result["unobserved_fraction"] == 1.0
     assert result["passed"] is False
+
+
+def test_postprocess_validation_warns_on_unobserved_points_with_clean_checked_support(tmp_path) -> None:
+    ply_path = tmp_path / "splat.ply"
+    write_binary_xyz_ply(ply_path, [(0.0, 0.0, -1.0), (0.0, 0.0, 1.0), (1.0, 1.0, 1.0)])
+    frames = [
+        SilhouetteFrame(
+            mask=AlphaMask(width=4, height=4, alpha=bytes([255] * 16)),
+            world_to_camera=[
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+            ],
+            fl_x=1.0,
+            fl_y=1.0,
+            cx=2.0,
+            cy=2.0,
+        )
+    ]
+    settings = Settings(
+        data_dir=tmp_path,
+        silhouette_cleanup_min_views=1,
+        postprocess_validation_min_checked_points=1,
+        postprocess_validation_max_unobserved_fraction=0.5,
+    )
+
+    result = validate_postprocess_against_masks(ply_path, frames, settings)
+    report = build_quality_report({"ply": {"cleanup": {"validation": result}}}, settings)
+
+    assert result["checked_points"] == 1
+    assert result["unobserved_fraction"] == pytest.approx(0.666667)
+    assert result["outside_candidate_fraction"] == 0.0
+    assert result["low_support_fraction"] == 0.0
+    assert result["passed"] is True
+    assert "high_unobserved_splat_fraction" in report["warnings"]

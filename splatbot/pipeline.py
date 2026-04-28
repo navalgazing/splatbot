@@ -1424,6 +1424,11 @@ def build_quality_report(metrics: dict, settings: Settings) -> dict:
         issues.append("low_pose_registration")
     if validation.get("applied") and not validation.get("passed", True):
         issues.append("postprocess_validation_failed")
+    if (
+        validation.get("applied")
+        and validation.get("unobserved_fraction", 0.0) > settings.postprocess_validation_max_unobserved_fraction
+    ):
+        warnings.append("high_unobserved_splat_fraction")
     if settings.mesh_export_enabled and not mesh.get("applied"):
         warnings.append("mesh_not_exported")
     vertices = cleaned_ply.get("vertices")
@@ -3234,7 +3239,6 @@ def validate_postprocess_against_masks(
     unobserved_fraction = unobserved_points / sampled_points if sampled_points else 0.0
     passed = (
         checked_points >= settings.postprocess_validation_min_checked_points
-        and unobserved_fraction <= settings.postprocess_validation_max_unobserved_fraction
         and outside_fraction <= settings.postprocess_validation_max_outside_fraction
         and low_support_fraction <= settings.postprocess_validation_max_low_support_fraction
     )
