@@ -182,3 +182,52 @@ def test_mast3r_default_command_uses_glomap(tmp_path: Path, monkeypatch: pytest.
     )
 
     assert "--use_glomap_mapper" in argv
+
+
+def test_glomap_wrapper_injects_mapper_args(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    class Result:
+        returncode = 0
+
+    def fake_run(argv: list[str], check: bool = False):
+        calls.append(argv)
+        assert check is False
+        return Result()
+
+    monkeypatch.setattr(pose_adapters.subprocess, "run", fake_run)
+    monkeypatch.setenv("SPLATBOT_REAL_GLOMAP_BIN", "/usr/local/bin/glomap")
+    monkeypatch.setenv(
+        "SPLATBOT_GLOMAP_MAPPER_ARGS",
+        "--log_to_stderr=1 --ba_iteration_num=1 --BundleAdjustment.max_num_iterations=80",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "splatbot-glomap",
+            "mapper",
+            "--database_path",
+            "db",
+            "--output_path",
+            "out",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        pose_adapters.glomap_wrapper_main()
+
+    assert exc.value.code == 0
+    assert calls == [
+        [
+            "/usr/local/bin/glomap",
+            "mapper",
+            "--log_to_stderr=1",
+            "--ba_iteration_num=1",
+            "--BundleAdjustment.max_num_iterations=80",
+            "--database_path",
+            "db",
+            "--output_path",
+            "out",
+        ]
+    ]

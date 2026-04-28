@@ -137,13 +137,18 @@ class Settings(BaseSettings):
     mast3r_run_command: str = ""
     mast3r_weights: str = ""
     mast3r_args: str = ""
-    mast3r_max_images: int = 120
+    mast3r_max_images: int = 80
     mast3r_pair_window: int = 5
     mast3r_pair_cyclic: bool = True
     mast3r_device: str = "cuda"
     mast3r_shared_camera: bool = True
     mast3r_use_glomap: bool = True
-    glomap_bin: str = "glomap"
+    glomap_bin: str = "splatbot-glomap"
+    glomap_mapper_args: str = (
+        "--log_to_stderr=1 --ba_iteration_num=1 "
+        "--GlobalPositioning.max_num_iterations=60 "
+        "--BundleAdjustment.max_num_iterations=80"
+    )
     colmap_global_calibrate: bool = True
     colmap_use_gpu: bool = False
     command_timeout_seconds: int = 6 * 60 * 60

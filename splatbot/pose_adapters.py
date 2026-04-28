@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
+import shlex
 import shutil
 import struct
 import subprocess
@@ -392,6 +393,18 @@ def mast3r_default_command(repo: Path, output_dir: Path, pairs_path: Path, stage
     if extra_args:
         command += f" {extra_args}"
     return command
+
+
+def glomap_wrapper_main() -> None:
+    real_bin = os.environ.get("SPLATBOT_REAL_GLOMAP_BIN", "").strip() or "glomap"
+    argv = sys.argv[1:]
+    if argv[:1] == ["mapper"]:
+        extra_args = os.environ.get("SPLATBOT_GLOMAP_MAPPER_ARGS", "").strip()
+        if extra_args:
+            argv = ["mapper", *shlex.split(extra_args), *argv[1:]]
+    print("+ " + " ".join([real_bin, *argv]), flush=True)
+    result = subprocess.run([real_bin, *argv], check=False)
+    raise SystemExit(result.returncode)
 
 
 def mast3r_main() -> None:

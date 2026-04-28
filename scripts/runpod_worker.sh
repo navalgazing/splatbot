@@ -13,8 +13,29 @@ export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
 export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
 export PATH="$CUDA_HOME/bin:/usr/local/cuda/bin:$PATH"
 export LD_LIBRARY_PATH="$CUDA_HOME/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
-if [ -z "${TORCH_CUDA_ARCH_LIST:-}" ] || [ "${TORCH_CUDA_ARCH_LIST:-}" = "8.9" ]; then
-  export TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"
+VENV_DIR="${SPLATBOT_RUNPOD_VENV:-/workspace/venv}"
+DEFAULT_TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"
+detect_cuda_arch_list() {
+  local compute_cap
+  compute_cap="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n 1 | tr -d '[:space:]' || true)"
+  if printf '%s' "$compute_cap" | grep -Eq '^[0-9]+\.[0-9]+$'; then
+    printf '%s\n' "$compute_cap"
+    return 0
+  fi
+  local python_bin="$VENV_DIR/bin/python"
+  if [ ! -x "$python_bin" ]; then
+    python_bin=python3
+  fi
+  "$python_bin" - <<'PY' 2>/dev/null || true
+import torch
+if torch.cuda.is_available():
+    major, minor = torch.cuda.get_device_capability(0)
+    print(f"{major}.{minor}")
+PY
+}
+if [ -z "${TORCH_CUDA_ARCH_LIST:-}" ] || [ "${TORCH_CUDA_ARCH_LIST:-}" = "8.9" ] || [ "${TORCH_CUDA_ARCH_LIST:-}" = "$DEFAULT_TORCH_CUDA_ARCH_LIST" ]; then
+  detected_arch="$(detect_cuda_arch_list | head -n 1)"
+  export TORCH_CUDA_ARCH_LIST="${detected_arch:-$DEFAULT_TORCH_CUDA_ARCH_LIST}"
 else
   export TORCH_CUDA_ARCH_LIST
 fi
@@ -38,7 +59,6 @@ if [ ! -s "$KNOWN_HOSTS" ]; then
   chmod 600 "$KNOWN_HOSTS"
 fi
 SSH_OPTS="-i /root/.ssh/id_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KNOWN_HOSTS -o LogLevel=ERROR -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=6"
-VENV_DIR="${SPLATBOT_RUNPOD_VENV:-/workspace/venv}"
 CACHE_MARKER="${SPLATBOT_RUNPOD_RUNTIME_CACHE_MARKER:-/workspace/.splatbot-runtime-cache-version}"
 VPS_APP_DIR="${SPLATBOT_VPS_APP_DIR:-/opt/splatbot/app}"
 VPS_DATA_DIR="${SPLATBOT_VPS_DATA_DIR:-/var/lib/splatbot}"

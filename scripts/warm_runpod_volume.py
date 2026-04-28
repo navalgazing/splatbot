@@ -37,8 +37,24 @@ export QT_QPA_PLATFORM="${{QT_QPA_PLATFORM:-offscreen}}"
 export CUDA_HOME="${{CUDA_HOME:-/usr/local/cuda}}"
 export PATH="$CUDA_HOME/bin:/usr/local/cuda/bin:$PATH"
 export LD_LIBRARY_PATH="$CUDA_HOME/lib64:/usr/local/cuda/lib64:${{LD_LIBRARY_PATH:-}}"
-if [ -z "${{TORCH_CUDA_ARCH_LIST:-}}" ] || [ "${{TORCH_CUDA_ARCH_LIST:-}}" = "8.9" ]; then
-  export TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"
+DEFAULT_TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"
+detect_cuda_arch_list() {{
+  local compute_cap
+  compute_cap="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n 1 | tr -d '[:space:]' || true)"
+  if printf '%s' "$compute_cap" | grep -Eq '^[0-9]+\\.[0-9]+$'; then
+    printf '%s\n' "$compute_cap"
+    return 0
+  fi
+  python3 - <<'PY' 2>/dev/null || true
+import torch
+if torch.cuda.is_available():
+    major, minor = torch.cuda.get_device_capability(0)
+    print(f"{{major}}.{{minor}}")
+PY
+}}
+if [ -z "${{TORCH_CUDA_ARCH_LIST:-}}" ] || [ "${{TORCH_CUDA_ARCH_LIST:-}}" = "8.9" ] || [ "${{TORCH_CUDA_ARCH_LIST:-}}" = "$DEFAULT_TORCH_CUDA_ARCH_LIST" ]; then
+  detected_arch="$(detect_cuda_arch_list | head -n 1)"
+  export TORCH_CUDA_ARCH_LIST="${{detected_arch:-$DEFAULT_TORCH_CUDA_ARCH_LIST}}"
 else
   export TORCH_CUDA_ARCH_LIST
 fi
@@ -59,6 +75,7 @@ export U2NET_HOME="${{U2NET_HOME:-/workspace/.u2net}}"
 {shell_export("SPLATBOT_REMBG_REQUIRE_GPU", str(settings.rembg_require_gpu).lower())}
 {shell_export("SPLATBOT_MAST3R_USE_GLOMAP", str(settings.mast3r_use_glomap).lower())}
 {shell_export("SPLATBOT_GLOMAP_BIN", settings.glomap_bin)}
+{shell_export("SPLATBOT_GLOMAP_MAPPER_ARGS", settings.glomap_mapper_args)}
 
 echo "warming runtime cache version: $CACHE_VERSION"
 echo "venv: $VENV_DIR"

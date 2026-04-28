@@ -102,7 +102,9 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     assert "export SPLATBOT_VGGT_MAX_IMAGES=64" in command
     assert "export SPLATBOT_MAST3R_POSE_COMMAND='splatbot-mast3r --images {images_dir} --processed {processed_dir} --matching-method {matching_method}'" in command
     assert "export SPLATBOT_MAST3R_REPO=/opt/mast3r" in command
-    assert "export SPLATBOT_MAST3R_MAX_IMAGES=120" in command
+    assert "export SPLATBOT_MAST3R_MAX_IMAGES=80" in command
+    assert "export SPLATBOT_GLOMAP_BIN=splatbot-glomap" in command
+    assert "export SPLATBOT_GLOMAP_MAPPER_ARGS='--log_to_stderr=1 --ba_iteration_num=1 --GlobalPositioning.max_num_iterations=60 --BundleAdjustment.max_num_iterations=80'" in command
     assert "export SPLATBOT_MAST3R_PAIR_WINDOW=5" in command
     assert "export SPLATBOT_MAST3R_USE_GLOMAP=true" in command
     assert "export SPLATBOT_SILHOUETTE_CLEANUP_ENABLED=true" in command
@@ -332,4 +334,6 @@ def test_runpod_worker_requires_glomap_for_best_mast3r() -> None:
 def test_runpod_worker_cuda_arch_default_supports_h100() -> None:
     worker = (Path(__file__).parents[1] / "scripts" / "runpod_worker.sh").read_text(encoding="utf-8")
 
-    assert 'TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"' in worker
+    assert 'DEFAULT_TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"' in worker
+    assert "nvidia-smi --query-gpu=compute_cap" in worker
+    assert "torch.cuda.get_device_capability(0)" in worker
