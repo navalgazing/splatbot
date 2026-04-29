@@ -79,6 +79,8 @@ export U2NET_HOME="${{U2NET_HOME:-/opt/splatbot/models/rembg}}"
 {shell_export("SPLATBOT_GLOMAP_MAPPER_ARGS", settings.glomap_mapper_args)}
 {shell_export("SPLATBOT_VGGT_WEIGHTS", settings.vggt_weights)}
 {shell_export("SPLATBOT_VGGSFM_TRACKER_WEIGHTS", settings.vggsfm_tracker_weights)}
+{shell_export("SPLATBOT_DINOV2_HUB_REPO", settings.dinov2_hub_repo)}
+{shell_export("SPLATBOT_DINOV2_VITB14_REG_WEIGHTS", settings.dinov2_vitb14_reg_weights)}
 {shell_export("SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD", str(settings.vggt_allow_weight_download).lower())}
 {shell_export("SPLATBOT_MAST3R_WEIGHTS", settings.mast3r_weights)}
 {shell_export("SPLATBOT_MAST3R_WEIGHTS_URL", settings.mast3r_weights_url)}
@@ -122,6 +124,7 @@ python - <<'PY'
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import urllib.request
 
 model = Path(os.environ["U2NET_HOME"]) / "u2net.onnx"
@@ -215,6 +218,41 @@ elif os.environ.get("SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD", "false").lower() in {
     print(f"vggsfm tracker bytes={{vggsfm_tracker.stat().st_size}}")
 else:
     raise SystemExit(f"VGGSfM tracker weights are missing at {{vggsfm_tracker}} and downloads are disabled")
+
+dinov2_repo = Path(os.environ["SPLATBOT_DINOV2_HUB_REPO"])
+if dinov2_repo.joinpath("hubconf.py").exists() and dinov2_repo.joinpath("dinov2").is_dir():
+    print(f"dinov2 hub repo ready: {{dinov2_repo}}")
+elif os.environ.get("SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD", "false").lower() in {"1", "true", "yes", "on"}:
+    dinov2_repo.parent.mkdir(parents=True, exist_ok=True)
+    if dinov2_repo.exists():
+        shutil.rmtree(dinov2_repo)
+    subprocess.run(
+        ["git", "clone", "--filter=blob:none", "--depth", "1", "https://github.com/facebookresearch/dinov2.git", str(dinov2_repo)],
+        check=True,
+    )
+    print(f"dinov2 hub repo ready: {{dinov2_repo}}")
+else:
+    raise SystemExit(f"DINOv2 torch hub repo is missing at {{dinov2_repo}} and downloads are disabled")
+
+dinov2_weights = Path(os.environ["SPLATBOT_DINOV2_VITB14_REG_WEIGHTS"])
+if dinov2_weights.exists() and dinov2_weights.stat().st_size >= 300_000_000:
+    print(f"dinov2 vitb14 reg weights bytes={{dinov2_weights.stat().st_size}}")
+elif os.environ.get("SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD", "false").lower() in {"1", "true", "yes", "on"}:
+    from torch.hub import download_url_to_file
+
+    dinov2_weights.parent.mkdir(parents=True, exist_ok=True)
+    partial = dinov2_weights.with_suffix(dinov2_weights.suffix + ".part")
+    if partial.exists():
+        partial.unlink()
+    download_url_to_file(
+        "https://dl.fbaipublicfiles.com/dinov2/dinov2_vitb14/dinov2_vitb14_reg4_pretrain.pth",
+        str(partial),
+        progress=True,
+    )
+    partial.replace(dinov2_weights)
+    print(f"dinov2 vitb14 reg weights bytes={{dinov2_weights.stat().st_size}}")
+else:
+    raise SystemExit(f"DINOv2 ViT-B/14 reg weights are missing at {{dinov2_weights}} and downloads are disabled")
 PY
 
 python - <<'PY'

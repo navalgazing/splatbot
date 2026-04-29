@@ -154,6 +154,8 @@ class Settings(BaseSettings):
     vggt_max_images: int = 64
     vggt_weights: str = "/opt/splatbot/models/torch/hub/checkpoints/model.pt"
     vggsfm_tracker_weights: str = "/opt/splatbot/models/torch/hub/checkpoints/vggsfm_v2_tracker.pt"
+    dinov2_hub_repo: str = "/opt/splatbot/models/torch/hub/facebookresearch_dinov2_main"
+    dinov2_vitb14_reg_weights: str = "/opt/splatbot/models/torch/hub/checkpoints/dinov2_vitb14_reg4_pretrain.pth"
     vggt_allow_weight_download: bool = False
     mast3r_pose_command: str = (
         "splatbot-mast3r --images {images_dir} --processed {processed_dir} "

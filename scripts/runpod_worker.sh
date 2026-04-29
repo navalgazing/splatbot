@@ -253,6 +253,33 @@ check_vggt_weights_config() {
     echo "VGGT pose backend is configured but VGGSfM tracker weights are missing at $tracker and downloads are disabled" >&2
     exit 2
   fi
+
+  local dinov2_repo="${SPLATBOT_DINOV2_HUB_REPO:-${TORCH_HOME:-/opt/splatbot/models/torch}/hub/facebookresearch_dinov2_main}"
+  if [ -r "$dinov2_repo/hubconf.py" ] && [ -d "$dinov2_repo/dinov2" ]; then
+    echo "  dinov2_hub_repo=$dinov2_repo"
+  elif truthy "${SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD:-false}"; then
+    echo "  dinov2_hub_repo=$dinov2_repo missing; VGGT may download facebookresearch/dinov2 during pose estimation"
+  else
+    echo "VGGT pose backend is configured but DINOv2 torch hub repo is missing at $dinov2_repo and downloads are disabled" >&2
+    exit 2
+  fi
+
+  local dinov2_weights="${SPLATBOT_DINOV2_VITB14_REG_WEIGHTS:-${TORCH_HOME:-/opt/splatbot/models/torch}/hub/checkpoints/dinov2_vitb14_reg4_pretrain.pth}"
+  if [ -s "$dinov2_weights" ]; then
+    local dinov2_bytes
+    dinov2_bytes="$(stat -c%s "$dinov2_weights")"
+    if [ "$dinov2_bytes" -gt 300000000 ]; then
+      echo "  dinov2_vitb14_reg_weights=$dinov2_weights bytes=$dinov2_bytes"
+    else
+      echo "VGGT pose backend is configured but DINOv2 ViT-B/14 reg weights at $dinov2_weights are too small: $dinov2_bytes bytes" >&2
+      exit 2
+    fi
+  elif truthy "${SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD:-false}"; then
+    echo "  dinov2_vitb14_reg_weights=$dinov2_weights missing; VGGT may download DINOv2 weights during pose estimation"
+  else
+    echo "VGGT pose backend is configured but DINOv2 ViT-B/14 reg weights are missing at $dinov2_weights and downloads are disabled" >&2
+    exit 2
+  fi
 }
 
 check_mast3r_weights_config() {

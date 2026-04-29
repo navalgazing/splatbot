@@ -89,6 +89,7 @@ ARG DOWNLOAD_VGGT_WEIGHTS=0
 ARG DOWNLOAD_MAST3R_WEIGHTS=0
 ARG VGGT_WEIGHTS_URL=https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt
 ARG VGGSFM_TRACKER_WEIGHTS_URL=https://huggingface.co/facebook/VGGSfM/resolve/main/vggsfm_v2_tracker.pt
+ARG DINOV2_VITB14_REG_WEIGHTS_URL=https://dl.fbaipublicfiles.com/dinov2/dinov2_vitb14/dinov2_vitb14_reg4_pretrain.pth
 ARG MAST3R_WEIGHTS_URL=https://download.europe.naverlabs.com/ComputerVision/MASt3R/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
 ARG DOWNLOAD_DA3_MODEL=0
 
@@ -98,6 +99,9 @@ ENV SPLATBOT_VGGT_WEIGHTS=/opt/splatbot/models/torch/hub/checkpoints/model.pt
 ENV SPLATBOT_VGGT_WEIGHTS_URL=${VGGT_WEIGHTS_URL}
 ENV SPLATBOT_VGGSFM_TRACKER_WEIGHTS=/opt/splatbot/models/torch/hub/checkpoints/vggsfm_v2_tracker.pt
 ENV SPLATBOT_VGGSFM_TRACKER_WEIGHTS_URL=${VGGSFM_TRACKER_WEIGHTS_URL}
+ENV SPLATBOT_DINOV2_HUB_REPO=/opt/splatbot/models/torch/hub/facebookresearch_dinov2_main
+ENV SPLATBOT_DINOV2_VITB14_REG_WEIGHTS=/opt/splatbot/models/torch/hub/checkpoints/dinov2_vitb14_reg4_pretrain.pth
+ENV SPLATBOT_DINOV2_VITB14_REG_WEIGHTS_URL=${DINOV2_VITB14_REG_WEIGHTS_URL}
 ENV SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD=false
 ENV SPLATBOT_MAST3R_REPO=/opt/mast3r
 ENV SPLATBOT_MAST3R_WEIGHTS=/opt/splatbot/models/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
@@ -196,6 +200,7 @@ RUN mkdir -p /opt/splatbot/models \
 
 RUN git clone --filter=blob:none https://github.com/facebookresearch/vggt.git "$SPLATBOT_VGGT_REPO" \
     && git -C "$SPLATBOT_VGGT_REPO" checkout "$VGGT_COMMIT" \
+    && git clone --filter=blob:none --depth 1 https://github.com/facebookresearch/dinov2.git "$SPLATBOT_DINOV2_HUB_REPO" \
     && git clone --filter=blob:none https://github.com/naver/mast3r.git "$SPLATBOT_MAST3R_REPO" \
     && git -C "$SPLATBOT_MAST3R_REPO" checkout "$MAST3R_COMMIT" \
     && git -C "$SPLATBOT_MAST3R_REPO" submodule update --init --recursive --depth 1
@@ -246,8 +251,33 @@ RUN if [ "$DOWNLOAD_VGGT_WEIGHTS" = "1" ]; then \
       && test "$(stat -c%s "$SPLATBOT_VGGT_WEIGHTS")" -gt 4000000000 \
       && curl -fL --retry 5 --retry-delay 5 --retry-all-errors \
         -o "$SPLATBOT_VGGSFM_TRACKER_WEIGHTS" "$SPLATBOT_VGGSFM_TRACKER_WEIGHTS_URL" \
-      && test "$(stat -c%s "$SPLATBOT_VGGSFM_TRACKER_WEIGHTS")" -gt 100000000; \
+      && test "$(stat -c%s "$SPLATBOT_VGGSFM_TRACKER_WEIGHTS")" -gt 100000000 \
+      && curl -fL --retry 5 --retry-delay 5 --retry-all-errors \
+        -o "$SPLATBOT_DINOV2_VITB14_REG_WEIGHTS" "$SPLATBOT_DINOV2_VITB14_REG_WEIGHTS_URL" \
+      && test "$(stat -c%s "$SPLATBOT_DINOV2_VITB14_REG_WEIGHTS")" -gt 300000000; \
     fi
+
+RUN /opt/splatbot/venv/bin/python - <<'PY'
+import os
+import urllib.error
+from pathlib import Path
+
+import torch
+
+repo = Path(os.environ["SPLATBOT_DINOV2_HUB_REPO"])
+weights = Path(os.environ["SPLATBOT_DINOV2_VITB14_REG_WEIGHTS"])
+if not repo.joinpath("hubconf.py").is_file():
+    raise SystemExit(f"DINOv2 torch hub repo is missing: {repo}")
+if not weights.is_file() or weights.stat().st_size <= 300_000_000:
+    raise SystemExit(f"DINOv2 weights are missing or too small: {weights}")
+
+def offline_urlopen(*args, **kwargs):
+    raise urllib.error.URLError("offline cache validation")
+
+torch.hub.urlopen = offline_urlopen
+model = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14_reg", verbose=False)
+print(f"DINOv2 torch hub cache validated: {type(model).__name__}")
+PY
 
 RUN if [ "$DOWNLOAD_DA3_MODEL" = "1" ]; then \
       /opt/splatbot/venv/bin/python -c 'import os, re; from pathlib import Path; from huggingface_hub import snapshot_download; model=os.environ["SPLATBOT_DA3_MODEL"]; safe=re.sub(r"[^A-Za-z0-9._-]+", "__", model); target=Path(os.environ["SPLATBOT_DA3_MODEL_CACHE_DIR"]) / safe; target.mkdir(parents=True, exist_ok=True); snapshot_download(repo_id=model, local_dir=str(target), resume_download=True); print(f"DA3 model cached at {target}")'; \
