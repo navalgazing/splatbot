@@ -190,7 +190,7 @@ async def test_dispatcher_does_not_notify_done_if_terminal_state_wins_race(tmp_p
     assert notifier.done == []
 
 
-async def test_recover_interrupted_jobs_fails_fresh_claimed_jobs_on_startup(tmp_path) -> None:
+async def test_recover_interrupted_jobs_preserves_fresh_claimed_jobs_on_startup(tmp_path) -> None:
     store = Store(tmp_path / "splatbot.sqlite3")
     await store.init()
     session = await store.create_session(telegram_user_id=1, mode=ScanMode.SCENE)
@@ -198,6 +198,41 @@ async def test_recover_interrupted_jobs_fails_fresh_claimed_jobs_on_startup(tmp_
     claimed = await store.claim_next_queued_job()
     assert claimed is not None
     assert claimed.id == job.id
+
+    notifier = FakeNotifier()
+    interrupted = await recover_interrupted_jobs(
+        Settings(
+            data_dir=tmp_path,
+            database_path=tmp_path / "splatbot.sqlite3",
+            interrupted_job_grace_seconds=600,
+        ),
+        store,
+        notifier,
+    )
+
+    assert interrupted == 0
+    updated = await store.get_job(job.id)
+    assert updated is not None
+    assert updated.status == JobStatus.PREPARING
+    assert updated.error is None
+    assert notifier.failed == []
+
+
+async def test_recover_interrupted_jobs_fails_stale_claimed_jobs_on_startup(tmp_path) -> None:
+    store = Store(tmp_path / "splatbot.sqlite3")
+    await store.init()
+    session = await store.create_session(telegram_user_id=1, mode=ScanMode.SCENE)
+    job = await store.create_job(session)
+    claimed = await store.claim_next_queued_job()
+    assert claimed is not None
+    assert claimed.id == job.id
+    stale_at = "2026-04-25T00:00:00+00:00"
+    async with store._connect() as db:
+        await db.execute(
+            "UPDATE jobs SET updated_at = ?, heartbeat_at = ? WHERE id = ?",
+            (stale_at, stale_at, job.id),
+        )
+        await db.commit()
 
     notifier = FakeNotifier()
     interrupted = await recover_interrupted_jobs(

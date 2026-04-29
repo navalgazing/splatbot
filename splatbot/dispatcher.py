@@ -154,7 +154,7 @@ async def recover_interrupted_jobs(
 ) -> int:
     interrupted = await store.fail_interrupted_jobs(
         "Job interrupted by bot restart; please resubmit.",
-        grace_seconds=0,
+        grace_seconds=settings.interrupted_job_grace_seconds,
     )
     if settings.worker_backend == WorkerBackend.RUNPOD and settings.runpod_api_key_value:
         launcher = RunPodLauncher(settings)
