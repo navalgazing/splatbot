@@ -103,6 +103,17 @@ MATRIX_ROWS: tuple[MatrixRow, ...] = (
         },
     ),
     MatrixRow(
+        "postprocess-silhouette-strict",
+        "Stricter silhouette carving with baseline pose, depth, and train.",
+        {
+            "silhouette_cleanup_min_views": 6,
+            "silhouette_cleanup_outside_ratio": 0.35,
+            "silhouette_cleanup_max_inside_views": 6,
+            "silhouette_cleanup_max_inside_ratio": 0.25,
+            "silhouette_cleanup_max_remove_fraction": 0.75,
+        },
+    ),
+    MatrixRow(
         "postprocess-mask-support-strict",
         "Stricter mask-support pruning with baseline pose, depth, and train.",
         {
