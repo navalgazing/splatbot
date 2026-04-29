@@ -39,7 +39,11 @@ async def run(job_id: str, mode: ScanMode, preset: ScanPreset, media_dir: Path, 
     media = media_items(media_dir)
     images_dir = settings.job_dir(job_id) / "uploaded_images"
     normalized_media = await normalize_photo_media(settings, media, images_dir)
-    outputs = await ScanPipeline(settings).run(job_id, mode, normalized_media, report_status, preset)
+    try:
+        outputs = await ScanPipeline(settings).run(job_id, mode, normalized_media, report_status, preset)
+    except Exception:
+        copy_failure_artifacts(settings.job_dir(job_id), output_dir)
+        raise
     shutil.copy2(outputs.cleaned_ply, output_dir / "cleaned_splat.ply")
     if outputs.mesh_path is not None and outputs.mesh_path.exists():
         shutil.copy2(outputs.mesh_path, output_dir / outputs.mesh_path.name)
@@ -51,6 +55,16 @@ async def run(job_id: str, mode: ScanMode, preset: ScanPreset, media_dir: Path, 
         shutil.copy2(outputs.quality_report_path, output_dir / "quality_report.json")
     if outputs.candidate_report_path is not None and outputs.candidate_report_path.exists():
         shutil.copy2(outputs.candidate_report_path, output_dir / "candidate_report.json")
+
+
+def copy_failure_artifacts(job_dir: Path, output_dir: Path) -> None:
+    for name in ("metrics.json", "settings.json", "quality_report.json", "candidate_report.json"):
+        src = job_dir / name
+        if src.exists():
+            shutil.copy2(src, output_dir / name)
+    diagnostics = job_dir / "diagnostics"
+    if diagnostics.exists():
+        shutil.copytree(diagnostics, output_dir / "diagnostics", dirs_exist_ok=True)
 
 
 async def report_status(job_id: str, status: JobStatus) -> None:

@@ -135,6 +135,19 @@ def test_vggt_command_variants_reduce_query_points_and_disable_ba(
     ]
 
 
+def test_mast3r_command_variants_only_retry_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    command = "python kapture_mast3r_mapping.py --use_glomap_mapper --output out"
+
+    monkeypatch.delenv("SPLATBOT_MAST3R_RETRY_WITHOUT_GLOMAP", raising=False)
+    assert pose_adapters.mast3r_command_variants(command) == [command]
+
+    monkeypatch.setenv("SPLATBOT_MAST3R_RETRY_WITHOUT_GLOMAP", "true")
+    assert pose_adapters.mast3r_command_variants(command) == [
+        command,
+        "python kapture_mast3r_mapping.py --output out",
+    ]
+
+
 def test_mast3r_adapter_writes_pairs_and_normalizes_reconstruction(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -183,6 +196,50 @@ def test_mast3r_adapter_writes_pairs_and_normalizes_reconstruction(
         "frame_00003.jpg, frame_00004.jpg, 1.0\n"
     ]
     assert (processed / "colmap" / "sparse" / "0" / "images.bin").read_text(encoding="utf-8") == "images=4"
+
+
+def test_mast3r_adapter_preserves_diagnostics_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    images = tmp_path / "images"
+    processed = tmp_path / "processed"
+    diagnostics = tmp_path / "diagnostics"
+    write_images(images, count=3)
+
+    def fake_run(argv: list[str]) -> None:
+        output_dir = Path(argv[argv.index("--out") + 1])
+        write_fake_sparse(output_dir / "reconstruction" / "0", registered=3)
+        (output_dir / "mapper.log").write_text("glomap failed\n", encoding="utf-8")
+        raise pose_adapters.ExternalCommandFailed(argv, 250)
+
+    monkeypatch.setattr(pose_adapters, "run", fake_run)
+    monkeypatch.setenv("SPLATBOT_MAST3R_RUN_COMMAND", "fake-mast3r --pairs {pairs_file} --out {mast3r_output_dir}")
+    monkeypatch.setenv("SPLATBOT_MAST3R_DIAGNOSTIC_DIR", str(diagnostics))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "splatbot-mast3r",
+            "--images",
+            str(images),
+            "--processed",
+            str(processed),
+            "--work-dir",
+            str(tmp_path / "work"),
+        ],
+    )
+
+    with pytest.raises(pose_adapters.ExternalCommandFailed):
+        pose_adapters.mast3r_main()
+
+    attempt = diagnostics / "attempt_01"
+    assert (attempt / "command.txt").read_text(encoding="utf-8").startswith("fake-mast3r")
+    assert "external command failed (250)" in (attempt / "error.txt").read_text(encoding="utf-8")
+    assert (attempt / "pairs.txt").exists()
+    assert (attempt / "images.json").exists()
+    assert (attempt / "mast3r_output" / "mapper.log").read_text(encoding="utf-8") == "glomap failed\n"
+    assert (attempt / "mast3r_output" / "reconstruction" / "0" / "images.bin").exists()
 
 
 def test_mast3r_default_command_uses_glomap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

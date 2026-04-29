@@ -629,6 +629,22 @@ PY
 else
   rc="$?"
   ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
+    "mkdir -p $VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID"
+  for artifact in metrics.json settings.json quality_report.json candidate_report.json; do
+    if [ -f "/workspace/results/$artifact" ]; then
+      rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
+        "/workspace/results/$artifact" \
+        "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/$artifact" || true
+    fi
+  done
+  if [ -d /workspace/results/diagnostics ]; then
+    ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
+      "mkdir -p $VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/diagnostics"
+    rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
+      /workspace/results/diagnostics/ \
+      "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/diagnostics/" || true
+  fi
+  ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
     "$VPS_JOBCTL fail $SPLATBOT_JOB_ID --error 'RunPod worker failed with exit code $rc' --notify"
   exit "$rc"
 fi

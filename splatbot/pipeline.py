@@ -786,7 +786,12 @@ class ScanPipeline:
                 "glomap_bin": self.settings.glomap_bin,
             },
         )
-        await self.runner.run(argv)
+        env = os.environ.copy()
+        diagnostic_dir = processed_dir.parent / "diagnostics" / backend
+        env["SPLATBOT_POSE_DIAGNOSTIC_DIR"] = str(diagnostic_dir)
+        if backend == "mast3r-sfm":
+            env["SPLATBOT_MAST3R_DIAGNOSTIC_DIR"] = str(diagnostic_dir)
+        await self.runner.run(argv, env=env)
 
     async def process_data_with_quality_gate(
         self,

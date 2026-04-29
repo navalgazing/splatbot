@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import shlex
 import shutil
@@ -264,6 +265,79 @@ def render_and_run(command: str, values: dict[str, str]) -> None:
     run(render_argv_template(command, values))
 
 
+def copy_diagnostic_artifacts(src: Path, dst: Path, *, max_file_bytes: int = 512 * 1024 * 1024) -> None:
+    if not src.exists():
+        return
+    allowed_suffixes = {
+        ".bin",
+        ".db",
+        ".err",
+        ".ini",
+        ".json",
+        ".log",
+        ".out",
+        ".ply",
+        ".sqlite",
+        ".sqlite3",
+        ".txt",
+    }
+    for path in src.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        relative = path.relative_to(src)
+        target = dst / relative
+        if stat.st_size > max_file_bytes:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.with_suffix(target.suffix + ".skipped.txt").write_text(
+                f"skipped {path}: {stat.st_size} bytes exceeds {max_file_bytes}\n",
+                encoding="utf-8",
+            )
+            continue
+        if path.suffix.lower() not in allowed_suffixes and path.name not in {"database"}:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
+
+
+def preserve_mast3r_diagnostics(
+    diagnostic_root: Path | None,
+    *,
+    attempt_index: int,
+    command: str,
+    error: ExternalCommandFailed,
+    work_root: Path,
+    output_dir: Path,
+    pairs_path: Path,
+    staged_images: Path,
+) -> None:
+    if diagnostic_root is None:
+        return
+    attempt_dir = diagnostic_root / f"attempt_{attempt_index:02d}"
+    if attempt_dir.exists():
+        shutil.rmtree(attempt_dir)
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    (attempt_dir / "command.txt").write_text(command + "\n", encoding="utf-8")
+    (attempt_dir / "error.txt").write_text(str(error) + "\n", encoding="utf-8")
+    if pairs_path.exists():
+        shutil.copy2(pairs_path, attempt_dir / "pairs.txt")
+    if staged_images.exists():
+        image_manifest = [
+            {
+                "name": path.name,
+                "target": str(path.resolve()) if path.exists() else None,
+                "is_symlink": path.is_symlink(),
+            }
+            for path in image_files(staged_images)
+        ]
+        (attempt_dir / "images.json").write_text(json.dumps(image_manifest, indent=2) + "\n", encoding="utf-8")
+    copy_diagnostic_artifacts(output_dir, attempt_dir / "mast3r_output")
+    copy_diagnostic_artifacts(work_root, attempt_dir / "work_root")
+
+
 def retry_image_caps(max_images: int, min_images: int) -> list[int]:
     if max_images <= 0:
         return [0]
@@ -334,6 +408,16 @@ def vggt_command_variants(command: str) -> list[str]:
         if variant not in unique:
             unique.append(variant)
     return unique
+
+
+def mast3r_command_variants(command: str) -> list[str]:
+    variants = [command]
+    if not truthy(os.environ.get("SPLATBOT_MAST3R_RETRY_WITHOUT_GLOMAP")):
+        return variants
+    no_glomap = remove_flag(command, "--use_glomap_mapper")
+    if no_glomap != command:
+        variants.append(no_glomap)
+    return variants
 
 
 def vggt_main() -> None:
@@ -528,6 +612,8 @@ def mast3r_main() -> None:
 
     repo = Path(os.environ.get("SPLATBOT_MAST3R_REPO", "").strip() or "/opt/mast3r")
     command = os.environ.get("SPLATBOT_MAST3R_RUN_COMMAND", "").strip()
+    diagnostic_env = os.environ.get("SPLATBOT_MAST3R_DIAGNOSTIC_DIR", "").strip()
+    diagnostic_root = Path(diagnostic_env) if diagnostic_env else None
 
     with work_dir(args.work_dir, "splatbot-mast3r-") as tmp:
         staged_images = tmp / "images"
@@ -543,22 +629,45 @@ def mast3r_main() -> None:
         if not command or "{mast3r_weights}" in command:
             mast3r_weights = ensure_mast3r_weights()
         command = command or mast3r_default_command(repo, output_dir, pairs_path, staged_images, mast3r_weights)
-        render_and_run(
-            command,
-            {
-                "images_dir": str(staged_images),
-                "input_dir": str(staged_images),
-                "processed_dir": str(args.processed_dir),
-                "output_dir": str(args.processed_dir),
-                "work_dir": str(tmp),
-                "mast3r_output_dir": str(output_dir),
-                "pairs_file": str(pairs_path),
-                "mast3r_repo": str(repo),
-                "mast3r_weights": str(mast3r_weights),
-                "python": default_python(),
-                "matching_method": args.matching_method,
-            },
-        )
+        values = {
+            "images_dir": str(staged_images),
+            "input_dir": str(staged_images),
+            "processed_dir": str(args.processed_dir),
+            "output_dir": str(args.processed_dir),
+            "work_dir": str(tmp),
+            "mast3r_output_dir": str(output_dir),
+            "pairs_file": str(pairs_path),
+            "mast3r_repo": str(repo),
+            "mast3r_weights": str(mast3r_weights),
+            "python": default_python(),
+            "matching_method": args.matching_method,
+        }
+        commands = mast3r_command_variants(command)
+        for index, attempt_command in enumerate(commands, start=1):
+            if output_dir.exists():
+                shutil.rmtree(output_dir)
+            try:
+                render_and_run(attempt_command, values)
+                break
+            except ExternalCommandFailed as exc:
+                preserve_mast3r_diagnostics(
+                    diagnostic_root,
+                    attempt_index=index,
+                    command=attempt_command,
+                    error=exc,
+                    work_root=tmp,
+                    output_dir=output_dir,
+                    pairs_path=pairs_path,
+                    staged_images=staged_images,
+                )
+                if index >= len(commands):
+                    raise
+                print(
+                    "MASt3R command failed; retrying without GLOMAP mapper "
+                    f"(attempt {index + 1}/{len(commands)})",
+                    file=sys.stderr,
+                    flush=True,
+                )
         sparse_model = find_best_sparse_model(output_dir / "reconstruction", output_dir, tmp)
         finalize_colmap_pose_dataset(staged_images, args.processed_dir, sparse_model)
 
