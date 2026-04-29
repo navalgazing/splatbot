@@ -10,7 +10,7 @@ from pathlib import Path
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 DEFAULT_MODEL = "depth-anything/DA3-LARGE-1.1"
-DEFAULT_MODEL_CACHE_DIR = Path("/workspace/models/da3")
+DEFAULT_MODEL_CACHE_DIR = Path("/opt/splatbot/models/da3")
 MIN_MODEL_FILE_BYTES = 1_000_000
 
 

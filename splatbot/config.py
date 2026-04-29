@@ -134,7 +134,7 @@ class Settings(BaseSettings):
     best_pose_required_backends: str = ""
     pose_backend_command: str = "splatbot-pose --backend {backend} --input {images_dir} --output {processed_dir} --matching-method {matching_method}"
     da3_model: str = "depth-anything/DA3-LARGE-1.1"
-    da3_model_cache_dir: str = "/workspace/models/da3"
+    da3_model_cache_dir: str = "/opt/splatbot/models/da3"
     da3_allow_model_download: bool = True
     da3_model_download_attempts: int = 5
     da3_use_ray_pose: bool = True
@@ -156,7 +156,7 @@ class Settings(BaseSettings):
     )
     mast3r_repo: str = "/opt/mast3r"
     mast3r_run_command: str = ""
-    mast3r_weights: str = "/workspace/models/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth"
+    mast3r_weights: str = "/opt/splatbot/models/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth"
     mast3r_weights_url: str = (
         "https://download.europe.naverlabs.com/ComputerVision/MASt3R/"
         "MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth"
@@ -289,7 +289,7 @@ class Settings(BaseSettings):
     runpod_api_key: SecretStr = SecretStr("")
     runpod_gpu_type_id: str = DEFAULT_RUNPOD_GPU_TYPE_ID
     runpod_cloud_type: str = "ALL"
-    runpod_image_name: str = "ghcr.io/navalgazing/splatbot-runpod:cuda-colmap"
+    runpod_image_name: str = "ghcr.io/navalgazing/splatbot-runpod:cuda-colmap-sota"
     runpod_container_disk_gb: int = 80
     runpod_volume_gb: int = 80
     runpod_min_vcpu_count: int = 8

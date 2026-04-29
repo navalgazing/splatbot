@@ -95,7 +95,7 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     assert "export SPLATBOT_EXPERIMENTAL_SAM3_ENABLED=false" in command
     assert "export SPLATBOT_BEST_POSE_BACKENDS=colmap-global,vggt-colmap,mast3r-sfm" in command
     assert "export SPLATBOT_DA3_MODEL=depth-anything/DA3-LARGE-1.1" in command
-    assert "export SPLATBOT_DA3_MODEL_CACHE_DIR=/workspace/models/da3" in command
+    assert "export SPLATBOT_DA3_MODEL_CACHE_DIR=/opt/splatbot/models/da3" in command
     assert "export SPLATBOT_DA3_ALLOW_MODEL_DOWNLOAD=true" in command
     assert "export SPLATBOT_DA3_MODEL_DOWNLOAD_ATTEMPTS=5" in command
     assert "export SPLATBOT_DA3_USE_RAY_POSE=true" in command
@@ -105,7 +105,7 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     assert "export SPLATBOT_VGGT_MAX_IMAGES=64" in command
     assert "export SPLATBOT_MAST3R_POSE_COMMAND='splatbot-mast3r --images {images_dir} --processed {processed_dir} --matching-method {matching_method}'" in command
     assert "export SPLATBOT_MAST3R_REPO=/opt/mast3r" in command
-    assert "export SPLATBOT_MAST3R_WEIGHTS=/workspace/models/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth" in command
+    assert "export SPLATBOT_MAST3R_WEIGHTS=/opt/splatbot/models/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth" in command
     assert "export SPLATBOT_MAST3R_ALLOW_WEIGHT_DOWNLOAD=true" in command
     assert "export SPLATBOT_MAST3R_MAX_IMAGES=80" in command
     assert "export SPLATBOT_GLOMAP_BIN=splatbot-glomap" in command

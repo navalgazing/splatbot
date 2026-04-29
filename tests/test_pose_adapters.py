@@ -184,7 +184,7 @@ def test_mast3r_default_command_uses_glomap(tmp_path: Path, monkeypatch: pytest.
 
     assert "--use_glomap_mapper" in argv
     assert "--weights" in argv
-    assert "/workspace/models/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth" in argv
+    assert "/opt/splatbot/models/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth" in argv
     assert "--model_name" not in argv
 
 

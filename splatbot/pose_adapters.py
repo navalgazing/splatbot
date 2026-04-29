@@ -17,7 +17,7 @@ from splatbot.commands import render_argv_template
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
-DEFAULT_MAST3R_WEIGHTS = Path("/workspace/models/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth")
+DEFAULT_MAST3R_WEIGHTS = Path("/opt/splatbot/models/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth")
 DEFAULT_MAST3R_WEIGHTS_URL = (
     "https://download.europe.naverlabs.com/ComputerVision/MASt3R/"
     "MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth"

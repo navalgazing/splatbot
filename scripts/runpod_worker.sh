@@ -205,7 +205,7 @@ check_mast3r_weights_config() {
   if ! pose_backends_include_mast3r; then
     return 0
   fi
-  local weights="${SPLATBOT_MAST3R_WEIGHTS:-/workspace/models/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth}"
+  local weights="${SPLATBOT_MAST3R_WEIGHTS:-/opt/splatbot/models/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth}"
   if [ -s "$weights" ]; then
     echo "  mast3r_weights=$weights bytes=$(stat -c%s "$weights")"
     return 0
@@ -237,7 +237,7 @@ check_da3_model_config() {
   if ! depth_backends_include_da3; then
     return 0
   fi
-  local cache_root="${SPLATBOT_DA3_MODEL_CACHE_DIR:-/workspace/models/da3}"
+  local cache_root="${SPLATBOT_DA3_MODEL_CACHE_DIR:-/opt/splatbot/models/da3}"
   local model="${SPLATBOT_DA3_MODEL:-depth-anything/DA3-LARGE-1.1}"
   local safe_model
   safe_model="$(printf '%s' "$model" | sed -E 's/[^A-Za-z0-9._-]+/__/g')"

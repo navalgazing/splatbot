@@ -39,9 +39,12 @@ jobs:
             --platform linux/amd64 \
             --provenance=false \
             --sbom=false \
+            --build-arg DOWNLOAD_MAST3R_WEIGHTS=1 \
+            --build-arg DOWNLOAD_DA3_MODEL=1 \
             --cache-from type=gha,scope=runpod-cuda-colmap \
             --cache-to type=gha,mode=max,scope=runpod-cuda-colmap \
             --file Dockerfile.runpod.cuda \
+            --tag ghcr.io/navalgazing/splatbot-runpod:cuda-colmap-sota \
             --tag ghcr.io/navalgazing/splatbot-runpod:cuda-colmap \
             . 2>&1 | tee /tmp/runpod-cuda-colmap-image-build.log
           rc="${PIPESTATUS[0]}"
