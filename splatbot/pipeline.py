@@ -2567,6 +2567,16 @@ def read_colmap_registered_images(images_bin: Path) -> int | None:
         return len(read_images_binary(images_bin))
     except Exception:  # noqa: BLE001
         pass
+    if images_bin.suffix == ".bin":
+        try:
+            with images_bin.open("rb") as handle:
+                data = handle.read(8)
+        except OSError:
+            return None
+        if len(data) == 8:
+            count = struct.unpack("<Q", data)[0]
+            if count < 1_000_000:
+                return int(count)
     try:
         text = images_bin.read_text(encoding="utf-8").strip()
     except UnicodeDecodeError:

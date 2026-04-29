@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import shutil
+import struct
 import time
 from pathlib import Path
 
@@ -171,6 +172,7 @@ def write_nerfstudio_dataset(images: list[Path], prediction, processed_dir: Path
     image_out.mkdir(parents=True, exist_ok=True)
     extrinsics = np.asarray(required_prediction_attr(prediction, "extrinsics", "exts"))
     intrinsics = np.asarray(required_prediction_attr(prediction, "intrinsics", "ixts"))
+    depths = np.asarray(getattr(prediction, "depth", []))
     if len(extrinsics) != len(images) or len(intrinsics) != len(images):
         raise Da3BackendError(
             f"DA3 returned {len(extrinsics)} pose(s) and {len(intrinsics)} intrinsic(s) for {len(images)} image(s)"
@@ -183,7 +185,7 @@ def write_nerfstudio_dataset(images: list[Path], prediction, processed_dir: Path
         with Image.open(src) as image:
             width, height = image.size
         transform = opencv_world_to_camera_to_nerfstudio_c2w(extrinsics[idx])
-        k = intrinsics[idx]
+        k = scale_intrinsics_to_image(intrinsics[idx], width, height, depth_shape_at(depths, idx))
         frames.append(
             {
                 "file_path": f"images/{dest.name}",
@@ -203,18 +205,268 @@ def write_nerfstudio_dataset(images: list[Path], prediction, processed_dir: Path
             "frames": frames,
         },
     )
+    write_da3_sparse_seed(images, prediction, processed_dir)
 
-def opencv_world_to_camera_to_nerfstudio_c2w(extrinsic) -> list[list[float]]:
+
+def depth_shape_at(depths, idx: int) -> tuple[int, int] | None:
+    try:
+        depth = depths[idx]
+    except (IndexError, TypeError):
+        return None
+    if getattr(depth, "ndim", 0) < 2:
+        return None
+    return int(depth.shape[-2]), int(depth.shape[-1])
+
+
+def scale_intrinsics_to_image(k, width: int, height: int, depth_shape: tuple[int, int] | None):
     import numpy as np
 
-    w2c = np.eye(4, dtype=np.float64)
+    scaled = np.asarray(k, dtype=np.float64).copy()
+    if scaled.shape[0] < 3 or scaled.shape[1] < 3:
+        raise Da3BackendError(f"unsupported DA3 intrinsic shape: {scaled.shape}")
+    if depth_shape is None:
+        return scaled
+    depth_h, depth_w = depth_shape
+    if depth_w <= 0 or depth_h <= 0:
+        return scaled
+    if depth_w != width:
+        scaled[0, 0] *= width / depth_w
+        scaled[0, 2] *= width / depth_w
+    if depth_h != height:
+        scaled[1, 1] *= height / depth_h
+        scaled[1, 2] *= height / depth_h
+    return scaled
+
+
+def write_da3_sparse_seed(images: list[Path], prediction, processed_dir: Path) -> None:
+    """Write a COLMAP-compatible sparse seed model from DA3 poses and object depths."""
+
+    import numpy as np
+    from PIL import Image
+
+    depths = np.asarray(required_prediction_attr(prediction, "depth"))
+    extrinsics = np.asarray(required_prediction_attr(prediction, "extrinsics", "exts"))
+    intrinsics = np.asarray(required_prediction_attr(prediction, "intrinsics", "ixts"))
+    conf = np.asarray(getattr(prediction, "conf", []))
+    if len(depths) != len(images):
+        raise Da3BackendError(f"DA3 returned {len(depths)} depth map(s) for {len(images)} image(s)")
+
+    sparse_dir = processed_dir / "colmap" / "sparse" / "0"
+    if sparse_dir.exists():
+        shutil.rmtree(sparse_dir)
+    sparse_dir.mkdir(parents=True, exist_ok=True)
+
+    cameras = []
+    image_entries = []
+    points = []
+    points_per_image = max(1, int(os.environ.get("SPLATBOT_DA3_SPARSE_POINTS_PER_IMAGE", "96") or "96"))
+    alpha_threshold = max(0, int(os.environ.get("SPLATBOT_DA3_SPARSE_ALPHA_THRESHOLD", "16") or "16"))
+    point_id = 1
+
+    for idx, src in enumerate(images):
+        image_id = idx + 1
+        camera_id = idx + 1
+        with Image.open(src) as image:
+            rgba = image.convert("RGBA")
+            width, height = rgba.size
+            rgba_np = np.asarray(rgba)
+        depth = np.asarray(depths[idx], dtype=np.float32)
+        if depth.ndim != 2:
+            raise Da3BackendError(f"DA3 depth map {idx + 1} has unsupported shape: {depth.shape}")
+        depth_h, depth_w = int(depth.shape[0]), int(depth.shape[1])
+        k = scale_intrinsics_to_image(intrinsics[idx], width, height, (depth_h, depth_w))
+        cameras.append(
+            {
+                "id": camera_id,
+                "model_id": 1,  # PINHOLE
+                "width": width,
+                "height": height,
+                "params": [float(k[0, 0]), float(k[1, 1]), float(k[0, 2]), float(k[1, 2])],
+            }
+        )
+        w2c = opencv_world_to_camera_matrix(extrinsics[idx])
+        c2w = np.linalg.inv(w2c)
+        samples = select_sparse_depth_samples(depth, confidence_at(conf, len(depths), idx), points_per_image)
+        points2d = []
+        local_point_index = 0
+        for y_depth, x_depth in samples:
+            z = float(depth[y_depth, x_depth])
+            if not np.isfinite(z) or z <= 0:
+                continue
+            x_img = (float(x_depth) + 0.5) * width / depth_w
+            y_img = (float(y_depth) + 0.5) * height / depth_h
+            x_rgba = min(width - 1, max(0, int(round(x_img - 0.5))))
+            y_rgba = min(height - 1, max(0, int(round(y_img - 0.5))))
+            pixel = rgba_np[y_rgba, x_rgba]
+            if int(pixel[3]) <= alpha_threshold:
+                continue
+            xyz_cam = np.array(
+                [
+                    (x_img - float(k[0, 2])) * z / float(k[0, 0]),
+                    (y_img - float(k[1, 2])) * z / float(k[1, 1]),
+                    z,
+                    1.0,
+                ],
+                dtype=np.float64,
+            )
+            xyz_world = c2w @ xyz_cam
+            points2d.append((x_img, y_img, point_id))
+            points.append(
+                {
+                    "id": point_id,
+                    "xyz": [float(value) for value in xyz_world[:3]],
+                    "rgb": [int(pixel[0]), int(pixel[1]), int(pixel[2])],
+                    "track": [(image_id, local_point_index)],
+                }
+            )
+            point_id += 1
+            local_point_index += 1
+        image_entries.append(
+            {
+                "id": image_id,
+                "qvec": rotation_matrix_to_qvec(w2c[:3, :3]),
+                "tvec": [float(value) for value in w2c[:3, 3]],
+                "camera_id": camera_id,
+                "name": src.name,
+                "points2d": points2d,
+            }
+        )
+
+    if len(points) < int(os.environ.get("SPLATBOT_DA3_MIN_SPARSE_POINTS", "1000") or "1000"):
+        raise Da3BackendError(
+            f"DA3 sparse seed created only {len(points)} point(s); object masks/depths are too sparse"
+        )
+    write_cameras_binary(sparse_dir / "cameras.bin", cameras)
+    write_images_binary(sparse_dir / "images.bin", image_entries)
+    write_points3d_binary(sparse_dir / "points3D.bin", points)
+
+
+def opencv_world_to_camera_matrix(extrinsic):
+    import numpy as np
+
     matrix = np.asarray(extrinsic, dtype=np.float64)
+    w2c = np.eye(4, dtype=np.float64)
     if matrix.shape == (3, 4):
         w2c[:3, :4] = matrix
     elif matrix.shape == (4, 4):
         w2c = matrix
     else:
         raise Da3BackendError(f"unsupported DA3 extrinsic shape: {matrix.shape}")
+    return w2c
+
+
+def confidence_at(conf, depth_count: int, idx: int):
+    try:
+        if getattr(conf, "ndim", 0) >= 3 and len(conf) == depth_count:
+            return conf[idx]
+    except TypeError:
+        return None
+    return None
+
+
+def select_sparse_depth_samples(depth, conf, max_points: int) -> list[tuple[int, int]]:
+    import numpy as np
+
+    valid = np.isfinite(depth) & (depth > 0)
+    if conf is not None:
+        confidence = np.asarray(conf)
+        if confidence.shape == depth.shape and np.isfinite(confidence).any():
+            threshold = np.nanpercentile(confidence, 60)
+            valid &= confidence >= threshold
+    coords = np.argwhere(valid)
+    if len(coords) <= max_points:
+        return [(int(y), int(x)) for y, x in coords]
+    step = max(1, len(coords) // max_points)
+    selected = coords[::step][:max_points]
+    return [(int(y), int(x)) for y, x in selected]
+
+
+def rotation_matrix_to_qvec(rotation) -> list[float]:
+    import numpy as np
+
+    r = np.asarray(rotation, dtype=np.float64)
+    trace = float(np.trace(r))
+    if trace > 0.0:
+        s = (trace + 1.0) ** 0.5 * 2.0
+        qw = 0.25 * s
+        qx = (r[2, 1] - r[1, 2]) / s
+        qy = (r[0, 2] - r[2, 0]) / s
+        qz = (r[1, 0] - r[0, 1]) / s
+    elif r[0, 0] > r[1, 1] and r[0, 0] > r[2, 2]:
+        s = (1.0 + r[0, 0] - r[1, 1] - r[2, 2]) ** 0.5 * 2.0
+        qw = (r[2, 1] - r[1, 2]) / s
+        qx = 0.25 * s
+        qy = (r[0, 1] + r[1, 0]) / s
+        qz = (r[0, 2] + r[2, 0]) / s
+    elif r[1, 1] > r[2, 2]:
+        s = (1.0 + r[1, 1] - r[0, 0] - r[2, 2]) ** 0.5 * 2.0
+        qw = (r[0, 2] - r[2, 0]) / s
+        qx = (r[0, 1] + r[1, 0]) / s
+        qy = 0.25 * s
+        qz = (r[1, 2] + r[2, 1]) / s
+    else:
+        s = (1.0 + r[2, 2] - r[0, 0] - r[1, 1]) ** 0.5 * 2.0
+        qw = (r[1, 0] - r[0, 1]) / s
+        qx = (r[0, 2] + r[2, 0]) / s
+        qy = (r[1, 2] + r[2, 1]) / s
+        qz = 0.25 * s
+    q = np.array([qw, qx, qy, qz], dtype=np.float64)
+    q /= np.linalg.norm(q)
+    return [float(value) for value in q]
+
+
+def write_cameras_binary(path: Path, cameras: list[dict]) -> None:
+    with path.open("wb") as handle:
+        handle.write(struct.pack("<Q", len(cameras)))
+        for camera in cameras:
+            handle.write(
+                struct.pack(
+                    "<iiQQ",
+                    int(camera["id"]),
+                    int(camera["model_id"]),
+                    int(camera["width"]),
+                    int(camera["height"]),
+                )
+            )
+            for param in camera["params"]:
+                handle.write(struct.pack("<d", float(param)))
+
+
+def write_images_binary(path: Path, images: list[dict]) -> None:
+    with path.open("wb") as handle:
+        handle.write(struct.pack("<Q", len(images)))
+        for image in images:
+            handle.write(struct.pack("<i", int(image["id"])))
+            for value in image["qvec"]:
+                handle.write(struct.pack("<d", float(value)))
+            for value in image["tvec"]:
+                handle.write(struct.pack("<d", float(value)))
+            handle.write(struct.pack("<i", int(image["camera_id"])))
+            handle.write(str(image["name"]).encode("utf-8") + b"\x00")
+            points2d = image["points2d"]
+            handle.write(struct.pack("<Q", len(points2d)))
+            for x, y, point3d_id in points2d:
+                handle.write(struct.pack("<ddq", float(x), float(y), int(point3d_id)))
+
+
+def write_points3d_binary(path: Path, points: list[dict]) -> None:
+    with path.open("wb") as handle:
+        handle.write(struct.pack("<Q", len(points)))
+        for point in points:
+            handle.write(struct.pack("<Q", int(point["id"])))
+            for value in point["xyz"]:
+                handle.write(struct.pack("<d", float(value)))
+            handle.write(bytes(int(max(0, min(255, value))) for value in point["rgb"]))
+            handle.write(struct.pack("<d", 0.0))
+            track = point["track"]
+            handle.write(struct.pack("<Q", len(track)))
+            for image_id, point2d_idx in track:
+                handle.write(struct.pack("<ii", int(image_id), int(point2d_idx)))
+
+def opencv_world_to_camera_to_nerfstudio_c2w(extrinsic) -> list[list[float]]:
+    import numpy as np
+
+    w2c = opencv_world_to_camera_matrix(extrinsic)
     c2w_opencv = np.linalg.inv(w2c)
     opencv_to_opengl = np.diag([1.0, -1.0, -1.0, 1.0])
     c2w = c2w_opencv @ opencv_to_opengl
