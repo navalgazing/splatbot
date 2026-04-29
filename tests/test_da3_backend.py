@@ -110,6 +110,10 @@ def test_write_nerfstudio_dataset_writes_da3_sparse_seed(tmp_path, monkeypatch) 
     transforms = json.loads((tmp_path / "processed" / "transforms.json").read_text(encoding="utf-8"))
     assert transforms["frames"][0]["fl_x"] == 20.0
     assert transforms["frames"][0]["fl_y"] == 20.0
+    assert transforms["ply_file_path"] == "sparse_pc.ply"
+    sparse_ply = (tmp_path / "processed" / "sparse_pc.ply").read_text(encoding="utf-8")
+    assert "element vertex" in sparse_ply
+    assert "property uchar red" in sparse_ply
     sparse = tmp_path / "processed" / "colmap" / "sparse" / "0"
     assert struct.unpack("<Q", (sparse / "cameras.bin").read_bytes()[:8])[0] == 2
     assert struct.unpack("<Q", (sparse / "images.bin").read_bytes()[:8])[0] == 2

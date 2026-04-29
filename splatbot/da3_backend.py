@@ -336,6 +336,9 @@ def write_da3_sparse_seed(images: list[Path], prediction, processed_dir: Path) -
         raise Da3BackendError(
             f"DA3 sparse seed created only {len(points)} point(s); object masks/depths are too sparse"
         )
+    ply_path = processed_dir / "sparse_pc.ply"
+    write_sparse_points_ply(ply_path, points)
+    add_sparse_point_cloud_to_transforms(processed_dir / "transforms.json", ply_path.name)
     write_cameras_binary(sparse_dir / "cameras.bin", cameras)
     write_images_binary(sparse_dir / "images.bin", image_entries)
     write_points3d_binary(sparse_dir / "points3D.bin", points)
@@ -462,6 +465,37 @@ def write_points3d_binary(path: Path, points: list[dict]) -> None:
             handle.write(struct.pack("<Q", len(track)))
             for image_id, point2d_idx in track:
                 handle.write(struct.pack("<ii", int(image_id), int(point2d_idx)))
+
+
+def write_sparse_points_ply(path: Path, points: list[dict]) -> None:
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write("ply\n")
+        handle.write("format ascii 1.0\n")
+        handle.write(f"element vertex {len(points)}\n")
+        handle.write("property float x\n")
+        handle.write("property float y\n")
+        handle.write("property float z\n")
+        handle.write("property uchar red\n")
+        handle.write("property uchar green\n")
+        handle.write("property uchar blue\n")
+        handle.write("end_header\n")
+        for point in points:
+            x, y, z = point["xyz"]
+            red, green, blue = point["rgb"]
+            handle.write(
+                f"{float(x):.9g} {float(y):.9g} {float(z):.9g} "
+                f"{int(red)} {int(green)} {int(blue)}\n"
+            )
+
+
+def add_sparse_point_cloud_to_transforms(transforms_path: Path, ply_file_path: str) -> None:
+    try:
+        data = json.loads(transforms_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise Da3BackendError(f"could not update transforms.json with DA3 sparse point cloud: {exc}") from exc
+    data["ply_file_path"] = ply_file_path
+    write_json(transforms_path, data)
+
 
 def opencv_world_to_camera_to_nerfstudio_c2w(extrinsic) -> list[list[float]]:
     import numpy as np
