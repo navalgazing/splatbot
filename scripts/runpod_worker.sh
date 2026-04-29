@@ -280,6 +280,23 @@ check_vggt_weights_config() {
     echo "VGGT pose backend is configured but DINOv2 ViT-B/14 reg weights are missing at $dinov2_weights and downloads are disabled" >&2
     exit 2
   fi
+
+  local aliked_weights="${SPLATBOT_ALIKED_N16_WEIGHTS:-${TORCH_HOME:-/opt/splatbot/models/torch}/hub/checkpoints/aliked-n16.pth}"
+  if [ -s "$aliked_weights" ]; then
+    local aliked_bytes
+    aliked_bytes="$(stat -c%s "$aliked_weights")"
+    if [ "$aliked_bytes" -gt 2000000 ]; then
+      echo "  aliked_n16_weights=$aliked_weights bytes=$aliked_bytes"
+    else
+      echo "VGGT pose backend is configured but ALIKED N16 weights at $aliked_weights are too small: $aliked_bytes bytes" >&2
+      exit 2
+    fi
+  elif truthy "${SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD:-false}"; then
+    echo "  aliked_n16_weights=$aliked_weights missing; VGGT may download ALIKED weights during pose estimation"
+  else
+    echo "VGGT pose backend is configured but ALIKED N16 weights are missing at $aliked_weights and downloads are disabled" >&2
+    exit 2
+  fi
 }
 
 check_mast3r_weights_config() {

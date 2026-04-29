@@ -90,6 +90,7 @@ ARG DOWNLOAD_MAST3R_WEIGHTS=0
 ARG VGGT_WEIGHTS_URL=https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt
 ARG VGGSFM_TRACKER_WEIGHTS_URL=https://huggingface.co/facebook/VGGSfM/resolve/main/vggsfm_v2_tracker.pt
 ARG DINOV2_VITB14_REG_WEIGHTS_URL=https://dl.fbaipublicfiles.com/dinov2/dinov2_vitb14/dinov2_vitb14_reg4_pretrain.pth
+ARG ALIKED_N16_WEIGHTS_URL=https://raw.githubusercontent.com/Shiaoming/ALIKED/main/models/aliked-n16.pth
 ARG MAST3R_WEIGHTS_URL=https://download.europe.naverlabs.com/ComputerVision/MASt3R/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
 ARG DOWNLOAD_DA3_MODEL=0
 
@@ -102,6 +103,8 @@ ENV SPLATBOT_VGGSFM_TRACKER_WEIGHTS_URL=${VGGSFM_TRACKER_WEIGHTS_URL}
 ENV SPLATBOT_DINOV2_HUB_REPO=/opt/splatbot/models/torch/hub/facebookresearch_dinov2_main
 ENV SPLATBOT_DINOV2_VITB14_REG_WEIGHTS=/opt/splatbot/models/torch/hub/checkpoints/dinov2_vitb14_reg4_pretrain.pth
 ENV SPLATBOT_DINOV2_VITB14_REG_WEIGHTS_URL=${DINOV2_VITB14_REG_WEIGHTS_URL}
+ENV SPLATBOT_ALIKED_N16_WEIGHTS=/opt/splatbot/models/torch/hub/checkpoints/aliked-n16.pth
+ENV SPLATBOT_ALIKED_N16_WEIGHTS_URL=${ALIKED_N16_WEIGHTS_URL}
 ENV SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD=false
 ENV SPLATBOT_MAST3R_REPO=/opt/mast3r
 ENV SPLATBOT_MAST3R_WEIGHTS=/opt/splatbot/models/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
@@ -254,7 +257,10 @@ RUN if [ "$DOWNLOAD_VGGT_WEIGHTS" = "1" ]; then \
       && test "$(stat -c%s "$SPLATBOT_VGGSFM_TRACKER_WEIGHTS")" -gt 100000000 \
       && curl -fL --retry 5 --retry-delay 5 --retry-all-errors \
         -o "$SPLATBOT_DINOV2_VITB14_REG_WEIGHTS" "$SPLATBOT_DINOV2_VITB14_REG_WEIGHTS_URL" \
-      && test "$(stat -c%s "$SPLATBOT_DINOV2_VITB14_REG_WEIGHTS")" -gt 300000000; \
+      && test "$(stat -c%s "$SPLATBOT_DINOV2_VITB14_REG_WEIGHTS")" -gt 300000000 \
+      && curl -fL --retry 5 --retry-delay 5 --retry-all-errors \
+        -o "$SPLATBOT_ALIKED_N16_WEIGHTS" "$SPLATBOT_ALIKED_N16_WEIGHTS_URL" \
+      && test "$(stat -c%s "$SPLATBOT_ALIKED_N16_WEIGHTS")" -gt 2000000; \
     fi
 
 RUN /opt/splatbot/venv/bin/python - <<'PY'
@@ -277,6 +283,26 @@ def offline_urlopen(*args, **kwargs):
 torch.hub.urlopen = offline_urlopen
 model = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14_reg", verbose=False)
 print(f"DINOv2 torch hub cache validated: {type(model).__name__}")
+PY
+
+RUN /opt/splatbot/venv/bin/python - <<'PY'
+import os
+import urllib.error
+from pathlib import Path
+
+import torch
+from lightglue import ALIKED
+
+weights = Path(os.environ["SPLATBOT_ALIKED_N16_WEIGHTS"])
+if not weights.is_file() or weights.stat().st_size <= 2_000_000:
+    raise SystemExit(f"ALIKED N16 weights are missing or too small: {weights}")
+
+def offline_urlopen(*args, **kwargs):
+    raise urllib.error.URLError("offline cache validation")
+
+torch.hub.urlopen = offline_urlopen
+model = ALIKED(max_num_keypoints=16, detection_threshold=0.005)
+print(f"ALIKED cache validated: {type(model).__name__}")
 PY
 
 RUN if [ "$DOWNLOAD_DA3_MODEL" = "1" ]; then \

@@ -81,6 +81,7 @@ export U2NET_HOME="${{U2NET_HOME:-/opt/splatbot/models/rembg}}"
 {shell_export("SPLATBOT_VGGSFM_TRACKER_WEIGHTS", settings.vggsfm_tracker_weights)}
 {shell_export("SPLATBOT_DINOV2_HUB_REPO", settings.dinov2_hub_repo)}
 {shell_export("SPLATBOT_DINOV2_VITB14_REG_WEIGHTS", settings.dinov2_vitb14_reg_weights)}
+{shell_export("SPLATBOT_ALIKED_N16_WEIGHTS", settings.aliked_n16_weights)}
 {shell_export("SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD", str(settings.vggt_allow_weight_download).lower())}
 {shell_export("SPLATBOT_MAST3R_WEIGHTS", settings.mast3r_weights)}
 {shell_export("SPLATBOT_MAST3R_WEIGHTS_URL", settings.mast3r_weights_url)}
@@ -253,6 +254,26 @@ elif os.environ.get("SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD", "false").lower() in {
     print(f"dinov2 vitb14 reg weights bytes={{dinov2_weights.stat().st_size}}")
 else:
     raise SystemExit(f"DINOv2 ViT-B/14 reg weights are missing at {{dinov2_weights}} and downloads are disabled")
+
+aliked_weights = Path(os.environ["SPLATBOT_ALIKED_N16_WEIGHTS"])
+if aliked_weights.exists() and aliked_weights.stat().st_size >= 2_000_000:
+    print(f"aliked n16 weights bytes={{aliked_weights.stat().st_size}}")
+elif os.environ.get("SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD", "false").lower() in {"1", "true", "yes", "on"}:
+    from torch.hub import download_url_to_file
+
+    aliked_weights.parent.mkdir(parents=True, exist_ok=True)
+    partial = aliked_weights.with_suffix(aliked_weights.suffix + ".part")
+    if partial.exists():
+        partial.unlink()
+    download_url_to_file(
+        "https://raw.githubusercontent.com/Shiaoming/ALIKED/main/models/aliked-n16.pth",
+        str(partial),
+        progress=True,
+    )
+    partial.replace(aliked_weights)
+    print(f"aliked n16 weights bytes={{aliked_weights.stat().st_size}}")
+else:
+    raise SystemExit(f"ALIKED N16 weights are missing at {{aliked_weights}} and downloads are disabled")
 PY
 
 python - <<'PY'
