@@ -480,7 +480,7 @@ def vggt_main() -> None:
 
 def write_pairs_file(images: list[Path], pairs_path: Path, matching_method: str) -> None:
     pair_window = int(os.environ.get("SPLATBOT_MAST3R_PAIR_WINDOW", "").strip() or "5")
-    cyclic = truthy(os.environ.get("SPLATBOT_MAST3R_PAIR_CYCLIC", "").strip() or "true")
+    cyclic = truthy(os.environ.get("SPLATBOT_MAST3R_PAIR_CYCLIC", "").strip() or "false")
     exhaustive = matching_method.strip().lower() == "exhaustive"
     names = [image.name for image in images]
     pairs: set[tuple[str, str]] = set()

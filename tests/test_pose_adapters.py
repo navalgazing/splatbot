@@ -148,6 +148,24 @@ def test_mast3r_command_variants_only_retry_when_enabled(monkeypatch: pytest.Mon
     ]
 
 
+def test_mast3r_pairs_are_not_cyclic_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    images = tmp_path / "images"
+    write_images(images, count=4)
+    pairs_path = tmp_path / "pairs.txt"
+    monkeypatch.setenv("SPLATBOT_MAST3R_PAIR_WINDOW", "1")
+    monkeypatch.delenv("SPLATBOT_MAST3R_PAIR_CYCLIC", raising=False)
+
+    pose_adapters.write_pairs_file(sorted(images.iterdir()), pairs_path, "sequential")
+
+    pairs = pairs_path.read_text(encoding="utf-8")
+    assert "frame_00001.jpg, frame_00002.jpg, 1.0" in pairs
+    assert "frame_00003.jpg, frame_00004.jpg, 1.0" in pairs
+    assert "frame_00001.jpg, frame_00004.jpg, 1.0" not in pairs
+
+
 def test_mast3r_adapter_writes_pairs_and_normalizes_reconstruction(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

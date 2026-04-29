@@ -167,7 +167,7 @@ class Settings(BaseSettings):
     mast3r_args: str = ""
     mast3r_max_images: int = 80
     mast3r_pair_window: int = 5
-    mast3r_pair_cyclic: bool = True
+    mast3r_pair_cyclic: bool = False
     mast3r_device: str = "cuda"
     mast3r_shared_camera: bool = True
     mast3r_use_glomap: bool = True

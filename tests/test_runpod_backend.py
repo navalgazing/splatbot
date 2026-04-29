@@ -120,6 +120,7 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     assert "export SPLATBOT_GLOMAP_BIN=splatbot-glomap" in command
     assert "export SPLATBOT_GLOMAP_MAPPER_ARGS='--log_to_stderr=1 --ba_iteration_num=1 --GlobalPositioning.max_num_iterations=60 --BundleAdjustment.max_num_iterations=80'" in command
     assert "export SPLATBOT_MAST3R_PAIR_WINDOW=5" in command
+    assert "export SPLATBOT_MAST3R_PAIR_CYCLIC=false" in command
     assert "export SPLATBOT_MAST3R_USE_GLOMAP=true" in command
     assert "export SPLATBOT_SILHOUETTE_CLEANUP_ENABLED=true" in command
     assert "export SPLATBOT_SILHOUETTE_CLEANUP_MAX_REMOVE_FRACTION=0.6" in command
