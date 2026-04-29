@@ -491,7 +491,7 @@ def test_silhouette_cleanup_skips_when_remove_fraction_is_too_high(tmp_path) -> 
     assert b"element vertex 2" in dest.read_bytes().split(b"end_header", 1)[0]
 
 
-def test_validate_ply_quality_rejects_failed_mask_validation(tmp_path) -> None:
+def test_validate_ply_quality_warns_failed_mask_validation(tmp_path) -> None:
     metrics = {
         "ply": {
             "cleaned": {
@@ -512,11 +512,13 @@ def test_validate_ply_quality_rejects_failed_mask_validation(tmp_path) -> None:
         }
     }
 
-    with pytest.raises(ValueError, match="object-mask validation"):
-        validate_ply_quality(metrics, Settings(data_dir=tmp_path, min_splat_vertices=1))
+    assert validate_ply_quality(metrics, Settings(data_dir=tmp_path, min_splat_vertices=1)) is False
     report = build_quality_report(metrics, Settings(data_dir=tmp_path, min_splat_vertices=1))
     assert "postprocess_validation_failed" in report["issues"]
+    assert "quality_gate_warning" in report["warnings"]
     assert metrics["pipeline_events"][-1]["reason"] == "object_mask_validation_failed"
+    assert metrics["pipeline_events"][-1]["status"] == "warning"
+    assert metrics["quality"]["published_with_warnings"] is True
 
 
 def test_validate_ply_quality_rejects_unparseable_summary(tmp_path) -> None:
@@ -526,7 +528,7 @@ def test_validate_ply_quality_rejects_unparseable_summary(tmp_path) -> None:
         validate_ply_quality(metrics, Settings(data_dir=tmp_path, min_splat_vertices=1))
 
 
-def test_validate_ply_quality_rejects_borderline_vertex_count(tmp_path) -> None:
+def test_validate_ply_quality_warns_borderline_vertex_count(tmp_path) -> None:
     metrics = {
         "ply": {
             "cleaned": {
@@ -540,13 +542,12 @@ def test_validate_ply_quality_rejects_borderline_vertex_count(tmp_path) -> None:
         }
     }
 
-    with pytest.raises(ValueError, match="only 9752 vertices"):
-        validate_ply_quality(metrics, Settings(data_dir=tmp_path))
+    assert validate_ply_quality(metrics, Settings(data_dir=tmp_path)) is False
     report = build_quality_report(metrics, Settings(data_dir=tmp_path))
     assert "low_splat_vertex_count" in report["warnings"]
 
 
-def test_validate_ply_quality_rejects_too_few_vertices(tmp_path) -> None:
+def test_validate_ply_quality_warns_too_few_vertices(tmp_path) -> None:
     metrics = {
         "ply": {
             "cleaned": {
@@ -559,14 +560,14 @@ def test_validate_ply_quality_rejects_too_few_vertices(tmp_path) -> None:
         }
     }
 
-    with pytest.raises(ValueError, match="only 5000 vertices"):
-        validate_ply_quality(metrics, Settings(data_dir=tmp_path))
+    assert validate_ply_quality(metrics, Settings(data_dir=tmp_path)) is False
     report = build_quality_report(metrics, Settings(data_dir=tmp_path))
     assert "low_splat_vertex_count" in report["warnings"]
     assert metrics["pipeline_events"][-1]["reason"] == "low_splat_vertex_count"
+    assert metrics["pipeline_events"][-1]["status"] == "warning"
 
 
-def test_validate_ply_quality_rejects_low_export_retention(tmp_path) -> None:
+def test_validate_ply_quality_warns_low_export_retention(tmp_path) -> None:
     metrics = {
         "ply": {
             "cleaned": {
@@ -584,8 +585,7 @@ def test_validate_ply_quality_rejects_low_export_retention(tmp_path) -> None:
         }
     }
 
-    with pytest.raises(ValueError, match="retained too few Gaussians"):
-        validate_ply_quality(metrics, Settings(data_dir=tmp_path))
+    assert validate_ply_quality(metrics, Settings(data_dir=tmp_path)) is False
     report = build_quality_report(metrics, Settings(data_dir=tmp_path))
     assert "low_exported_gaussian_retention" in report["issues"]
 
@@ -1234,7 +1234,7 @@ async def test_mcmc_default_train_command_preserves_best_extra_args(tmp_path) ->
     ]
 
 
-async def test_train_export_retries_backend_that_fails_quality_gate(tmp_path) -> None:
+async def test_train_export_publishes_quality_warning_without_retry(tmp_path) -> None:
     settings = Settings(
         data_dir=tmp_path,
         min_splat_vertices=10,
@@ -1261,15 +1261,14 @@ async def test_train_export_retries_backend_that_fails_quality_gate(tmp_path) ->
     )
 
     assert artifacts.cleaned_ply.exists()
-    assert runner.train_calls == 2
-    assert runner.export_calls == 2
-    assert metrics["train_backend"] == "3dgs-mcmc"
-    assert metrics["train_backend_failures"][0]["backend"] == "splatfacto-big"
-    assert metrics["train_backend_failures"][0]["stage"] == "quality"
+    assert runner.train_calls == 1
+    assert runner.export_calls == 1
+    assert metrics["train_backend"] == "splatfacto-big"
     assert metrics["train_backend_attempts"][0]["cleaned_vertices"] == 5
-    assert metrics["train_backend_attempts"][1]["cleaned_vertices"] == 20
-    assert metrics["ply"]["cleaned"]["vertices"] == 20
-    assert any(event["reason"] == "output_quality_failed" for event in metrics["pipeline_events"])
+    assert metrics["train_backend_attempts"][0]["passed_quality"] is False
+    assert metrics["ply"]["cleaned"]["vertices"] == 5
+    assert metrics["quality"]["published_with_warnings"] is True
+    assert any(event["reason"] == "low_splat_vertex_count" for event in metrics["pipeline_events"])
 
 
 def test_latest_nerfstudio_config_selects_newest(tmp_path) -> None:

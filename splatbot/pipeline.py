@@ -1329,8 +1329,7 @@ class ScanPipeline:
                 attempt["raw_vertices"] = metrics["ply"]["raw"].get("vertices")
                 attempt["cleaned_vertices"] = metrics["ply"]["cleaned"].get("vertices")
                 attempt_stage = "quality"
-                validate_ply_quality(metrics, self.settings)
-                attempt["passed_quality"] = True
+                attempt["passed_quality"] = validate_ply_quality(metrics, self.settings)
                 if errors:
                     record_pipeline_event(
                         metrics,
@@ -1581,6 +1580,8 @@ def build_quality_report(metrics: dict, settings: Settings) -> dict:
         issues.append("too_few_accepted_object_masks")
     if pipeline_events_by_status(events, {"fallback", "recovered", "skip"}):
         warnings.append("pipeline_fallbacks_or_skips")
+    if pipeline_events_by_status(events, {"warning"}):
+        warnings.append("quality_gate_warning")
     if metrics.get("depth_backend_failures"):
         warnings.append("depth_backend_fallback_used")
     if metrics.get("pose_backend_failures"):
@@ -2972,7 +2973,7 @@ def update_bounds(mins: list[float], maxs: list[float], xyz: list[float]) -> Non
         maxs[idx] = max(maxs[idx], value)
 
 
-def validate_ply_quality(metrics: dict, settings: Settings) -> None:
+def validate_ply_quality(metrics: dict, settings: Settings) -> bool:
     ply = metrics.get("ply", {})
     cleaned = ply.get("cleaned", {})
     export_metrics = ply.get("export", {})
@@ -2985,39 +2986,35 @@ def validate_ply_quality(metrics: dict, settings: Settings) -> None:
         raise ValueError("Exported splat PLY does not declare a vertex count.")
     if not cleaned.get("has_xyz"):
         raise ValueError("Exported splat PLY does not contain x/y/z vertex properties.")
+    passed = True
     retention = export_metrics.get("retention_ratio")
     exported = export_metrics.get("exported_gaussians")
     total = export_metrics.get("total_gaussians")
     if isinstance(retention, int | float) and retention < settings.min_export_gaussian_retention:
+        passed = False
         record_pipeline_event(
             metrics,
             stage="exporting",
-            status="failure",
+            status="warning",
             reason="low_exported_gaussian_retention",
-            recovered=False,
+            recovered=True,
             details={
                 "exported_gaussians": exported,
                 "total_gaussians": total,
                 "retention_ratio": retention,
                 "expected_min_retention_ratio": settings.min_export_gaussian_retention,
+                "published": True,
             },
         )
-        raise ValueError(
-            "Export retained too few Gaussians "
-            f"({exported}/{total}, retention {retention:.4f}); expected at least "
-            f"{settings.min_export_gaussian_retention:.4f}."
-        )
     if vertices is not None and vertices < settings.min_splat_vertices:
+        passed = False
         record_pipeline_event(
             metrics,
             stage="exporting",
-            status="failure",
+            status="warning",
             reason="low_splat_vertex_count",
-            recovered=False,
-            details={"vertices": vertices, "expected_min_vertices": settings.min_splat_vertices},
-        )
-        raise ValueError(
-            f"Exported splat has only {vertices} vertices; expected at least {settings.min_splat_vertices}."
+            recovered=True,
+            details={"vertices": vertices, "expected_min_vertices": settings.min_splat_vertices, "published": True},
         )
     ratio = cleaned.get("flat_axis_ratio")
     if (
@@ -3026,38 +3023,41 @@ def validate_ply_quality(metrics: dict, settings: Settings) -> None:
         and vertices is not None
         and vertices < 20_000
     ):
+        passed = False
         record_pipeline_event(
             metrics,
             stage="exporting",
-            status="failure",
+            status="warning",
             reason="flattened_splat_geometry",
-            recovered=False,
+            recovered=True,
             details={
                 "flat_axis_ratio": ratio,
                 "min_axis_ratio": settings.max_flattened_axis_ratio,
                 "vertices": vertices,
+                "published": True,
             },
-        )
-        raise ValueError(
-            f"Exported splat appears flattened (axis ratio {ratio:.4f}, vertices {vertices})."
         )
     validation = metrics.get("ply", {}).get("cleanup", {}).get("validation", {})
     if validation.get("applied") and validation.get("passed") is False:
+        passed = False
         outside = validation.get("outside_candidate_fraction")
         low_support = validation.get("low_support_fraction")
         unobserved = validation.get("unobserved_fraction")
         record_pipeline_event(
             metrics,
             stage="postprocess",
-            status="failure",
+            status="warning",
             reason="object_mask_validation_failed",
-            recovered=False,
-            details={"outside": outside, "low_support": low_support, "unobserved": unobserved},
+            recovered=True,
+            details={"outside": outside, "low_support": low_support, "unobserved": unobserved, "published": True},
         )
-        raise ValueError(
-            "Exported splat failed object-mask validation "
-            f"(outside={outside}, low_support={low_support}, unobserved={unobserved})."
-        )
+    if not passed:
+        quality = metrics.setdefault("quality", {})
+        quality["passed"] = False
+        quality["published_with_warnings"] = True
+    else:
+        metrics.setdefault("quality", {})["passed"] = True
+    return passed
 
 
 def parse_ffprobe_duration(stdout: str) -> float | None:
