@@ -95,6 +95,9 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     assert "export SPLATBOT_EXPERIMENTAL_SAM3_ENABLED=false" in command
     assert "export SPLATBOT_BEST_POSE_BACKENDS=colmap-global,vggt-colmap,mast3r-sfm" in command
     assert "export SPLATBOT_DA3_MODEL=depth-anything/DA3-LARGE-1.1" in command
+    assert "export SPLATBOT_DA3_MODEL_CACHE_DIR=/workspace/models/da3" in command
+    assert "export SPLATBOT_DA3_ALLOW_MODEL_DOWNLOAD=true" in command
+    assert "export SPLATBOT_DA3_MODEL_DOWNLOAD_ATTEMPTS=5" in command
     assert "export SPLATBOT_DA3_USE_RAY_POSE=true" in command
     assert "export SPLATBOT_DA3_REF_VIEW_STRATEGY=middle" in command
     assert "export SPLATBOT_VGGT_POSE_COMMAND='splatbot-vggt --images {images_dir} --processed {processed_dir} --matching-method {matching_method}'" in command
@@ -383,7 +386,7 @@ def test_runpod_worker_requires_glomap_for_best_mast3r() -> None:
 
     assert 'check_required_glomap' in worker
     assert "best preset requires MASt3R+GLOMAP" in worker
-    assert "check_rembg_cuda\ncheck_required_glomap\ncheck_mast3r_weights_config\n\"$VENV_DIR/bin/python\" - <<'PY'" in worker
+    assert "check_rembg_cuda\ncheck_required_glomap\ncheck_mast3r_weights_config\ncheck_da3_model_config\n\"$VENV_DIR/bin/python\" - <<'PY'" in worker
 
 
 def test_runpod_worker_validates_mast3r_weight_configuration() -> None:

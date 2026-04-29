@@ -218,6 +218,42 @@ check_mast3r_weights_config() {
   exit 2
 }
 
+depth_backends_include_da3() {
+  local configured="${SPLATBOT_BEST_DEPTH_BACKENDS:-${SPLATBOT_DEPTH_BACKENDS:-}}"
+  if [ "${SPLATBOT_SCAN_PRESET:-balanced}" != "best" ]; then
+    configured="${SPLATBOT_DEPTH_BACKENDS:-$configured}"
+  fi
+  IFS=',' read -ra DEPTH_BACKENDS_FOR_CHECK <<< "$configured"
+  for backend in "${DEPTH_BACKENDS_FOR_CHECK[@]}"; do
+    backend="$(printf '%s' "$backend" | xargs)"
+    if [ "$backend" = "da3" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+check_da3_model_config() {
+  if ! depth_backends_include_da3; then
+    return 0
+  fi
+  local cache_root="${SPLATBOT_DA3_MODEL_CACHE_DIR:-/workspace/models/da3}"
+  local model="${SPLATBOT_DA3_MODEL:-depth-anything/DA3-LARGE-1.1}"
+  local safe_model
+  safe_model="$(printf '%s' "$model" | sed -E 's/[^A-Za-z0-9._-]+/__/g')"
+  local cached="$cache_root/$safe_model"
+  if [ -f "$model" ] || [ -f "$cached/config.json" ]; then
+    echo "  da3_model=$model cache=$cached"
+    return 0
+  fi
+  if truthy "${SPLATBOT_DA3_ALLOW_MODEL_DOWNLOAD:-true}"; then
+    echo "  da3_model=$model missing from $cached; splatbot-da3 will download/cache it if selected"
+    return 0
+  fi
+  echo "DA3 depth backend is configured but model cache is missing at $cached and downloads are disabled" >&2
+  exit 2
+}
+
 print_runtime_diagnostics() {
   echo "runtime diagnostics:"
   echo "  job=$SPLATBOT_JOB_ID mode=$SPLATBOT_SCAN_MODE preset=$SPLATBOT_SCAN_PRESET"
@@ -337,6 +373,7 @@ check_colmap_cuda
 check_rembg_cuda
 check_required_glomap
 check_mast3r_weights_config
+check_da3_model_config
 "$VENV_DIR/bin/python" - <<'PY'
 import torch
 

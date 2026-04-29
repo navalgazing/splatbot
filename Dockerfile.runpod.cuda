@@ -87,6 +87,7 @@ ARG VGGT_COMMIT
 ARG MAST3R_COMMIT
 ARG DOWNLOAD_MAST3R_WEIGHTS=0
 ARG MAST3R_WEIGHTS_URL=https://download.europe.naverlabs.com/ComputerVision/MASt3R/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
+ARG DOWNLOAD_DA3_MODEL=0
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV SPLATBOT_VGGT_REPO=/opt/vggt
@@ -94,6 +95,10 @@ ENV SPLATBOT_MAST3R_REPO=/opt/mast3r
 ENV SPLATBOT_MAST3R_WEIGHTS=/workspace/models/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
 ENV SPLATBOT_MAST3R_WEIGHTS_URL=${MAST3R_WEIGHTS_URL}
 ENV SPLATBOT_MAST3R_ALLOW_WEIGHT_DOWNLOAD=true
+ENV SPLATBOT_DA3_MODEL=depth-anything/DA3-LARGE-1.1
+ENV SPLATBOT_DA3_MODEL_CACHE_DIR=/workspace/models/da3
+ENV SPLATBOT_DA3_ALLOW_MODEL_DOWNLOAD=true
+ENV SPLATBOT_DA3_MODEL_DOWNLOAD_ATTEMPTS=5
 ENV TORCH_CUDA_ARCH_LIST=8.0;8.6;8.9;9.0
 ENV U2NET_HOME=/opt/splatbot/models/rembg
 
@@ -203,6 +208,10 @@ site_packages = Path(sysconfig.get_paths()["purelib"])
     encoding="utf-8",
 )
 PY
+
+RUN if [ "$DOWNLOAD_DA3_MODEL" = "1" ]; then \
+      /opt/splatbot/venv/bin/python -c 'import os, re; from pathlib import Path; from huggingface_hub import snapshot_download; model=os.environ["SPLATBOT_DA3_MODEL"]; safe=re.sub(r"[^A-Za-z0-9._-]+", "__", model); target=Path(os.environ["SPLATBOT_DA3_MODEL_CACHE_DIR"]) / safe; target.mkdir(parents=True, exist_ok=True); snapshot_download(repo_id=model, local_dir=str(target), resume_download=True); print(f"DA3 model cached at {target}")'; \
+    fi
 
 RUN set -eu; \
     export PATH="/opt/splatbot/venv/bin:$PATH"; \

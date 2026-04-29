@@ -134,6 +134,9 @@ class Settings(BaseSettings):
     best_pose_required_backends: str = ""
     pose_backend_command: str = "splatbot-pose --backend {backend} --input {images_dir} --output {processed_dir} --matching-method {matching_method}"
     da3_model: str = "depth-anything/DA3-LARGE-1.1"
+    da3_model_cache_dir: str = "/workspace/models/da3"
+    da3_allow_model_download: bool = True
+    da3_model_download_attempts: int = 5
     da3_use_ray_pose: bool = True
     da3_ref_view_strategy: str = "middle"
     da3_pose_command: str = "splatbot-da3 --images {images_dir} --processed {processed_dir}"

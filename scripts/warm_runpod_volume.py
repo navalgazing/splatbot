@@ -79,6 +79,10 @@ export U2NET_HOME="${{U2NET_HOME:-/opt/splatbot/models/rembg}}"
 {shell_export("SPLATBOT_MAST3R_WEIGHTS", settings.mast3r_weights)}
 {shell_export("SPLATBOT_MAST3R_WEIGHTS_URL", settings.mast3r_weights_url)}
 {shell_export("SPLATBOT_MAST3R_ALLOW_WEIGHT_DOWNLOAD", str(settings.mast3r_allow_weight_download).lower())}
+{shell_export("SPLATBOT_DA3_MODEL", settings.da3_model)}
+{shell_export("SPLATBOT_DA3_MODEL_CACHE_DIR", settings.da3_model_cache_dir)}
+{shell_export("SPLATBOT_DA3_ALLOW_MODEL_DOWNLOAD", str(settings.da3_allow_model_download).lower())}
+{shell_export("SPLATBOT_DA3_MODEL_DOWNLOAD_ATTEMPTS", str(settings.da3_model_download_attempts))}
 
 echo "warming runtime cache version: $CACHE_VERSION"
 echo "venv: $VENV_DIR"
@@ -144,6 +148,30 @@ elif os.environ.get("SPLATBOT_MAST3R_ALLOW_WEIGHT_DOWNLOAD", "true").lower() in 
     print(f"mast3r weights bytes={{mast3r_weights.stat().st_size}}")
 else:
     raise SystemExit(f"MASt3R weights are missing at {{mast3r_weights}} and downloads are disabled")
+PY
+
+python - <<'PY'
+import os
+import re
+from pathlib import Path
+from huggingface_hub import snapshot_download
+
+model = os.environ["SPLATBOT_DA3_MODEL"]
+safe_model = re.sub(r"[^A-Za-z0-9._-]+", "__", model)
+cache_dir = Path(os.environ["SPLATBOT_DA3_MODEL_CACHE_DIR"]) / safe_model
+has_model = cache_dir.joinpath("config.json").exists() and any(
+    path.is_file() and path.stat().st_size > 1_000_000
+    for pattern in ("*.safetensors", "*.bin", "*.pt", "*.pth")
+    for path in cache_dir.glob(pattern)
+)
+if has_model:
+    print(f"da3 model cache ready: {{cache_dir}}")
+elif os.environ.get("SPLATBOT_DA3_ALLOW_MODEL_DOWNLOAD", "true").lower() in {"1", "true", "yes", "on"}:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_download(repo_id=model, local_dir=str(cache_dir), resume_download=True)
+    print(f"da3 model cache ready: {{cache_dir}}")
+else:
+    raise SystemExit(f"DA3 model cache is missing at {{cache_dir}} and downloads are disabled")
 PY
 
 command -v ffmpeg
@@ -226,7 +254,7 @@ if [ -n "$CACHE_VERSION" ]; then
   printf '%s\\n' "$CACHE_VERSION" > "$CACHE_MARKER"
 fi
 
-du -sh "$VENV_DIR" "$TORCH_EXTENSIONS_DIR" "$U2NET_HOME" "$(dirname "$SPLATBOT_MAST3R_WEIGHTS")" || true
+du -sh "$VENV_DIR" "$TORCH_EXTENSIONS_DIR" "$U2NET_HOME" "$(dirname "$SPLATBOT_MAST3R_WEIGHTS")" "$SPLATBOT_DA3_MODEL_CACHE_DIR" || true
 echo "runtime cache verified"
 """
 

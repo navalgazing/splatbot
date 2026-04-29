@@ -4,11 +4,14 @@ import argparse
 import json
 import os
 import shutil
+import time
 from pathlib import Path
 
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 DEFAULT_MODEL = "depth-anything/DA3-LARGE-1.1"
+DEFAULT_MODEL_CACHE_DIR = Path("/workspace/models/da3")
+MIN_MODEL_FILE_BYTES = 1_000_000
 
 
 class Da3BackendError(RuntimeError):
@@ -71,13 +74,93 @@ def run_da3(
 
     if device == "cuda" and not torch.cuda.is_available():
         raise Da3BackendError("Depth Anything 3 requires CUDA for Splatbot best preset, but CUDA is unavailable")
-    model = DepthAnything3.from_pretrained(model_name)
+    model_path = ensure_da3_model(model_name)
+    model = DepthAnything3.from_pretrained(model_path)
     model = model.to(device=torch.device(device))
     return model.inference(
         [str(path) for path in images],
         use_ray_pose=use_ray_pose,
         ref_view_strategy=ref_view_strategy,
     )
+
+
+def ensure_da3_model(model_name: str) -> str:
+    local_path = local_da3_model_path(model_name)
+    if local_path is not None and has_da3_model_files(local_path):
+        return str(local_path)
+    if looks_like_local_path(model_name):
+        raise Da3BackendError(f"DA3 model path is missing or incomplete: {model_name}")
+
+    cache_dir = configured_cache_dir() / safe_model_dir_name(model_name)
+    if has_da3_model_files(cache_dir):
+        return str(cache_dir)
+    if not parse_bool(os.environ.get("SPLATBOT_DA3_ALLOW_MODEL_DOWNLOAD", "true")):
+        raise Da3BackendError(
+            f"DA3 model {model_name!r} is missing from {cache_dir}; "
+            "pre-warm the RunPod volume/image or set SPLATBOT_DA3_ALLOW_MODEL_DOWNLOAD=true."
+        )
+    download_da3_model(model_name, cache_dir)
+    if not has_da3_model_files(cache_dir):
+        raise Da3BackendError(f"downloaded DA3 model is missing required files under {cache_dir}")
+    return str(cache_dir)
+
+
+def local_da3_model_path(model_name: str) -> Path | None:
+    candidate = Path(model_name).expanduser()
+    if candidate.exists():
+        return candidate.resolve()
+    return candidate if looks_like_local_path(model_name) else None
+
+
+def looks_like_local_path(model_name: str) -> bool:
+    return model_name.startswith(("/", "./", "../", "~"))
+
+
+def configured_cache_dir() -> Path:
+    raw = os.environ.get("SPLATBOT_DA3_MODEL_CACHE_DIR", "").strip()
+    return Path(raw).expanduser() if raw else DEFAULT_MODEL_CACHE_DIR
+
+
+def safe_model_dir_name(model_name: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in {"-", ".", "_"} else "__" for ch in model_name)
+
+
+def has_da3_model_files(path: Path) -> bool:
+    if not path.exists():
+        return False
+    if path.is_file():
+        return path.stat().st_size >= MIN_MODEL_FILE_BYTES
+    if not (path / "config.json").exists():
+        return False
+    for pattern in ("*.safetensors", "*.bin", "*.pt", "*.pth"):
+        if any(file.is_file() and file.stat().st_size >= MIN_MODEL_FILE_BYTES for file in path.glob(pattern)):
+            return True
+    return False
+
+
+def download_da3_model(model_name: str, cache_dir: Path) -> None:
+    try:
+        from huggingface_hub import snapshot_download
+    except Exception as exc:  # noqa: BLE001
+        raise Da3BackendError(f"huggingface_hub is required to download DA3 model {model_name!r}: {exc}") from exc
+
+    attempts = max(1, int(os.environ.get("SPLATBOT_DA3_MODEL_DOWNLOAD_ATTEMPTS", "5") or "5"))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            print(f"downloading DA3 model attempt {attempt}/{attempts}: {model_name} -> {cache_dir}", flush=True)
+            snapshot_download(
+                repo_id=model_name,
+                local_dir=str(cache_dir),
+                resume_download=True,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            if attempt < attempts:
+                time.sleep(min(30, 2**attempt))
+    raise Da3BackendError(f"failed to download DA3 model {model_name!r} after {attempts} attempt(s): {last_error}")
 
 
 def write_nerfstudio_dataset(images: list[Path], prediction, processed_dir: Path) -> None:
