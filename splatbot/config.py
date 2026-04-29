@@ -43,13 +43,6 @@ class WorkerBackend(StrEnum):
 
 DEFAULT_RUNPOD_GPU_TYPE_ID = ",".join(
     (
-        "NVIDIA H200",
-        "NVIDIA H200 NVL",
-        "NVIDIA H100 80GB HBM3",
-        "NVIDIA H100 PCIe",
-        "NVIDIA H100 NVL",
-        "NVIDIA A100-SXM4-80GB",
-        "NVIDIA A100 80GB PCIe",
         "NVIDIA L40S",
         "NVIDIA L40",
         "NVIDIA RTX 6000 Ada Generation",
