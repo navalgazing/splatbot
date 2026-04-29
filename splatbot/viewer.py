@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import json
 import math
 import os
@@ -34,6 +35,9 @@ MESH_MODULE_ASSETS = (
     "loaders/OBJLoader.js",
 )
 ALL_VIEWER_ASSETS = tuple(VIEWER_ASSET_INTEGRITY)
+VIEWER_ASSET_VERSION = hashlib.sha256(
+    "\n".join(f"{path}:{VIEWER_ASSET_INTEGRITY[path]}" for path in sorted(ALL_VIEWER_ASSETS)).encode("ascii")
+).hexdigest()[:16]
 
 
 def publish_viewer(settings: Settings, job_id: str, outputs: PipelineOutputs) -> Path:
@@ -76,10 +80,16 @@ def publish_viewer(settings: Settings, job_id: str, outputs: PipelineOutputs) ->
 def ensure_viewer_assets(public_results_dir: Path) -> None:
     asset_root = public_results_dir / VIEWER_ASSET_DIR_NAME
     asset_root.mkdir(parents=True, exist_ok=True)
+    versioned_asset_root = asset_root / VIEWER_ASSET_VERSION
+    versioned_asset_root.mkdir(parents=True, exist_ok=True)
     package_assets = files("splatbot").joinpath("viewer_assets")
     for relative_path in ALL_VIEWER_ASSETS:
         source = package_assets.joinpath(*relative_path.split("/"))
-        target = asset_root / relative_path
+        for target_root in (asset_root, versioned_asset_root):
+            copy_viewer_asset(source, target_root / relative_path)
+
+
+def copy_viewer_asset(source, target: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp_target: Path | None = None
         try:
@@ -138,7 +148,7 @@ def render_viewer_html(
     mesh_button = '<button id="mesh-button" type="button">Use mesh view</button>' if mesh_name else ""
     mesh_download = f'<a href="{html.escape(mesh_name)}" download>Download mesh</a>' if mesh_name else ""
     report_download = '<a href="quality_report.json" download>Download quality report</a>' if has_quality_report else ""
-    asset_base = f"../{VIEWER_ASSET_DIR_NAME}/"
+    asset_base = f"../{VIEWER_ASSET_DIR_NAME}/{VIEWER_ASSET_VERSION}/"
     module_assets = list(CORE_MODULE_ASSETS)
     if mesh_name:
         module_assets.extend(MESH_MODULE_ASSETS)

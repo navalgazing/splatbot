@@ -5,7 +5,7 @@ import stat
 
 import pytest
 
-from splatbot.viewer import publish_viewer, safe_result_dir, write_viewer_point_cloud
+from splatbot.viewer import VIEWER_ASSET_VERSION, publish_viewer, safe_result_dir, write_viewer_point_cloud
 
 
 def test_publish_viewer_writes_static_result_page(tmp_path) -> None:
@@ -40,6 +40,7 @@ def test_publish_viewer_writes_static_result_page(tmp_path) -> None:
     assert (tmp_path / "public" / "job1" / "viewer_points.ply").exists()
     assert (tmp_path / "public" / "job1" / "turntable.mp4").exists()
     assert (tmp_path / "public" / "_viewer_assets" / "three.module.js").exists()
+    assert (tmp_path / "public" / "_viewer_assets" / VIEWER_ASSET_VERSION / "three.module.js").exists()
     assert (tmp_path / "public" / "_viewer_assets" / "controls" / "OrbitControls.js").exists()
     assert (tmp_path / "public" / "_viewer_assets" / "loaders" / "PLYLoader.js").exists()
     assert (tmp_path / "public" / "_viewer_assets" / "gaussian-splats-3d.module.js").exists()
@@ -55,8 +56,9 @@ def test_publish_viewer_writes_static_result_page(tmp_path) -> None:
     assert "Use full splat view" in html
     assert "startPointPreview();" in html
     assert 'import * as GaussianSplats3D' not in html
-    assert 'await import("../_viewer_assets/gaussian-splats-3d.module.js")' in html
-    assert "../_viewer_assets/three.module.js" in html
+    assert f'await import("../_viewer_assets/{VIEWER_ASSET_VERSION}/gaussian-splats-3d.module.js")' in html
+    assert f"../_viewer_assets/{VIEWER_ASSET_VERSION}/three.module.js" in html
+    assert f"../_viewer_assets/{VIEWER_ASSET_VERSION}/controls/OrbitControls.js" in html
     assert "https://unpkg.com/" not in html
     assert "https://cdn.jsdelivr.net/" not in html
     assert 'name="robots"' in html
