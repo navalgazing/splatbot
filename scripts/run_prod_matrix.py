@@ -77,6 +77,32 @@ MATRIX_ROWS: tuple[MatrixRow, ...] = (
         required_command_field="mcmc_train_command",
     ),
     MatrixRow(
+        "train-mip-splatting",
+        "Mip-Splatting training adapter with baseline pose, depth, and postprocess.",
+        {
+            "best_train_backends": "mip-splatting",
+            "best_train_required_backends": "mip-splatting",
+        },
+        required_command_field="mip_splatting_train_command",
+    ),
+    MatrixRow(
+        "train-2dgs",
+        "2D Gaussian Splatting training adapter with baseline pose, depth, and postprocess.",
+        {
+            "best_train_backends": "2dgs",
+            "best_train_required_backends": "2dgs",
+        },
+        required_command_field="twodgs_train_command",
+    ),
+    MatrixRow(
+        "train-dn-splatter-big",
+        "DN-Splatter depth-regularized training with baseline pose and postprocess.",
+        {
+            "best_train_backends": "dn-splatter-big",
+            "best_train_required_backends": "dn-splatter-big",
+        },
+    ),
+    MatrixRow(
         "postprocess-mask-support-strict",
         "Stricter mask-support pruning with baseline pose, depth, and train.",
         {
