@@ -289,6 +289,53 @@ def vggt_default_command(script: Path) -> str:
     return command
 
 
+def remove_flag(command: str, flag: str) -> str:
+    tokens = shlex.split(command)
+    filtered = [token for token in tokens if token != flag]
+    return shlex.join(filtered)
+
+
+def replace_flag_value(command: str, flag: str, value: str, *, only_if_greater: int | None = None) -> str:
+    tokens = shlex.split(command)
+    try:
+        index = tokens.index(flag)
+    except ValueError:
+        return command
+    value_index = index + 1
+    if value_index >= len(tokens):
+        return command
+    if only_if_greater is not None:
+        try:
+            current = int(tokens[value_index])
+        except ValueError:
+            return command
+        if current <= only_if_greater:
+            return command
+    tokens[value_index] = value
+    return shlex.join(tokens)
+
+
+def vggt_command_variants(command: str) -> list[str]:
+    lower_query = os.environ.get("SPLATBOT_VGGT_RETRY_MAX_QUERY_PTS", "").strip() or "1024"
+    variants = [
+        command,
+        replace_flag_value(command, "--max_query_pts", lower_query, only_if_greater=int(lower_query)),
+    ]
+    if "--use_ba" in shlex.split(command):
+        no_ba = remove_flag(command, "--use_ba")
+        variants.extend(
+            [
+                no_ba,
+                replace_flag_value(no_ba, "--max_query_pts", lower_query, only_if_greater=int(lower_query)),
+            ]
+        )
+    unique: list[str] = []
+    for variant in variants:
+        if variant not in unique:
+            unique.append(variant)
+    return unique
+
+
 def vggt_main() -> None:
     parser = argparse.ArgumentParser(description="Run VGGT pose and normalize it for Splatbot/Nerfstudio.")
     parser.add_argument("--images", "--input", dest="images_dir", required=True, type=Path)
@@ -308,38 +355,40 @@ def vggt_main() -> None:
         max_images = max_images_from_env("SPLATBOT_VGGT_MAX_IMAGES", 64)
         min_images = max_images_from_env("SPLATBOT_VGGT_MIN_IMAGES", 24)
         for image_cap in retry_image_caps(max_images, min_images):
-            scene_dir = tmp / f"scene_{image_cap or 'all'}"
-            staged_images = scene_dir / "images"
-            if scene_dir.exists():
-                shutil.rmtree(scene_dir)
-            stage_images(args.images_dir, staged_images, max_images=image_cap)
-            try:
-                render_and_run(
-                    command,
-                    {
-                        "scene_dir": str(scene_dir),
-                        "images_dir": str(staged_images),
-                        "input_dir": str(staged_images),
-                        "processed_dir": str(args.processed_dir),
-                        "output_dir": str(args.processed_dir),
-                        "work_dir": str(tmp),
-                        "vggt_repo": str(vggt_repo),
-                        "vggt_script": str(script),
-                        "python": default_python(),
-                        "matching_method": args.matching_method,
-                    },
-                )
-            except ExternalCommandFailed as exc:
-                last_error = exc
-                print(
-                    f"VGGT failed with {image_cap} image(s), retrying with fewer if available: {exc}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                continue
-            sparse_model = find_best_sparse_model(scene_dir / "sparse", scene_dir, tmp)
-            finalize_colmap_pose_dataset(staged_images, args.processed_dir, sparse_model)
-            return
+            for attempt_index, attempt_command in enumerate(vggt_command_variants(command), start=1):
+                scene_dir = tmp / f"scene_{image_cap or 'all'}_attempt_{attempt_index}"
+                staged_images = scene_dir / "images"
+                if scene_dir.exists():
+                    shutil.rmtree(scene_dir)
+                stage_images(args.images_dir, staged_images, max_images=image_cap)
+                try:
+                    render_and_run(
+                        attempt_command,
+                        {
+                            "scene_dir": str(scene_dir),
+                            "images_dir": str(staged_images),
+                            "input_dir": str(staged_images),
+                            "processed_dir": str(args.processed_dir),
+                            "output_dir": str(args.processed_dir),
+                            "work_dir": str(tmp),
+                            "vggt_repo": str(vggt_repo),
+                            "vggt_script": str(script),
+                            "python": default_python(),
+                            "matching_method": args.matching_method,
+                        },
+                    )
+                except ExternalCommandFailed as exc:
+                    last_error = exc
+                    print(
+                        f"VGGT failed with {image_cap} image(s) attempt {attempt_index}, "
+                        f"retrying if another variant is available: {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    continue
+                sparse_model = find_best_sparse_model(scene_dir / "sparse", scene_dir, tmp)
+                finalize_colmap_pose_dataset(staged_images, args.processed_dir, sparse_model)
+                return
         if last_error is not None:
             raise SystemExit(str(last_error)) from last_error
         raise SystemExit("VGGT did not run")

@@ -118,6 +118,23 @@ def test_retry_image_caps_halves_to_minimum() -> None:
     assert pose_adapters.retry_image_caps(0, 24) == [0]
 
 
+def test_vggt_command_variants_reduce_query_points_and_disable_ba(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SPLATBOT_VGGT_RETRY_MAX_QUERY_PTS", raising=False)
+
+    variants = pose_adapters.vggt_command_variants(
+        "python demo_colmap.py --scene_dir {scene_dir} --use_ba --max_query_pts 2048 --query_frame_num 5"
+    )
+
+    assert variants == [
+        "python demo_colmap.py --scene_dir {scene_dir} --use_ba --max_query_pts 2048 --query_frame_num 5",
+        "python demo_colmap.py --scene_dir '{scene_dir}' --use_ba --max_query_pts 1024 --query_frame_num 5",
+        "python demo_colmap.py --scene_dir '{scene_dir}' --max_query_pts 2048 --query_frame_num 5",
+        "python demo_colmap.py --scene_dir '{scene_dir}' --max_query_pts 1024 --query_frame_num 5",
+    ]
+
+
 def test_mast3r_adapter_writes_pairs_and_normalizes_reconstruction(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
