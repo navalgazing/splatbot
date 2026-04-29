@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     max_video_sample_fps: float = 12.0
     max_video_candidate_fps: float = 30.0
     max_upload_bytes: int = 1024 * 1024 * 1024
-    interrupted_job_grace_seconds: int = 10 * 60
+    interrupted_job_grace_seconds: int = 30 * 60
     default_scan_mode: ScanMode = ScanMode.SCENE
     default_scan_preset: ScanPreset = ScanPreset.BALANCED
     job_retention_days: int = 14
