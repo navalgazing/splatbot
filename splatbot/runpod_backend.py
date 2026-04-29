@@ -451,6 +451,7 @@ def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str) 
             "SPLATBOT_DINOV2_HUB_REPO": settings.dinov2_hub_repo,
             "SPLATBOT_DINOV2_VITB14_REG_WEIGHTS": settings.dinov2_vitb14_reg_weights,
             "SPLATBOT_ALIKED_N16_WEIGHTS": settings.aliked_n16_weights,
+            "SPLATBOT_SUPERPOINT_WEIGHTS": settings.superpoint_weights,
             "SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD": str(settings.vggt_allow_weight_download).lower(),
             "SPLATBOT_MAST3R_POSE_COMMAND": settings.mast3r_pose_command,
             "SPLATBOT_MAST3R_REPO": settings.mast3r_repo,

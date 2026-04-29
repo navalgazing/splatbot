@@ -110,6 +110,7 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     assert "export SPLATBOT_DINOV2_HUB_REPO=/opt/splatbot/models/torch/hub/facebookresearch_dinov2_main" in command
     assert "export SPLATBOT_DINOV2_VITB14_REG_WEIGHTS=/opt/splatbot/models/torch/hub/checkpoints/dinov2_vitb14_reg4_pretrain.pth" in command
     assert "export SPLATBOT_ALIKED_N16_WEIGHTS=/opt/splatbot/models/torch/hub/checkpoints/aliked-n16.pth" in command
+    assert "export SPLATBOT_SUPERPOINT_WEIGHTS=/opt/splatbot/models/torch/hub/checkpoints/superpoint_v1.pth" in command
     assert "export SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD=false" in command
     assert "export SPLATBOT_MAST3R_POSE_COMMAND='splatbot-mast3r --images {images_dir} --processed {processed_dir} --matching-method {matching_method}'" in command
     assert "export SPLATBOT_MAST3R_REPO=/opt/mast3r" in command
@@ -411,6 +412,8 @@ def test_runpod_worker_validates_vggt_weight_configuration() -> None:
     assert "VGGT may download DINOv2 weights during pose estimation" in worker
     assert "ALIKED N16 weights are missing" in worker
     assert "VGGT may download ALIKED weights during pose estimation" in worker
+    assert "SuperPoint weights are missing" in worker
+    assert "VGGT may download SuperPoint weights during pose estimation" in worker
 
 
 def test_runpod_worker_validates_mast3r_weight_configuration() -> None:

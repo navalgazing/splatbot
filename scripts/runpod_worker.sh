@@ -297,6 +297,23 @@ check_vggt_weights_config() {
     echo "VGGT pose backend is configured but ALIKED N16 weights are missing at $aliked_weights and downloads are disabled" >&2
     exit 2
   fi
+
+  local superpoint_weights="${SPLATBOT_SUPERPOINT_WEIGHTS:-${TORCH_HOME:-/opt/splatbot/models/torch}/hub/checkpoints/superpoint_v1.pth}"
+  if [ -s "$superpoint_weights" ]; then
+    local superpoint_bytes
+    superpoint_bytes="$(stat -c%s "$superpoint_weights")"
+    if [ "$superpoint_bytes" -gt 4000000 ]; then
+      echo "  superpoint_weights=$superpoint_weights bytes=$superpoint_bytes"
+    else
+      echo "VGGT pose backend is configured but SuperPoint weights at $superpoint_weights are too small: $superpoint_bytes bytes" >&2
+      exit 2
+    fi
+  elif truthy "${SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD:-false}"; then
+    echo "  superpoint_weights=$superpoint_weights missing; VGGT may download SuperPoint weights during pose estimation"
+  else
+    echo "VGGT pose backend is configured but SuperPoint weights are missing at $superpoint_weights and downloads are disabled" >&2
+    exit 2
+  fi
 }
 
 check_mast3r_weights_config() {

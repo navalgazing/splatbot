@@ -91,6 +91,7 @@ ARG VGGT_WEIGHTS_URL=https://huggingface.co/facebook/VGGT-1B/resolve/main/model.
 ARG VGGSFM_TRACKER_WEIGHTS_URL=https://huggingface.co/facebook/VGGSfM/resolve/main/vggsfm_v2_tracker.pt
 ARG DINOV2_VITB14_REG_WEIGHTS_URL=https://dl.fbaipublicfiles.com/dinov2/dinov2_vitb14/dinov2_vitb14_reg4_pretrain.pth
 ARG ALIKED_N16_WEIGHTS_URL=https://raw.githubusercontent.com/Shiaoming/ALIKED/main/models/aliked-n16.pth
+ARG SUPERPOINT_WEIGHTS_URL=https://github.com/cvg/LightGlue/releases/download/v0.1_arxiv/superpoint_v1.pth
 ARG MAST3R_WEIGHTS_URL=https://download.europe.naverlabs.com/ComputerVision/MASt3R/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
 ARG DOWNLOAD_DA3_MODEL=0
 
@@ -105,6 +106,8 @@ ENV SPLATBOT_DINOV2_VITB14_REG_WEIGHTS=/opt/splatbot/models/torch/hub/checkpoint
 ENV SPLATBOT_DINOV2_VITB14_REG_WEIGHTS_URL=${DINOV2_VITB14_REG_WEIGHTS_URL}
 ENV SPLATBOT_ALIKED_N16_WEIGHTS=/opt/splatbot/models/torch/hub/checkpoints/aliked-n16.pth
 ENV SPLATBOT_ALIKED_N16_WEIGHTS_URL=${ALIKED_N16_WEIGHTS_URL}
+ENV SPLATBOT_SUPERPOINT_WEIGHTS=/opt/splatbot/models/torch/hub/checkpoints/superpoint_v1.pth
+ENV SPLATBOT_SUPERPOINT_WEIGHTS_URL=${SUPERPOINT_WEIGHTS_URL}
 ENV SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD=false
 ENV SPLATBOT_MAST3R_REPO=/opt/mast3r
 ENV SPLATBOT_MAST3R_WEIGHTS=/opt/splatbot/models/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
@@ -260,7 +263,10 @@ RUN if [ "$DOWNLOAD_VGGT_WEIGHTS" = "1" ]; then \
       && test "$(stat -c%s "$SPLATBOT_DINOV2_VITB14_REG_WEIGHTS")" -gt 300000000 \
       && curl -fL --retry 5 --retry-delay 5 --retry-all-errors \
         -o "$SPLATBOT_ALIKED_N16_WEIGHTS" "$SPLATBOT_ALIKED_N16_WEIGHTS_URL" \
-      && test "$(stat -c%s "$SPLATBOT_ALIKED_N16_WEIGHTS")" -gt 2000000; \
+      && test "$(stat -c%s "$SPLATBOT_ALIKED_N16_WEIGHTS")" -gt 2000000 \
+      && curl -fL --retry 5 --retry-delay 5 --retry-all-errors \
+        -o "$SPLATBOT_SUPERPOINT_WEIGHTS" "$SPLATBOT_SUPERPOINT_WEIGHTS_URL" \
+      && test "$(stat -c%s "$SPLATBOT_SUPERPOINT_WEIGHTS")" -gt 4000000; \
     fi
 
 RUN /opt/splatbot/venv/bin/python - <<'PY'
@@ -291,18 +297,22 @@ import urllib.error
 from pathlib import Path
 
 import torch
-from lightglue import ALIKED
+from lightglue import ALIKED, SuperPoint
 
-weights = Path(os.environ["SPLATBOT_ALIKED_N16_WEIGHTS"])
-if not weights.is_file() or weights.stat().st_size <= 2_000_000:
-    raise SystemExit(f"ALIKED N16 weights are missing or too small: {weights}")
+aliked = Path(os.environ["SPLATBOT_ALIKED_N16_WEIGHTS"])
+if not aliked.is_file() or aliked.stat().st_size <= 2_000_000:
+    raise SystemExit(f"ALIKED N16 weights are missing or too small: {aliked}")
+superpoint = Path(os.environ["SPLATBOT_SUPERPOINT_WEIGHTS"])
+if not superpoint.is_file() or superpoint.stat().st_size <= 4_000_000:
+    raise SystemExit(f"SuperPoint weights are missing or too small: {superpoint}")
 
 def offline_urlopen(*args, **kwargs):
     raise urllib.error.URLError("offline cache validation")
 
 torch.hub.urlopen = offline_urlopen
-model = ALIKED(max_num_keypoints=16, detection_threshold=0.005)
-print(f"ALIKED cache validated: {type(model).__name__}")
+aliked_model = ALIKED(max_num_keypoints=16, detection_threshold=0.005)
+superpoint_model = SuperPoint(max_num_keypoints=16, detection_threshold=0.005)
+print(f"LightGlue cache validated: {type(aliked_model).__name__}, {type(superpoint_model).__name__}")
 PY
 
 RUN if [ "$DOWNLOAD_DA3_MODEL" = "1" ]; then \
