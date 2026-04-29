@@ -47,20 +47,16 @@ def test_publish_viewer_writes_static_result_page(tmp_path) -> None:
     assert stat.S_IMODE((tmp_path / "public" / "_viewer_assets" / "three.module.js").stat().st_mode) == 0o644
     html = path.read_text(encoding="utf-8")
     assert 'type="importmap"' in html
-    assert 'rel="modulepreload"' in html
-    assert "sha384-" in html
     assert 'from "three"' in html
+    assert "https://unpkg.com/three@0.165.0/build/three.module.js" in html
+    assert "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.6/build/gaussian-splats-3d.module.js" in html
     assert "viewer_points.ply" in html
     assert "PLYLoader" in html
-    assert "Loading point preview" in html
+    assert "Loading Gaussian splat scene" in html
     assert "Use full splat view" in html
-    assert "startPointPreview();" in html
-    assert 'import * as GaussianSplats3D' not in html
-    assert f'await import("../_viewer_assets/{VIEWER_ASSET_VERSION}/gaussian-splats-3d.module.js")' in html
-    assert f"../_viewer_assets/{VIEWER_ASSET_VERSION}/three.module.js" in html
-    assert f"../_viewer_assets/{VIEWER_ASSET_VERSION}/controls/OrbitControls.js" in html
-    assert "https://unpkg.com/" not in html
-    assert "https://cdn.jsdelivr.net/" not in html
+    assert "startSplatViewer();" in html
+    assert 'import * as GaussianSplats3D from "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d' in html
+    assert 'await import("../_viewer_assets/' not in html
     assert 'name="robots"' in html
 
 

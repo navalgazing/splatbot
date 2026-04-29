@@ -17,6 +17,12 @@ from .pipeline import PipelineOutputs
 ALLOWED_MESH_EXTENSIONS = {".glb", ".gltf", ".obj"}
 VIEWER_ASSET_DIR_NAME = "_viewer_assets"
 GAUSSIAN_SPLATS_MODULE_PATH = "gaussian-splats-3d.module.js"
+THREE_MODULE_URL = "https://unpkg.com/three@0.165.0/build/three.module.js"
+THREE_ADDONS_URL = "https://unpkg.com/three@0.165.0/examples/jsm/"
+GAUSSIAN_SPLATS_MODULE_URL = (
+    "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.6/"
+    "build/gaussian-splats-3d.module.js"
+)
 VIEWER_ASSET_INTEGRITY = {
     "three.module.js": "sha384-Qvl1RLjZOCDFOOH2bKcGnaDHMM8MVv3zVtMvhy3juQdiIOs6RgQ/7zYdM1FbpHzI",
     "controls/OrbitControls.js": "sha384-BZPDnhvqQ9HQ5XsmqEusjwpN9TIaiGbsJ5XWilDEuRu9Psbw4ZyYk67DUO0nbP3z",
@@ -148,15 +154,7 @@ def render_viewer_html(
     mesh_button = '<button id="mesh-button" type="button">Use mesh view</button>' if mesh_name else ""
     mesh_download = f'<a href="{html.escape(mesh_name)}" download>Download mesh</a>' if mesh_name else ""
     report_download = '<a href="quality_report.json" download>Download quality report</a>' if has_quality_report else ""
-    asset_base = f"../{VIEWER_ASSET_DIR_NAME}/{VIEWER_ASSET_VERSION}/"
-    module_assets = list(CORE_MODULE_ASSETS)
-    if mesh_name:
-        module_assets.extend(MESH_MODULE_ASSETS)
-    module_preloads = "\n".join(
-        f'  <link rel="modulepreload" href="{html.escape(asset_base + path)}" '
-        f'integrity="{html.escape(VIEWER_ASSET_INTEGRITY[path])}">'
-        for path in module_assets
-    )
+    module_preloads = ""
     metadata = {
         "job_id": job_id,
         "mesh": mesh_name,
@@ -263,7 +261,7 @@ def render_viewer_html(
       <div id="splat-viewport"></div>
       <div id="fallback-viewport"></div>
       <div id="mesh-viewport"></div>
-      <div class="status" id="status">Loading point preview...</div>
+      <div class="status" id="status">Loading Gaussian splat scene...</div>
     </section>
     <aside>
       <h1>{html.escape(title)}</h1>
@@ -279,8 +277,8 @@ def render_viewer_html(
   <script type="importmap">
     {{
       "imports": {{
-        "three": "{asset_base}three.module.js",
-        "three/addons/": "{asset_base}"
+        "three": "{THREE_MODULE_URL}",
+        "three/addons/": "{THREE_ADDONS_URL}"
       }}
     }}
   </script>
@@ -288,6 +286,7 @@ def render_viewer_html(
     import * as THREE from "three";
     import {{ OrbitControls }} from "three/addons/controls/OrbitControls.js";
     import {{ PLYLoader }} from "three/addons/loaders/PLYLoader.js";
+    import * as GaussianSplats3D from "{GAUSSIAN_SPLATS_MODULE_URL}";
 
     const container = document.getElementById("viewport");
     const splatContainer = document.getElementById("splat-viewport");
@@ -299,17 +298,9 @@ def render_viewer_html(
     const meshButton = document.getElementById("mesh-button");
     const meshName = {json.dumps(mesh_name)};
     let splatViewer = null;
-    let GaussianSplats3D = null;
     let fallbackStarted = false;
     let meshStarted = false;
     let activeView = null;
-
-    async function loadGaussianSplats3D() {{
-      if (!GaussianSplats3D) {{
-        GaussianSplats3D = await import("{asset_base}{GAUSSIAN_SPLATS_MODULE_PATH}");
-      }}
-      return GaussianSplats3D;
-    }}
 
     function disposeSplatViewer() {{
       if (!splatViewer) return;
@@ -328,8 +319,7 @@ def render_viewer_html(
       }}
       status.textContent = "Loading full Gaussian splat scene...";
       try {{
-        const GaussianSplats3DModule = await loadGaussianSplats3D();
-        splatViewer = new GaussianSplats3DModule.Viewer({{
+        splatViewer = new GaussianSplats3D.Viewer({{
           rootElement: splatContainer,
           cameraUp: [0, 0, 1],
           initialCameraPosition: [1.4, -2.0, 1.2],
@@ -342,7 +332,7 @@ def render_viewer_html(
           showLoadingUI: true,
         }});
         await splatViewer.addSplatScene("cleaned_splat.ply", {{
-          format: GaussianSplats3DModule.SceneFormat.Ply,
+          format: GaussianSplats3D.SceneFormat.Ply,
           splatAlphaRemovalThreshold: 5,
           showLoadingUI: true,
           progressiveLoad: true,
@@ -513,7 +503,7 @@ def render_viewer_html(
     splatButton.addEventListener("click", startSplatViewer);
     if (meshButton) meshButton.addEventListener("click", startMeshPreview);
     fallbackButton.addEventListener("click", startPointPreview);
-    startPointPreview();
+    startSplatViewer();
   </script>
   <script type="application/json" id="metadata">{json.dumps(metadata)}</script>
 </body>

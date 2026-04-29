@@ -207,11 +207,17 @@ class ScanPipeline:
             "ply": {},
             "pipeline_events": [],
         }
+        if self.settings.matrix_run_metadata:
+            try:
+                metrics["matrix_run"] = json.loads(self.settings.matrix_run_metadata)
+            except json.JSONDecodeError:
+                metrics["matrix_run"] = {"raw": self.settings.matrix_run_metadata}
         write_json(
             settings_path,
             {
                 "mode": mode.value,
                 "preset": preset_config.preset.value,
+                "matrix_run": metrics.get("matrix_run"),
                 "max_video_frames": preset_config.max_video_frames,
                 "max_video_candidate_fps": self.settings.max_video_candidate_fps,
                 "adaptive_frame_selection": preset_config.adaptive_frame_selection,

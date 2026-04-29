@@ -299,6 +299,7 @@ class Settings(BaseSettings):
     runpod_runtime_cache_marker: str = "/workspace/.splatbot-runtime-cache-version"
     runpod_bootstrap_command: str = ""
     runpod_setup_command: str = ""
+    matrix_run_metadata: str = ""
 
     @field_validator("allowed_telegram_ids", mode="before")
     @classmethod

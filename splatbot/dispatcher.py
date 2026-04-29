@@ -6,6 +6,7 @@ import signal
 
 from .artifacts import ArtifactStore
 from .config import Settings, WorkerBackend
+from .job_overrides import settings_for_job
 from .logging_config import configure_logging
 from .models import JobArtifact, JobStatus, ScanJob
 from .notifications import TelegramNotifier
@@ -29,10 +30,10 @@ class Dispatcher:
     ) -> None:
         self.settings = settings
         self.store = store
-        self.pipeline = pipeline or ScanPipeline(settings)
-        self.artifact_store = artifact_store or ArtifactStore(settings)
+        self.pipeline = pipeline
+        self.artifact_store = artifact_store
         self.notifier = notifier
-        self.runpod_launcher = runpod_launcher or RunPodLauncher(settings)
+        self.runpod_launcher = runpod_launcher
 
     async def _notify_done(self, job: ScanJob, artifacts: list[JobArtifact]) -> None:
         if not self.notifier:
@@ -54,6 +55,14 @@ class Dispatcher:
         job = await self.store.claim_next_queued_job()
         if job is None:
             return False
+        try:
+            job_settings = settings_for_job(self.settings, job)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("job %s has invalid settings overrides", job.id)
+            updated = await self.store.set_job_failed_unless_terminal(job.id, str(exc))
+            if self.notifier and updated and updated.status == JobStatus.FAILED:
+                await self._notify_failed(updated, str(exc))
+            return True
         if self.settings.worker_backend == WorkerBackend.RUNPOD:
             try:
                 loop = asyncio.get_running_loop()
@@ -65,7 +74,8 @@ class Dispatcher:
                     )
                     future.result(timeout=10)
 
-                pod = await asyncio.to_thread(self.runpod_launcher.launch, job, record_pod_id)
+                launcher = self.runpod_launcher or RunPodLauncher(job_settings)
+                pod = await asyncio.to_thread(launcher.launch, job, record_pod_id)
                 LOGGER.info("finished RunPod pod %s for job %s", pod.id, job.id)
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("RunPod job %s failed", job.id)
@@ -83,13 +93,15 @@ class Dispatcher:
             return True
         media = await self.store.list_media(job.session_id)
         try:
-            outputs = await self.pipeline.run(job.id, job.mode, media, self.store.set_job_status, job.preset)
+            pipeline = self.pipeline or ScanPipeline(job_settings)
+            artifact_store = self.artifact_store or ArtifactStore(job_settings)
+            outputs = await pipeline.run(job.id, job.mode, media, self.store.set_job_status, job.preset)
             artifacts = await publish_job_artifacts(
-                self.settings,
+                job_settings,
                 self.store,
                 job,
                 outputs,
-                self.artifact_store,
+                artifact_store,
             )
             LOGGER.info("job %s done: ply=%s preview=%s", job.id, outputs.cleaned_ply, outputs.preview_mp4)
             await self.store.set_job_status(job.id, JobStatus.DONE)

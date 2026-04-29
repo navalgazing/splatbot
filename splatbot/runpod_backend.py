@@ -517,6 +517,7 @@ def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str) 
             "SPLATBOT_MESH_EXPORT_FILENAME": settings.mesh_export_filename,
             "SPLATBOT_MESH_EXPORT_REQUIRED": str(settings.mesh_export_required).lower(),
             "SPLATBOT_RENDER_PREVIEW": str(settings.render_preview).lower(),
+            "SPLATBOT_MATRIX_RUN_METADATA": settings.matrix_run_metadata,
             "SPLATBOT_LOG_COMMAND_OUTPUT": "true",
         }.items()
     )
