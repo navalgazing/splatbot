@@ -61,6 +61,18 @@ def test_publish_viewer_writes_static_result_page(tmp_path) -> None:
     assert "PLYLoader" in html
     assert "Loading Gaussian splat scene" in html
     assert "Use full splat view" in html
+    assert "Min opacity" in html
+    assert "Max scale" in html
+    assert "Max anisotropy" in html
+    assert "Load filter sliders" in html
+    assert "Reset filters" in html
+    assert "0 kept / 0 hidden" in html
+    assert 'splatViewer.addSplatScene("cleaned_splat.ply"' in html
+    assert "progressiveLoad: true" in html
+    assert "PlyParser.parseToUncompressedSplatArray" in html
+    assert "SplatBuffer.generateFromUncompressedSplatArrays" in html
+    assert "viewer.addSplatBuffers" in html
+    assert "DEFAULT_MIN_OPACITY_ALPHA = 5" in html
     assert "startSplatViewer();" in html
     assert 'import * as GaussianSplats3D from "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d' in html
     assert 'await import("../_viewer_assets/' not in html

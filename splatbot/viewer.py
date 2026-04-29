@@ -44,7 +44,8 @@ ALL_VIEWER_ASSETS = tuple(VIEWER_ASSET_INTEGRITY)
 VIEWER_ASSET_VERSION = hashlib.sha256(
     "\n".join(f"{path}:{VIEWER_ASSET_INTEGRITY[path]}" for path in sorted(ALL_VIEWER_ASSETS)).encode("ascii")
 ).hexdigest()[:16]
-VIEWER_PAGE_VERSION = f"viewer-{VIEWER_ASSET_VERSION}"
+VIEWER_HTML_VERSION = "filters-on-demand-20260429"
+VIEWER_PAGE_VERSION = f"viewer-{VIEWER_ASSET_VERSION}-{VIEWER_HTML_VERSION}"
 
 
 def cache_busted_viewer_url(url: str) -> str:
@@ -243,10 +244,69 @@ def render_viewer_html(
       text-align: left;
     }}
     button:hover {{ background: #263244; }}
+    button:disabled {{
+      opacity: 0.52;
+      cursor: not-allowed;
+    }}
     video {{
       width: 100%;
       margin: 12px 0 16px;
       background: #000;
+    }}
+    .filter-panel {{
+      border-top: 1px solid #2f3748;
+      margin: 4px 0 14px;
+      padding: 14px 0 2px;
+    }}
+    .filter-header {{
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 0 0 8px;
+      font-size: 13px;
+      line-height: 1.3;
+    }}
+    .filter-header strong {{
+      font-size: 13px;
+      font-weight: 650;
+    }}
+    #filter-counts {{
+      color: #cbd5e1;
+      font-size: 12px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }}
+    .filter-control {{
+      display: block;
+      padding: 8px 0;
+      color: #e5e7eb;
+      font-size: 12px;
+    }}
+    .filter-label-row {{
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 6px;
+    }}
+    .filter-control output {{
+      color: #bfdbfe;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }}
+    .filter-control input {{
+      width: 100%;
+      margin: 0;
+      accent-color: #60a5fa;
+    }}
+    .filter-control input:disabled {{
+      opacity: 0.52;
+      cursor: not-allowed;
+    }}
+    #filter-reset {{
+      margin: 10px 0 0;
+      text-align: center;
     }}
     .status {{
       position: absolute;
@@ -279,6 +339,35 @@ def render_viewer_html(
       <button id="splat-button" type="button">Use full splat view</button>
       {mesh_button}
       <button id="fallback-button" type="button">Use point preview</button>
+      <div class="filter-panel" id="filter-panel" aria-label="Splat filters">
+        <div class="filter-header">
+          <strong>Filters</strong>
+          <span id="filter-counts">0 kept / 0 hidden</span>
+        </div>
+        <button id="filter-load" type="button">Load filter sliders</button>
+        <label class="filter-control" for="filter-opacity">
+          <span class="filter-label-row">
+            <span>Min opacity</span>
+            <output id="filter-opacity-value" for="filter-opacity">2%</output>
+          </span>
+          <input id="filter-opacity" type="range" min="0" max="1" step="0.01" value="0.02" disabled>
+        </label>
+        <label class="filter-control" for="filter-scale">
+          <span class="filter-label-row">
+            <span>Max scale</span>
+            <output id="filter-scale-value" for="filter-scale">all</output>
+          </span>
+          <input id="filter-scale" type="range" min="0" max="1" step="0.01" value="1" disabled>
+        </label>
+        <label class="filter-control" for="filter-anisotropy">
+          <span class="filter-label-row">
+            <span>Max anisotropy</span>
+            <output id="filter-anisotropy-value" for="filter-anisotropy">all</output>
+          </span>
+          <input id="filter-anisotropy" type="range" min="1" max="1" step="0.01" value="1" disabled>
+        </label>
+        <button id="filter-reset" type="button" disabled>Reset filters</button>
+      </div>
       {preview_html}
       <a href="cleaned_splat.ply" download>Download PLY</a>
       {mesh_download}
@@ -307,16 +396,311 @@ def render_viewer_html(
     const splatButton = document.getElementById("splat-button");
     const fallbackButton = document.getElementById("fallback-button");
     const meshButton = document.getElementById("mesh-button");
+    const filterCounts = document.getElementById("filter-counts");
+    const opacityInput = document.getElementById("filter-opacity");
+    const scaleInput = document.getElementById("filter-scale");
+    const anisotropyInput = document.getElementById("filter-anisotropy");
+    const opacityValue = document.getElementById("filter-opacity-value");
+    const scaleValue = document.getElementById("filter-scale-value");
+    const anisotropyValue = document.getElementById("filter-anisotropy-value");
+    const filterLoad = document.getElementById("filter-load");
+    const filterReset = document.getElementById("filter-reset");
     const meshName = {json.dumps(mesh_name)};
+    const DEFAULT_MIN_OPACITY_ALPHA = 5;
+    const DEFAULT_MIN_OPACITY = DEFAULT_MIN_OPACITY_ALPHA / 255;
+    const SPLAT_OFFSET = {{
+      SCALE0: 3,
+      SCALE1: 4,
+      SCALE2: 5,
+      OPACITY: 13,
+    }};
     let splatViewer = null;
+    let splatViewerGeneration = 0;
+    let splatArray = null;
+    let splatMetrics = null;
+    let filterDataLoading = false;
+    let filterApplyRunning = false;
+    let filterApplyQueued = false;
+    let filterDebounce = null;
     let fallbackStarted = false;
     let meshStarted = false;
     let activeView = null;
 
     function disposeSplatViewer() {{
       if (!splatViewer) return;
+      splatViewerGeneration++;
       try {{ splatViewer.dispose(); }} catch (error) {{ console.warn(error); }}
       splatViewer = null;
+    }}
+
+    function setFilterControlsEnabled(enabled) {{
+      for (const element of [opacityInput, scaleInput, anisotropyInput, filterReset]) {{
+        element.disabled = !enabled;
+      }}
+    }}
+
+    function setFilterLoadState(text, disabled) {{
+      filterLoad.textContent = text;
+      filterLoad.disabled = disabled;
+    }}
+
+    function formatInteger(value) {{
+      return Math.round(value).toLocaleString();
+    }}
+
+    function formatCompactNumber(value) {{
+      if (!Number.isFinite(value)) return "all";
+      let text;
+      const absolute = Math.abs(value);
+      if (absolute >= 100) {{
+        text = value.toFixed(0);
+      }} else if (absolute >= 10) {{
+        text = value.toFixed(1);
+      }} else if (absolute >= 1) {{
+        text = value.toFixed(2);
+      }} else if (absolute > 0) {{
+        text = value.toPrecision(2);
+      }} else {{
+        text = "0";
+      }}
+      return text.replace(/(\\.\\d*?[1-9])0+$/, "$1").replace(/\\.0+$/, "");
+    }}
+
+    function niceRangeMax(value, fallback = 1) {{
+      if (!Number.isFinite(value) || value <= 0) return fallback;
+      const exponent = Math.floor(Math.log10(value));
+      const magnitude = 10 ** exponent;
+      const fraction = value / magnitude;
+      const niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
+      return niceFraction * magnitude;
+    }}
+
+    function setRange(input, min, max, value) {{
+      input.min = String(min);
+      input.max = String(max);
+      input.step = String(Math.max((max - min) / 500, Number.EPSILON));
+      input.value = String(value);
+    }}
+
+    function isSliderAtMax(input) {{
+      const max = Number(input.max);
+      const step = Number(input.step) || 0;
+      return Number(input.value) >= max - step * 0.5;
+    }}
+
+    function currentFilters() {{
+      return {{
+        minOpacityAlpha: Math.round(Number(opacityInput.value) * 255),
+        maxScale: isSliderAtMax(scaleInput) ? Number.POSITIVE_INFINITY : Number(scaleInput.value),
+        maxAnisotropy: isSliderAtMax(anisotropyInput) ? Number.POSITIVE_INFINITY : Number(anisotropyInput.value),
+      }};
+    }}
+
+    function updateFilterOutputs() {{
+      const opacity = Number(opacityInput.value);
+      opacityValue.textContent = `${{Math.round(opacity * 100)}}%`;
+      scaleValue.textContent = isSliderAtMax(scaleInput) ? "all" : formatCompactNumber(Number(scaleInput.value));
+      anisotropyValue.textContent = isSliderAtMax(anisotropyInput) ? "all" : formatCompactNumber(Number(anisotropyInput.value));
+    }}
+
+    function updateFilterCounts(kept, hidden) {{
+      filterCounts.textContent = `${{formatInteger(kept)}} kept / ${{formatInteger(hidden)}} hidden`;
+    }}
+
+    function resetFilterInputs() {{
+      opacityInput.value = String(DEFAULT_MIN_OPACITY);
+      scaleInput.value = scaleInput.max;
+      anisotropyInput.value = anisotropyInput.max;
+      updateFilterOutputs();
+    }}
+
+    function countFilterMatches(filters) {{
+      let kept = 0;
+      const count = splatMetrics.count;
+      for (let index = 0; index < count; index++) {{
+        if (
+          splatMetrics.opacity[index] >= filters.minOpacityAlpha &&
+          splatMetrics.maxScale[index] <= filters.maxScale &&
+          splatMetrics.anisotropy[index] <= filters.maxAnisotropy
+        ) {{
+          kept++;
+        }}
+      }}
+      return kept;
+    }}
+
+    function computeSplatMetrics(parsedSplatArray) {{
+      const count = parsedSplatArray.splatCount || parsedSplatArray.splats.length;
+      const opacity = new Uint8Array(count);
+      const maxScale = new Float32Array(count);
+      const anisotropy = new Float32Array(count);
+      let maxScaleValue = 0;
+      let maxFiniteAnisotropyValue = 1;
+
+      for (let index = 0; index < count; index++) {{
+        const splat = parsedSplatArray.splats[index];
+        const scale0 = Number.isFinite(splat[SPLAT_OFFSET.SCALE0]) && splat[SPLAT_OFFSET.SCALE0] > 0 ? splat[SPLAT_OFFSET.SCALE0] : 0;
+        const scale1 = Number.isFinite(splat[SPLAT_OFFSET.SCALE1]) && splat[SPLAT_OFFSET.SCALE1] > 0 ? splat[SPLAT_OFFSET.SCALE1] : 0;
+        const scale2 = Number.isFinite(splat[SPLAT_OFFSET.SCALE2]) && splat[SPLAT_OFFSET.SCALE2] > 0 ? splat[SPLAT_OFFSET.SCALE2] : 0;
+        const largestScale = Math.max(scale0, scale1, scale2);
+        const positiveScales = [scale0, scale1, scale2].filter(value => value > 0);
+        const smallestScale = positiveScales.length ? Math.min(...positiveScales) : 0;
+        const scaleRatio = smallestScale > 0 ? largestScale / smallestScale : (largestScale > 0 ? Number.POSITIVE_INFINITY : 1);
+
+        opacity[index] = Math.max(0, Math.min(255, Math.round(splat[SPLAT_OFFSET.OPACITY] || 0)));
+        maxScale[index] = largestScale;
+        anisotropy[index] = scaleRatio;
+        if (Number.isFinite(largestScale) && largestScale > maxScaleValue) maxScaleValue = largestScale;
+        if (Number.isFinite(scaleRatio) && scaleRatio > maxFiniteAnisotropyValue) maxFiniteAnisotropyValue = scaleRatio;
+      }}
+
+      return {{
+        count,
+        opacity,
+        maxScale,
+        anisotropy,
+        maxScaleValue,
+        maxFiniteAnisotropyValue,
+      }};
+    }}
+
+    function configureFilterControls() {{
+      const scaleMax = niceRangeMax(splatMetrics.maxScaleValue, 1);
+      const anisotropyMax = Math.max(1, niceRangeMax(splatMetrics.maxFiniteAnisotropyValue, 1));
+      setRange(scaleInput, 0, scaleMax, scaleMax);
+      setRange(anisotropyInput, 1, anisotropyMax, anisotropyMax);
+      resetFilterInputs();
+      setFilterControlsEnabled(true);
+      setFilterLoadState("Filters ready", true);
+      const kept = countFilterMatches(currentFilters());
+      updateFilterCounts(kept, splatMetrics.count - kept);
+    }}
+
+    function buildFilteredSplatArray(filters) {{
+      const keptSplats = [];
+      const count = splatMetrics.count;
+      for (let index = 0; index < count; index++) {{
+        if (
+          splatMetrics.opacity[index] >= filters.minOpacityAlpha &&
+          splatMetrics.maxScale[index] <= filters.maxScale &&
+          splatMetrics.anisotropy[index] <= filters.maxAnisotropy
+        ) {{
+          keptSplats.push(splatArray.splats[index]);
+        }}
+      }}
+      return {{
+        sphericalHarmonicsDegree: splatArray.sphericalHarmonicsDegree || 0,
+        sphericalHarmonicsCount: splatArray.sphericalHarmonicsCount || 0,
+        componentCount: splatArray.componentCount || 14,
+        defaultSphericalHarmonics: splatArray.defaultSphericalHarmonics || [],
+        splats: keptSplats,
+        splatCount: keptSplats.length,
+      }};
+    }}
+
+    async function rebuildFilteredSplatScene(initial = false) {{
+      if (!splatViewer || !splatArray || !splatMetrics) return;
+      const viewer = splatViewer;
+      const viewerGeneration = splatViewerGeneration;
+      const filters = currentFilters();
+      status.textContent = initial ? "Building Gaussian splat scene..." : "Applying splat filters...";
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const filteredSplatArray = buildFilteredSplatArray(filters);
+      const kept = filteredSplatArray.splatCount;
+      const hidden = splatMetrics.count - kept;
+      updateFilterCounts(kept, hidden);
+      const splatBuffer = GaussianSplats3D.SplatBuffer.generateFromUncompressedSplatArrays(
+        [filteredSplatArray],
+        0,
+        0,
+        new THREE.Vector3(),
+      );
+      if (viewer !== splatViewer || viewerGeneration !== splatViewerGeneration) return;
+      await viewer.addSplatBuffers(
+        [splatBuffer],
+        [{{ splatAlphaRemovalThreshold: 0 }}],
+        true,
+        false,
+        false,
+        true,
+        false,
+        true,
+      );
+      if (viewer !== splatViewer || viewerGeneration !== splatViewerGeneration) return;
+      status.textContent = kept > 0 ? "Drag to orbit. Scroll or pinch to zoom. Right-drag to pan." : "No splats match filters.";
+    }}
+
+    async function applyCurrentSplatFilters(initial = false) {{
+      if (filterApplyRunning) {{
+        filterApplyQueued = true;
+        return;
+      }}
+      filterApplyRunning = true;
+      try {{
+        do {{
+          filterApplyQueued = false;
+          await rebuildFilteredSplatScene(initial);
+          initial = false;
+        }} while (filterApplyQueued);
+      }} catch (error) {{
+        console.error(error);
+        status.textContent = "Could not apply splat filters.";
+      }} finally {{
+        filterApplyRunning = false;
+      }}
+    }}
+
+    function scheduleFilterApply() {{
+      if (!splatArray || !splatMetrics) return;
+      updateFilterOutputs();
+      window.clearTimeout(filterDebounce);
+      filterDebounce = window.setTimeout(() => {{
+        void applyCurrentSplatFilters(false);
+      }}, 180);
+    }}
+
+    async function loadFilterableSplatData() {{
+      const response = await fetch("cleaned_splat.ply");
+      if (!response.ok) throw new Error(`Could not fetch cleaned_splat.ply: ${{response.status}}`);
+      const plyFileData = await response.arrayBuffer();
+      const parsed = GaussianSplats3D.PlyParser.parseToUncompressedSplatArray(plyFileData, 0);
+      if (!parsed || !parsed.splats || !parsed.splats.length) {{
+        throw new Error("PLY parser did not return Gaussian splat data.");
+      }}
+      splatArray = parsed;
+      splatMetrics = computeSplatMetrics(parsed);
+      configureFilterControls();
+    }}
+
+    async function prepareFilterableSplatData() {{
+      if (splatArray && splatMetrics) return true;
+      if (filterDataLoading) return false;
+      filterDataLoading = true;
+      setFilterLoadState("Loading filters...", true);
+      try {{
+        if (activeView === "splat") status.textContent = "Preparing splat filters...";
+        await loadFilterableSplatData();
+        if (activeView === "splat") status.textContent = "Drag to orbit. Scroll or pinch to zoom. Right-drag to pan.";
+        return true;
+      }} catch (error) {{
+        console.error(error);
+        filterCounts.textContent = "filters unavailable";
+        setFilterLoadState("Retry filter sliders", false);
+        if (activeView === "splat") status.textContent = "Could not prepare splat filters.";
+        return false;
+      }} finally {{
+        filterDataLoading = false;
+      }}
+    }}
+
+    async function loadSplatSceneWithoutFilters() {{
+      setFilterControlsEnabled(false);
+      await splatViewer.addSplatScene("cleaned_splat.ply", {{
+        format: GaussianSplats3D.SceneFormat.Ply,
+        splatAlphaRemovalThreshold: DEFAULT_MIN_OPACITY_ALPHA,
+        showLoadingUI: true,
+        progressiveLoad: true,
+      }});
     }}
 
     async function startSplatViewer() {{
@@ -342,12 +726,9 @@ def render_viewer_html(
           sphericalHarmonicsDegree: 0,
           showLoadingUI: true,
         }});
-        await splatViewer.addSplatScene("cleaned_splat.ply", {{
-          format: GaussianSplats3D.SceneFormat.Ply,
-          splatAlphaRemovalThreshold: 5,
-          showLoadingUI: true,
-          progressiveLoad: true,
-        }});
+        splatViewerGeneration++;
+        await loadSplatSceneWithoutFilters();
+        if (splatArray && splatMetrics) setFilterControlsEnabled(true);
         splatViewer.start();
         status.textContent = "Drag to orbit. Scroll or pinch to zoom. Right-drag to pan.";
       }} catch (error) {{
@@ -514,6 +895,18 @@ def render_viewer_html(
     splatButton.addEventListener("click", startSplatViewer);
     if (meshButton) meshButton.addEventListener("click", startMeshPreview);
     fallbackButton.addEventListener("click", startPointPreview);
+    filterLoad.addEventListener("click", async () => {{
+      if (activeView !== "splat") await startSplatViewer();
+      await prepareFilterableSplatData();
+    }});
+    for (const input of [opacityInput, scaleInput, anisotropyInput]) {{
+      input.addEventListener("input", scheduleFilterApply);
+    }}
+    filterReset.addEventListener("click", () => {{
+      resetFilterInputs();
+      window.clearTimeout(filterDebounce);
+      void applyCurrentSplatFilters(false);
+    }});
     startSplatViewer();
   </script>
   <script type="application/json" id="metadata">{json.dumps(metadata)}</script>
