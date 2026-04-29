@@ -17,6 +17,7 @@ from splatbot.job_overrides import job_overrides_path
 from splatbot.media import classify_path
 from splatbot.models import JobStatus, MediaKind, ScanJob, utcnow
 from splatbot.storage import Store
+from splatbot.viewer import cache_busted_viewer_url
 
 
 BASELINE_SETTINGS: dict[str, Any] = {
@@ -258,7 +259,7 @@ def summarize_job(settings: Settings, job: ScanJob, row: MatrixRow) -> dict[str,
         "session_id": job.session_id,
         "status": job.status.value,
         "error": job.error,
-        "viewer_url": settings.public_job_url(job.id),
+        "viewer_url": cache_busted_viewer_url(settings.public_job_url(job.id)),
         "pose_backend": metrics.get("pose_backend"),
         "depth_backend": metrics.get("depth_backend"),
         "train_backend": metrics.get("train_backend"),
@@ -305,7 +306,11 @@ async def run_matrix(args: argparse.Namespace) -> None:
             run_id,
             row,
         )
-        print(f"submitted row={row.name} job={job.id} viewer={settings.public_job_url(job.id)}", flush=True)
+        print(
+            f"submitted row={row.name} job={job.id} "
+            f"viewer={cache_busted_viewer_url(settings.public_job_url(job.id))}",
+            flush=True,
+        )
         terminal = await wait_for_terminal(store, job.id, args.poll_seconds)
         summary = summarize_job(settings, terminal, row)
         report["jobs"].append(summary)

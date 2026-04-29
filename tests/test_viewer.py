@@ -5,7 +5,14 @@ import stat
 
 import pytest
 
-from splatbot.viewer import VIEWER_ASSET_VERSION, publish_viewer, safe_result_dir, write_viewer_point_cloud
+from splatbot.viewer import (
+    VIEWER_ASSET_VERSION,
+    VIEWER_PAGE_VERSION,
+    cache_busted_viewer_url,
+    publish_viewer,
+    safe_result_dir,
+    write_viewer_point_cloud,
+)
 
 
 def test_publish_viewer_writes_static_result_page(tmp_path) -> None:
@@ -76,6 +83,16 @@ def test_publish_viewer_allows_missing_preview(tmp_path) -> None:
     assert (tmp_path / "public" / "job1" / "viewer_points.ply").exists()
     assert not (tmp_path / "public" / "job1" / "turntable.mp4").exists()
     assert "Download preview video" not in html
+
+
+def test_cache_busted_viewer_url_adds_viewer_version() -> None:
+    assert cache_busted_viewer_url("https://example.test/results/job1/") == (
+        f"https://example.test/results/job1/?v={VIEWER_PAGE_VERSION}"
+    )
+    assert cache_busted_viewer_url("https://example.test/results/job1/?x=1") == (
+        f"https://example.test/results/job1/?x=1&v={VIEWER_PAGE_VERSION}"
+    )
+    assert cache_busted_viewer_url("") == ""
 
 
 def test_publish_viewer_copies_mesh_and_quality_report(tmp_path) -> None:

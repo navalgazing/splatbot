@@ -14,6 +14,7 @@ from splatbot.models import (
 )
 from splatbot.pipeline import PipelineOutputs
 from splatbot.storage import Store
+from splatbot.viewer import VIEWER_PAGE_VERSION
 
 
 class FakePipeline:
@@ -119,7 +120,7 @@ async def test_dispatcher_runs_next_job(tmp_path) -> None:
         ArtifactKind.VIEWER,
     ]
     assert artifacts[0].url == f"https://example.test/jobs/{job.id}/ply.ply"
-    assert artifacts[2].url == f"https://example.test/results/{job.id}/"
+    assert artifacts[2].url == f"https://example.test/results/{job.id}/?v={VIEWER_PAGE_VERSION}"
     assert len(notifier.done) == 1
 
 

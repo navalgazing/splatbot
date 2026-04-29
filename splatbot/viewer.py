@@ -44,6 +44,14 @@ ALL_VIEWER_ASSETS = tuple(VIEWER_ASSET_INTEGRITY)
 VIEWER_ASSET_VERSION = hashlib.sha256(
     "\n".join(f"{path}:{VIEWER_ASSET_INTEGRITY[path]}" for path in sorted(ALL_VIEWER_ASSETS)).encode("ascii")
 ).hexdigest()[:16]
+VIEWER_PAGE_VERSION = f"viewer-{VIEWER_ASSET_VERSION}"
+
+
+def cache_busted_viewer_url(url: str) -> str:
+    if not url:
+        return ""
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}v={VIEWER_PAGE_VERSION}"
 
 
 def publish_viewer(settings: Settings, job_id: str, outputs: PipelineOutputs) -> Path:

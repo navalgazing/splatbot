@@ -8,7 +8,7 @@ from .config import Settings
 from .models import ArtifactKind, JobArtifact, ScanJob
 from .pipeline import PipelineOutputs
 from .storage import Store
-from .viewer import publish_viewer
+from .viewer import cache_busted_viewer_url, publish_viewer
 
 
 class ArtifactUploader(Protocol):
@@ -40,7 +40,7 @@ async def publish_job_artifacts(
     artifact_store = artifact_store or ArtifactStore(settings)
     published: list[JobArtifact] = []
     viewer_path = publish_viewer(settings, job.id, outputs)
-    viewer_url = settings.public_job_url(job.id)
+    viewer_url = cache_busted_viewer_url(settings.public_job_url(job.id))
     artifacts_to_publish = [(ArtifactKind.PLY, outputs.cleaned_ply)]
     if outputs.mesh_path is not None and outputs.mesh_path.exists():
         artifacts_to_publish.append((ArtifactKind.MESH, outputs.mesh_path))
