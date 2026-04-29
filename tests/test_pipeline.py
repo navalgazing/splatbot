@@ -16,6 +16,7 @@ from splatbot.pipeline import (
     ScanPipeline,
     SilhouetteFrame,
     apply_object_mask_qa,
+    clean_depth_consistency_outliers,
     clean_gaussian_properties,
     clean_exported_ply,
     clean_ply,
@@ -805,6 +806,59 @@ def test_spatial_cleanup_removes_isolated_points(tmp_path) -> None:
     assert cleanup["applied"] is True
     assert cleanup["filtered_vertices_removed"] == 2
     assert b"element vertex 6" in dest.read_bytes().split(b"end_header", 1)[0]
+
+
+def test_depth_consistency_cleanup_removes_depth_outliers(tmp_path) -> None:
+    np = pytest.importorskip("numpy")
+    depth_path = tmp_path / "depth.npy"
+    np.save(depth_path, np.ones((4, 4), dtype="float32"))
+    src = tmp_path / "raw.ply"
+    dest = tmp_path / "clean.ply"
+    write_binary_xyz_ply(
+        src,
+        [
+            (0.0, 0.0, -1.0),
+            (0.1, 0.0, -1.0),
+            (0.0, 0.1, -1.0),
+            (0.1, 0.1, -1.0),
+            (0.0, 0.0, -3.0),
+        ],
+    )
+    frames = [
+        SilhouetteFrame(
+            mask=AlphaMask(width=4, height=4, alpha=bytes([255] * 16)),
+            world_to_camera=[
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+            ],
+            fl_x=1.0,
+            fl_y=1.0,
+            cx=2.0,
+            cy=2.0,
+            depth_path=depth_path,
+        )
+    ]
+
+    cleanup = clean_depth_consistency_outliers(
+        src,
+        dest,
+        frames,
+        Settings(
+            data_dir=tmp_path,
+            depth_consistency_cleanup_enabled=True,
+            depth_consistency_cleanup_min_views=1,
+            depth_consistency_cleanup_max_depth_ratio=1.5,
+            depth_consistency_cleanup_min_inconsistent_ratio=1.0,
+            depth_consistency_cleanup_min_scale_samples=1,
+            depth_consistency_cleanup_max_remove_fraction=0.5,
+        ),
+    )
+
+    assert cleanup["applied"] is True
+    assert cleanup["filtered_vertices_removed"] == 1
+    assert cleanup["depth_views"] == 1
+    assert b"element vertex 4" in dest.read_bytes().split(b"end_header", 1)[0]
 
 
 async def test_pipeline_builds_expected_commands(tmp_path) -> None:

@@ -120,6 +120,15 @@ class SilhouetteFrame:
     fl_y: float
     cx: float
     cy: float
+    depth_path: Path | None = None
+
+
+@dataclass(frozen=True)
+class DepthConsistencyFrame:
+    frame: SilhouetteFrame
+    depth_map: object
+    scale: float
+    scale_samples: int
 
 
 @dataclass(frozen=True)
@@ -3200,6 +3209,15 @@ def clean_exported_ply(
     elif mask_support_dest.exists():
         mask_support_dest.unlink()
 
+    depth_dest = dest.with_suffix(dest.suffix + ".depth.tmp")
+    depth_cleanup = clean_depth_consistency_outliers(current, depth_dest, frames, settings)
+    stage_metrics["depth_consistency"] = depth_cleanup
+    if depth_cleanup.get("applied"):
+        current = depth_dest
+        intermediates.append(depth_dest)
+    elif depth_dest.exists():
+        depth_dest.unlink()
+
     gaussian_dest = dest.with_suffix(dest.suffix + ".gaussian.tmp")
     gaussian_cleanup = clean_gaussian_properties(current, gaussian_dest, settings)
     stage_metrics["gaussian"] = gaussian_cleanup
@@ -3235,6 +3253,7 @@ def clean_exported_ply(
     cleanup["filtered_vertices_removed"] = (
         (cleanup.get("filtered_vertices_removed") or 0)
         + (mask_support_cleanup.get("filtered_vertices_removed") or 0)
+        + (depth_cleanup.get("filtered_vertices_removed") or 0)
         + (gaussian_cleanup.get("filtered_vertices_removed") or 0)
         + (spatial_cleanup.get("filtered_vertices_removed") or 0)
     )
@@ -3312,6 +3331,98 @@ def clean_mask_support_outliers(
             "min_views": settings.mask_support_cleanup_min_views,
             "min_inside_views": settings.mask_support_cleanup_min_inside_views,
             "min_inside_ratio": settings.mask_support_cleanup_min_inside_ratio,
+        }
+    )
+    return cleanup
+
+
+def clean_depth_consistency_outliers(
+    src: Path,
+    dest: Path,
+    frames: list[SilhouetteFrame],
+    settings: Settings,
+) -> dict:
+    if not settings.depth_consistency_cleanup_enabled:
+        return {"applied": False, "reason": "disabled"}
+    layout = read_ply_layout(src)
+    if layout is None:
+        return {"applied": False, "reason": "missing_layout"}
+    depth_frames = load_depth_consistency_frames(frames, src, layout, settings)
+    if not depth_frames:
+        return {"applied": False, "reason": "no_aligned_depth_priors"}
+    points = [values[:3] for values in iter_ply_vertex_values(src, layout) if len(values) >= 3]
+    if not points:
+        return {"applied": False, "reason": "no_points"}
+
+    remove_indices: set[int] = set()
+    max_ratio = max(settings.depth_consistency_cleanup_max_depth_ratio, 1.001)
+    min_views = max(1, settings.depth_consistency_cleanup_min_views)
+    min_inconsistent_ratio = settings.depth_consistency_cleanup_min_inconsistent_ratio
+    for idx, point in enumerate(points):
+        checked = 0
+        inconsistent = 0
+        for depth_frame in depth_frames:
+            projection = project_world_point_with_depth(depth_frame.frame, point)
+            if projection is None:
+                continue
+            u, v, alt_v, point_depth = projection
+            if not projection_hits_foreground(
+                depth_frame.frame,
+                u,
+                v,
+                alt_v,
+                settings.silhouette_cleanup_alpha_threshold,
+                settings.silhouette_cleanup_padding_px,
+            ):
+                continue
+            raw_depth = sample_depth_map(depth_frame.depth_map, depth_frame.frame, u, v, alt_v)
+            if raw_depth is None:
+                continue
+            expected_depth = raw_depth * depth_frame.scale
+            if expected_depth <= 1e-6:
+                continue
+            checked += 1
+            ratio = max(point_depth / expected_depth, expected_depth / point_depth)
+            if ratio > max_ratio:
+                inconsistent += 1
+        if checked >= min_views and (inconsistent / checked) >= min_inconsistent_ratio:
+            remove_indices.add(idx)
+
+    if not remove_indices:
+        return {
+            "applied": False,
+            "reason": "no_depth_inconsistent_points",
+            "points": len(points),
+            "depth_views": len(depth_frames),
+        }
+    removed_fraction = len(remove_indices) / len(points)
+    if removed_fraction > settings.depth_consistency_cleanup_max_remove_fraction:
+        return {
+            "applied": False,
+            "reason": "max_remove_fraction_exceeded",
+            "candidate_removed": len(remove_indices),
+            "candidate_removed_fraction": round(removed_fraction, 6),
+            "max_remove_fraction": settings.depth_consistency_cleanup_max_remove_fraction,
+            "depth_views": len(depth_frames),
+        }
+
+    row_index = -1
+
+    def keep_by_index(_: tuple[float, ...]) -> bool:
+        nonlocal row_index
+        row_index += 1
+        return row_index not in remove_indices
+
+    cleanup = clean_ply(src, dest, row_filter=keep_by_index)
+    cleanup.update(
+        {
+            "applied": True,
+            "removed_fraction": round(removed_fraction, 6),
+            "depth_views": len(depth_frames),
+            "max_depth_ratio": settings.depth_consistency_cleanup_max_depth_ratio,
+            "min_views": min_views,
+            "min_inconsistent_ratio": min_inconsistent_ratio,
+            "scale_samples": sum(frame.scale_samples for frame in depth_frames),
         }
     )
     return cleanup
@@ -3851,6 +3962,10 @@ def load_silhouette_frames(processed_dir: Path, settings: Settings) -> list[Silh
         world_to_camera = invert_camera_transform(transform)
         if world_to_camera is None:
             continue
+        depth_path = None
+        raw_depth_path = frame.get("depth_file_path")
+        if isinstance(raw_depth_path, str) and raw_depth_path:
+            depth_path = processed_dir / PurePosixPath(raw_depth_path.lstrip("./")).as_posix()
         frames.append(
             SilhouetteFrame(
                 mask=mask,
@@ -3859,6 +3974,7 @@ def load_silhouette_frames(processed_dir: Path, settings: Settings) -> list[Silh
                 fl_y=fl_y,
                 cx=cx,
                 cy=cy,
+                depth_path=depth_path,
             )
         )
     return frames
@@ -3888,6 +4004,17 @@ def project_world_point(
     frame: SilhouetteFrame,
     xyz: tuple[float, float, float],
 ) -> tuple[float, float, float | None] | None:
+    projection = project_world_point_with_depth(frame, xyz)
+    if projection is None:
+        return None
+    u, v, alt_v, _ = projection
+    return u, v, alt_v
+
+
+def project_world_point_with_depth(
+    frame: SilhouetteFrame,
+    xyz: tuple[float, float, float],
+) -> tuple[float, float, float | None, float] | None:
     x, y, z = xyz
     matrix = frame.world_to_camera
     cam_x = matrix[0][0] * x + matrix[0][1] * y + matrix[0][2] * z + matrix[0][3]
@@ -3899,7 +4026,118 @@ def project_world_point(
     u = frame.fl_x * (cam_x / depth) + frame.cx
     v = frame.fl_y * (cam_y / depth) + frame.cy
     alt_v = frame.cy - frame.fl_y * (cam_y / depth)
-    return u, v, alt_v
+    return u, v, alt_v, depth
+
+
+def projection_hits_foreground(
+    frame: SilhouetteFrame,
+    u: float,
+    v: float,
+    alt_v: float | None,
+    alpha_threshold: int,
+    padding_px: int,
+) -> bool:
+    u_px = round(u)
+    if u_px < 0 or u_px >= frame.mask.width:
+        return False
+    v_px = round(v)
+    alt_v_px = round(alt_v) if alt_v is not None else None
+    v_in_bounds = 0 <= v_px < frame.mask.height
+    alt_v_in_bounds = alt_v_px is not None and 0 <= alt_v_px < frame.mask.height
+    if not v_in_bounds and not alt_v_in_bounds:
+        return False
+    foreground = v_in_bounds and frame.mask.is_foreground(u, v, alpha_threshold, padding_px)
+    if not foreground and alt_v_in_bounds:
+        foreground = frame.mask.is_foreground(u, alt_v, alpha_threshold, padding_px)
+    return foreground
+
+
+def load_depth_consistency_frames(
+    frames: list[SilhouetteFrame],
+    ply_path: Path,
+    layout: PlyLayout,
+    settings: Settings,
+) -> list[DepthConsistencyFrame]:
+    points = [values[:3] for values in iter_ply_vertex_values(ply_path, layout) if len(values) >= 3]
+    if not points:
+        return []
+    depth_frames: list[DepthConsistencyFrame] = []
+    for frame in frames:
+        if frame.depth_path is None:
+            continue
+        depth_map = load_depth_map(frame.depth_path)
+        if depth_map is None:
+            continue
+        scale, samples = estimate_depth_scale(points, frame, depth_map, settings)
+        if scale is None or samples < settings.depth_consistency_cleanup_min_scale_samples:
+            continue
+        depth_frames.append(DepthConsistencyFrame(frame=frame, depth_map=depth_map, scale=scale, scale_samples=samples))
+    return depth_frames
+
+
+def load_depth_map(path: Path):
+    try:
+        import numpy as np  # type: ignore[import-not-found]
+    except Exception:
+        return None
+    try:
+        depth = np.asarray(np.load(path), dtype="float32").squeeze()
+    except Exception:
+        return None
+    if depth.ndim != 2 or depth.size == 0:
+        return None
+    return depth
+
+
+def estimate_depth_scale(
+    points: list[tuple[float, float, float]],
+    frame: SilhouetteFrame,
+    depth_map,
+    settings: Settings,
+) -> tuple[float | None, int]:
+    sample_limit = max(1, settings.depth_consistency_cleanup_alignment_sample_limit)
+    stride = max(1, math.ceil(len(points) / sample_limit))
+    ratios: list[float] = []
+    for idx, point in enumerate(points):
+        if idx % stride != 0:
+            continue
+        projection = project_world_point_with_depth(frame, point)
+        if projection is None:
+            continue
+        u, v, alt_v, point_depth = projection
+        if not projection_hits_foreground(
+            frame,
+            u,
+            v,
+            alt_v,
+            settings.silhouette_cleanup_alpha_threshold,
+            settings.silhouette_cleanup_padding_px,
+        ):
+            continue
+        raw_depth = sample_depth_map(depth_map, frame, u, v, alt_v)
+        if raw_depth is not None and raw_depth > 1e-6:
+            ratios.append(point_depth / raw_depth)
+    if not ratios:
+        return None, 0
+    return float(median(ratios)), len(ratios)
+
+
+def sample_depth_map(depth_map, frame: SilhouetteFrame, u: float, v: float, alt_v: float | None) -> float | None:
+    height, width = depth_map.shape[:2]
+    scale_x = width / max(frame.mask.width, 1)
+    scale_y = height / max(frame.mask.height, 1)
+
+    def sample(y_value: float | None) -> float | None:
+        if y_value is None:
+            return None
+        x_px = round(u * scale_x)
+        y_px = round(y_value * scale_y)
+        if x_px < 0 or x_px >= width or y_px < 0 or y_px >= height:
+            return None
+        value = float(depth_map[y_px, x_px])
+        return value if math.isfinite(value) and value > 0 else None
+
+    return sample(v) or sample(alt_v)
 
 
 def point_mask_support(

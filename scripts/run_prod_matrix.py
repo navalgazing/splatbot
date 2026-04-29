@@ -124,6 +124,17 @@ MATRIX_ROWS: tuple[MatrixRow, ...] = (
         },
     ),
     MatrixRow(
+        "postprocess-depth-consistency",
+        "Depth-prior consistency pruning with baseline pose, depth, and train.",
+        {
+            "depth_consistency_cleanup_enabled": True,
+            "depth_consistency_cleanup_min_views": 3,
+            "depth_consistency_cleanup_max_depth_ratio": 1.6,
+            "depth_consistency_cleanup_min_inconsistent_ratio": 0.75,
+            "depth_consistency_cleanup_max_remove_fraction": 0.5,
+        },
+    ),
+    MatrixRow(
         "postprocess-opacity-scale-strict",
         "Stricter opacity and anisotropy pruning with baseline pose, depth, and train.",
         {
@@ -174,6 +185,27 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _should_match_reference_owner() -> bool:
+    if os.name != "posix" or not hasattr(os, "geteuid"):
+        return False
+    return os.geteuid() == 0
+
+
+def match_reference_owner(path: Path, reference: Path) -> None:
+    """Make root-created matrix files writable by the service account."""
+    if not _should_match_reference_owner() or not path.exists():
+        return
+    reference_stat = reference.stat()
+    targets = [path]
+    if path.is_dir():
+        for root, dirs, files in os.walk(path):
+            root_path = Path(root)
+            targets.extend(root_path / name for name in dirs)
+            targets.extend(root_path / name for name in files)
+    for target in targets:
+        os.chown(target, reference_stat.st_uid, reference_stat.st_gid)
+
+
 def available_rows(settings: Settings, requested: list[str] | None, include_unconfigured: bool) -> tuple[list[MatrixRow], list[dict]]:
     selected = list(MATRIX_ROWS)
     if requested:
@@ -215,6 +247,7 @@ async def submit_job(
     session_dir.mkdir(parents=True, exist_ok=True)
     dest = session_dir / source.name
     shutil.copy2(source, dest)
+    match_reference_owner(session_dir, settings.data_dir)
     kind = classify_path(dest)
     if kind not in {MediaKind.PHOTO, MediaKind.VIDEO}:
         raise ValueError(f"unsupported source media: {source}")
@@ -239,6 +272,7 @@ async def submit_job(
             "settings": overrides,
         },
     )
+    match_reference_owner(job_dir, settings.data_dir)
 
     now = utcnow().isoformat()
     async with store._connect() as db:
@@ -330,6 +364,7 @@ async def run_matrix(args: argparse.Namespace) -> None:
         "jobs": [],
     }
     write_json(report_path, report)
+    match_reference_owner(report_path.parent, settings.data_dir)
     print(f"matrix report: {report_path}", flush=True)
     for row in rows:
         print(f"submitting row={row.name}", flush=True)
@@ -352,6 +387,7 @@ async def run_matrix(args: argparse.Namespace) -> None:
         summary = summarize_job(settings, terminal, row)
         report["jobs"].append(summary)
         write_json(report_path, report)
+        match_reference_owner(report_path.parent, settings.data_dir)
         print(
             f"completed row={row.name} status={terminal.status.value} job={terminal.id} "
             f"viewer={summary['viewer_url']}",
@@ -361,6 +397,7 @@ async def run_matrix(args: argparse.Namespace) -> None:
             break
     report["finished_at"] = utcnow().isoformat()
     write_json(report_path, report)
+    match_reference_owner(report_path.parent, settings.data_dir)
     print(f"matrix finished: {report_path}", flush=True)
 
 

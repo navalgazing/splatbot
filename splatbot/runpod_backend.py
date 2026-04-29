@@ -471,6 +471,23 @@ def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str) 
             "SPLATBOT_MASK_SUPPORT_CLEANUP_MIN_INSIDE_VIEWS": settings.mask_support_cleanup_min_inside_views,
             "SPLATBOT_MASK_SUPPORT_CLEANUP_MIN_INSIDE_RATIO": settings.mask_support_cleanup_min_inside_ratio,
             "SPLATBOT_MASK_SUPPORT_CLEANUP_MAX_REMOVE_FRACTION": settings.mask_support_cleanup_max_remove_fraction,
+            "SPLATBOT_DEPTH_CONSISTENCY_CLEANUP_ENABLED": str(
+                settings.depth_consistency_cleanup_enabled
+            ).lower(),
+            "SPLATBOT_DEPTH_CONSISTENCY_CLEANUP_MIN_VIEWS": settings.depth_consistency_cleanup_min_views,
+            "SPLATBOT_DEPTH_CONSISTENCY_CLEANUP_MAX_DEPTH_RATIO": settings.depth_consistency_cleanup_max_depth_ratio,
+            "SPLATBOT_DEPTH_CONSISTENCY_CLEANUP_MIN_INCONSISTENT_RATIO": (
+                settings.depth_consistency_cleanup_min_inconsistent_ratio
+            ),
+            "SPLATBOT_DEPTH_CONSISTENCY_CLEANUP_ALIGNMENT_SAMPLE_LIMIT": (
+                settings.depth_consistency_cleanup_alignment_sample_limit
+            ),
+            "SPLATBOT_DEPTH_CONSISTENCY_CLEANUP_MIN_SCALE_SAMPLES": (
+                settings.depth_consistency_cleanup_min_scale_samples
+            ),
+            "SPLATBOT_DEPTH_CONSISTENCY_CLEANUP_MAX_REMOVE_FRACTION": (
+                settings.depth_consistency_cleanup_max_remove_fraction
+            ),
             "SPLATBOT_POSTPROCESS_VALIDATION_ENABLED": str(settings.postprocess_validation_enabled).lower(),
             "SPLATBOT_POSTPROCESS_VALIDATION_MAX_OUTSIDE_FRACTION": settings.postprocess_validation_max_outside_fraction,
             "SPLATBOT_POSTPROCESS_VALIDATION_MIN_INSIDE_VIEWS": settings.postprocess_validation_min_inside_views,

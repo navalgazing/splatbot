@@ -217,6 +217,13 @@ class Settings(BaseSettings):
     mask_support_cleanup_min_inside_views: int = 1
     mask_support_cleanup_min_inside_ratio: float = 0.02
     mask_support_cleanup_max_remove_fraction: float = 0.35
+    depth_consistency_cleanup_enabled: bool = False
+    depth_consistency_cleanup_min_views: int = 3
+    depth_consistency_cleanup_max_depth_ratio: float = 1.6
+    depth_consistency_cleanup_min_inconsistent_ratio: float = 0.75
+    depth_consistency_cleanup_alignment_sample_limit: int = 20_000
+    depth_consistency_cleanup_min_scale_samples: int = 20
+    depth_consistency_cleanup_max_remove_fraction: float = 0.35
     postprocess_validation_enabled: bool = True
     postprocess_validation_max_outside_fraction: float = 0.2
     postprocess_validation_min_inside_views: int = 1
