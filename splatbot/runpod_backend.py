@@ -159,7 +159,14 @@ class RunPodLauncher:
                         on_pod_id(pod.id)
                     except Exception as exc:  # noqa: BLE001
                         raise RunPodError(f"failed to record RunPod pod id for job {job.id}") from exc
-                target = self.wait_for_ssh(pod.id)
+                def heartbeat_pod() -> None:
+                    if on_pod_id:
+                        try:
+                            on_pod_id(pod.id)
+                        except Exception:  # noqa: BLE001
+                            LOGGER.warning("failed to refresh RunPod pod heartbeat for job %s", job.id, exc_info=True)
+
+                target = self.wait_for_ssh(pod.id, on_wait=heartbeat_pod if on_pod_id else None)
                 self.run_worker(job, pod.id, target)
                 return pod
             except RunPodSshUnavailableError as exc:
@@ -204,11 +211,16 @@ class RunPodLauncher:
         if not os.access(path, os.R_OK):
             raise RunPodError(f"{label} is not readable by this process: {path}")
 
-    def wait_for_ssh(self, pod_id: str) -> RunPodSshTarget:
+    def wait_for_ssh(self, pod_id: str, on_wait: Callable[[], None] | None = None) -> RunPodSshTarget:
         started = time.monotonic()
         deadline = time.monotonic() + self.settings.runpod_ssh_ready_timeout_seconds
+        next_wait_callback = started + 30
         last_seen = ""
         while time.monotonic() < deadline:
+            now = time.monotonic()
+            if on_wait and now >= next_wait_callback:
+                on_wait()
+                next_wait_callback = now + 30
             try:
                 pod = self.client.get_pod(pod_id)
             except RunPodApiError as exc:

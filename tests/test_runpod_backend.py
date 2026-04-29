@@ -313,6 +313,43 @@ def test_launch_recycles_pod_that_exits_before_ssh_ready(tmp_path, monkeypatch) 
     assert pod_ids == ["pod1", None, "pod2", None]
 
 
+def test_wait_for_ssh_refreshes_wait_heartbeat(tmp_path, monkeypatch) -> None:
+    settings = make_runpod_settings(tmp_path)
+    settings.runpod_ssh_ready_timeout_seconds = 100
+    settings.runpod_no_endpoint_timeout_seconds = 100
+
+    class BootingClient:
+        def get_pod(self, pod_id: str) -> dict:
+            return {"desiredStatus": "RUNNING", "publicIp": "198.51.100.2", "portMappings": {"22": 30022}}
+
+    clock = 0.0
+
+    def fake_monotonic() -> float:
+        return clock
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal clock
+        clock += seconds
+
+    launcher = RunPodLauncher(settings, client=BootingClient())
+    attempts = 0
+
+    def fake_ssh_ready(target: RunPodSshTarget) -> tuple[bool, str]:
+        nonlocal attempts
+        attempts += 1
+        return attempts >= 5, "still booting"
+
+    heartbeats: list[float] = []
+    monkeypatch.setattr("splatbot.runpod_backend.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("splatbot.runpod_backend.time.sleep", fake_sleep)
+    monkeypatch.setattr(launcher, "_ssh_ready", fake_ssh_ready)
+
+    target = launcher.wait_for_ssh("pod123", on_wait=lambda: heartbeats.append(clock))
+
+    assert target == RunPodSshTarget(host="198.51.100.2", port=30022)
+    assert heartbeats == [30.0]
+
+
 def test_create_pod_uses_network_volume_and_datacenter_filters(tmp_path) -> None:
     settings = make_runpod_settings(tmp_path)
     settings.runpod_gpu_type_id = "NVIDIA RTX A6000, NVIDIA GeForce RTX 4090"
