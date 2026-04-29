@@ -74,10 +74,42 @@ def test_mapped_command_uses_glomap_when_colmap_global_mapper_missing(monkeypatc
     monkeypatch.setattr("splatbot.colmap_wrapper._has_colmap_command", lambda command: False)
     monkeypatch.setattr("splatbot.colmap_wrapper._glomap_bin", lambda: "glomap-test")
 
-    command, argv = _mapped_command(["mapper", "--database_path", "db"])
+    command, argv = _mapped_command(
+        [
+            "mapper",
+            "--database_path",
+            "db",
+            "--Mapper.ba_global_function_tolerance=1e-6",
+            "--Mapper.ba_local_max_num_iterations",
+            "25",
+        ]
+    )
 
     assert command == "glomap-test"
     assert argv == ["mapper", "--database_path", "db"]
+
+
+def test_glomap_mapper_strips_colmap_mapper_only_options(monkeypatch) -> None:
+    monkeypatch.setenv("SPLATBOT_COLMAP_MAPPER", "global")
+    monkeypatch.setattr("splatbot.colmap_wrapper._real_colmap", lambda: "colmap-test")
+    monkeypatch.setattr("splatbot.colmap_wrapper._has_colmap_command", lambda command: False)
+    monkeypatch.setattr("splatbot.colmap_wrapper._glomap_bin", lambda: "glomap-test")
+
+    command, argv = _mapped_command(
+        [
+            "mapper",
+            "--database_path",
+            "db",
+            "--Mapper.ba_global_function_tolerance",
+            "0.000001",
+            "--Mapper.multiple_models=0",
+            "--image_path",
+            "images",
+        ]
+    )
+
+    assert command == "glomap-test"
+    assert argv == ["mapper", "--database_path", "db", "--image_path", "images"]
 
 
 def test_global_mapper_can_run_view_graph_calibrator(monkeypatch) -> None:

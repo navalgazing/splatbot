@@ -87,6 +87,22 @@ def _truthy_env(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _strip_colmap_mapper_options_for_glomap(argv: list[str]) -> list[str]:
+    filtered: list[str] = []
+    idx = 0
+    while idx < len(argv):
+        item = argv[idx]
+        if item.startswith("--Mapper."):
+            if "=" not in item and idx + 1 < len(argv) and not argv[idx + 1].startswith("--"):
+                idx += 2
+            else:
+                idx += 1
+            continue
+        filtered.append(item)
+        idx += 1
+    return filtered
+
+
 def _mapped_argv(argv: list[str]) -> list[str]:
     _command, mapped = _mapped_command(argv)
     return mapped
@@ -105,7 +121,7 @@ def _mapped_command(argv: list[str]) -> tuple[str, list[str]]:
                 f"using {glomap} mapper",
                 file=sys.stderr,
             )
-            return glomap, argv
+            return glomap, _strip_colmap_mapper_options_for_glomap(argv)
         print(
             "splatbot-colmap-wrapper: requested global mapper but this COLMAP build has no global_mapper; "
             "GLOMAP is unavailable; falling back to mapper",
