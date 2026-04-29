@@ -32,7 +32,7 @@ POSE_ROW_DESCRIPTIONS = {
     "colmap-global": "COLMAP/GLOMAP global pose with baseline depth, train, and postprocess.",
     "vggt-colmap": "VGGT pose adapter with baseline depth, train, and postprocess.",
     "mast3r-sfm": "MASt3R SfM pose adapter with baseline depth, train, and postprocess.",
-    "da3-colmap": "Depth Anything 3 pose adapter with splatfacto-big consuming DA3 sparse initialization.",
+    "da3-colmap": "Depth Anything 3 pose adapter with DA3 sparse initialization.",
 }
 
 
@@ -74,15 +74,7 @@ def match_reference_owner(path: Path, reference: Path) -> None:
         os.chown(target, reference_stat.st_uid, reference_stat.st_gid)
 
 
-def append_cli_args(existing: str, *extra_args: str) -> str:
-    parts = [existing.strip()] if existing.strip() else []
-    for arg in extra_args:
-        if arg and arg not in existing:
-            parts.append(arg)
-    return " ".join(parts)
-
-
-def pose_matrix_settings(pose_backend: str, settings: Settings) -> tuple[str, str, dict[str, Any]]:
+def pose_matrix_settings(pose_backend: str) -> tuple[str, str, dict[str, Any]]:
     row = "baseline" if pose_backend == "colmap-global" else f"pose-{pose_backend}"
     changed = {}
     if pose_backend != "colmap-global":
@@ -90,11 +82,6 @@ def pose_matrix_settings(pose_backend: str, settings: Settings) -> tuple[str, st
             "best_pose_backends": pose_backend,
             "best_pose_required_backends": pose_backend,
         }
-    if pose_backend == "da3-colmap":
-        changed["best_train_extra_args"] = append_cli_args(
-            settings.best_train_extra_args,
-            "--pipeline.datamanager.dataparser.load-3D-points True",
-        )
     return row, POSE_ROW_DESCRIPTIONS[pose_backend], {**BASELINE_MATRIX_SETTINGS, **changed}
 
 
@@ -216,7 +203,7 @@ def main() -> None:
     if args.pose_backend:
         if matrix_run_id is None:
             matrix_run_id = datetime.now(UTC).strftime("controlled-pose-%Y%m%dT%H%M%SZ")
-        matrix_row, matrix_description, settings_overrides = pose_matrix_settings(args.pose_backend, settings)
+        matrix_row, matrix_description, settings_overrides = pose_matrix_settings(args.pose_backend)
         matrix_changed = {
             key: value
             for key, value in settings_overrides.items()
