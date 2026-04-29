@@ -9,6 +9,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -16,6 +17,12 @@ from splatbot.commands import render_argv_template
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
+DEFAULT_MAST3R_WEIGHTS = Path("/workspace/models/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth")
+DEFAULT_MAST3R_WEIGHTS_URL = (
+    "https://download.europe.naverlabs.com/ComputerVision/MASt3R/"
+    "MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth"
+)
+MIN_MAST3R_WEIGHTS_BYTES = 1_000_000_000
 
 
 class ExternalCommandFailed(RuntimeError):
@@ -371,15 +378,23 @@ def write_pairs_file(images: list[Path], pairs_path: Path, matching_method: str)
     )
 
 
-def mast3r_default_command(repo: Path, output_dir: Path, pairs_path: Path, staged_images: Path) -> str:
+def mast3r_default_command(
+    repo: Path,
+    output_dir: Path,
+    pairs_path: Path,
+    staged_images: Path,
+    weights_path: Path | str | None = None,
+) -> str:
     device = os.environ.get("SPLATBOT_MAST3R_DEVICE", "").strip() or "cuda"
     glomap_bin = os.environ.get("SPLATBOT_GLOMAP_BIN", "").strip() or "glomap"
-    weights = os.environ.get("SPLATBOT_MAST3R_WEIGHTS", "").strip()
+    weights = str(weights_path) if weights_path is not None else (
+        os.environ.get("SPLATBOT_MAST3R_WEIGHTS", "").strip() or str(DEFAULT_MAST3R_WEIGHTS)
+    )
     shared_camera = truthy(os.environ.get("SPLATBOT_MAST3R_SHARED_CAMERA", "").strip() or "true")
     use_glomap = truthy(os.environ.get("SPLATBOT_MAST3R_USE_GLOMAP", "").strip() or "true")
     input_flag = "--dir_same_camera" if shared_camera else "--dir"
     if weights:
-        model_args = f"--weights {weights}"
+        model_args = f"--weights {shlex.quote(weights)}"
     else:
         model_args = "--model_name MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric"
     extra_args = os.environ.get("SPLATBOT_MAST3R_ARGS", "").strip()
@@ -393,6 +408,53 @@ def mast3r_default_command(repo: Path, output_dir: Path, pairs_path: Path, stage
     if extra_args:
         command += f" {extra_args}"
     return command
+
+
+def mast3r_weight_path() -> Path:
+    configured = os.environ.get("SPLATBOT_MAST3R_WEIGHTS", "").strip()
+    return Path(configured) if configured else DEFAULT_MAST3R_WEIGHTS
+
+
+def ensure_mast3r_weights() -> Path:
+    weights = mast3r_weight_path()
+    if weights.exists() and weights.stat().st_size >= MIN_MAST3R_WEIGHTS_BYTES:
+        return weights
+    if not truthy(os.environ.get("SPLATBOT_MAST3R_ALLOW_WEIGHT_DOWNLOAD", "true")):
+        raise SystemExit(
+            f"MASt3R weights are missing at {weights}; set SPLATBOT_MAST3R_ALLOW_WEIGHT_DOWNLOAD=true "
+            "or pre-warm the RunPod volume/image."
+        )
+    url = os.environ.get("SPLATBOT_MAST3R_WEIGHTS_URL", "").strip() or DEFAULT_MAST3R_WEIGHTS_URL
+    weights.parent.mkdir(parents=True, exist_ok=True)
+    partial = weights.with_suffix(weights.suffix + ".part")
+    if partial.exists() and partial.stat().st_size < MIN_MAST3R_WEIGHTS_BYTES:
+        partial.unlink()
+    print(f"downloading MASt3R weights: {url} -> {weights}", flush=True)
+    if shutil.which("curl"):
+        result = subprocess.run(
+            [
+                "curl",
+                "-fL",
+                "--retry",
+                "5",
+                "--retry-delay",
+                "5",
+                "--connect-timeout",
+                "30",
+                "-o",
+                str(partial),
+                url,
+            ],
+            check=False,
+        )
+        if result.returncode != 0:
+            raise SystemExit(f"failed to download MASt3R weights from {url}") from None
+    else:
+        urllib.request.urlretrieve(url, partial)
+    if not partial.exists() or partial.stat().st_size < MIN_MAST3R_WEIGHTS_BYTES:
+        raise SystemExit(f"downloaded MASt3R weights are missing or too small: {partial}")
+    partial.replace(weights)
+    return weights
 
 
 def glomap_wrapper_main() -> None:
@@ -428,7 +490,10 @@ def mast3r_main() -> None:
         output_dir = tmp / "mast3r"
         pairs_path = tmp / "pairs.txt"
         write_pairs_file(images, pairs_path, args.matching_method)
-        command = command or mast3r_default_command(repo, output_dir, pairs_path, staged_images)
+        mast3r_weights = mast3r_weight_path()
+        if not command or "{mast3r_weights}" in command:
+            mast3r_weights = ensure_mast3r_weights()
+        command = command or mast3r_default_command(repo, output_dir, pairs_path, staged_images, mast3r_weights)
         render_and_run(
             command,
             {
@@ -440,6 +505,7 @@ def mast3r_main() -> None:
                 "mast3r_output_dir": str(output_dir),
                 "pairs_file": str(pairs_path),
                 "mast3r_repo": str(repo),
+                "mast3r_weights": str(mast3r_weights),
                 "python": default_python(),
                 "matching_method": args.matching_method,
             },

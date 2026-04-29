@@ -443,6 +443,8 @@ def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str) 
             "SPLATBOT_MAST3R_REPO": settings.mast3r_repo,
             "SPLATBOT_MAST3R_RUN_COMMAND": settings.mast3r_run_command,
             "SPLATBOT_MAST3R_WEIGHTS": settings.mast3r_weights,
+            "SPLATBOT_MAST3R_WEIGHTS_URL": settings.mast3r_weights_url,
+            "SPLATBOT_MAST3R_ALLOW_WEIGHT_DOWNLOAD": str(settings.mast3r_allow_weight_download).lower(),
             "SPLATBOT_MAST3R_ARGS": settings.mast3r_args,
             "SPLATBOT_MAST3R_MAX_IMAGES": settings.mast3r_max_images,
             "SPLATBOT_MAST3R_PAIR_WINDOW": settings.mast3r_pair_window,

@@ -153,7 +153,12 @@ class Settings(BaseSettings):
     )
     mast3r_repo: str = "/opt/mast3r"
     mast3r_run_command: str = ""
-    mast3r_weights: str = ""
+    mast3r_weights: str = "/workspace/models/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth"
+    mast3r_weights_url: str = (
+        "https://download.europe.naverlabs.com/ComputerVision/MASt3R/"
+        "MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth"
+    )
+    mast3r_allow_weight_download: bool = True
     mast3r_args: str = ""
     mast3r_max_images: int = 80
     mast3r_pair_window: int = 5

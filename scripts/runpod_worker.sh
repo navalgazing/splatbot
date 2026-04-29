@@ -186,6 +186,38 @@ check_required_glomap() {
   }
 }
 
+pose_backends_include_mast3r() {
+  local configured="${SPLATBOT_BEST_POSE_BACKENDS:-${SPLATBOT_POSE_BACKENDS:-}}"
+  if [ "${SPLATBOT_SCAN_PRESET:-balanced}" != "best" ]; then
+    configured="${SPLATBOT_POSE_BACKENDS:-$configured}"
+  fi
+  IFS=',' read -ra POSE_BACKENDS_FOR_CHECK <<< "$configured"
+  for backend in "${POSE_BACKENDS_FOR_CHECK[@]}"; do
+    backend="$(printf '%s' "$backend" | xargs)"
+    if [ "$backend" = "mast3r-sfm" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+check_mast3r_weights_config() {
+  if ! pose_backends_include_mast3r; then
+    return 0
+  fi
+  local weights="${SPLATBOT_MAST3R_WEIGHTS:-/workspace/models/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth}"
+  if [ -s "$weights" ]; then
+    echo "  mast3r_weights=$weights bytes=$(stat -c%s "$weights")"
+    return 0
+  fi
+  if truthy "${SPLATBOT_MAST3R_ALLOW_WEIGHT_DOWNLOAD:-true}"; then
+    echo "  mast3r_weights=$weights missing; splatbot-mast3r will download the configured checkpoint if selected"
+    return 0
+  fi
+  echo "MASt3R pose backend is configured but weights are missing at $weights and downloads are disabled" >&2
+  exit 2
+}
+
 print_runtime_diagnostics() {
   echo "runtime diagnostics:"
   echo "  job=$SPLATBOT_JOB_ID mode=$SPLATBOT_SCAN_MODE preset=$SPLATBOT_SCAN_PRESET"
@@ -304,6 +336,7 @@ command -v nvcc >/dev/null
 check_colmap_cuda
 check_rembg_cuda
 check_required_glomap
+check_mast3r_weights_config
 "$VENV_DIR/bin/python" - <<'PY'
 import torch
 

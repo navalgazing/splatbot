@@ -170,6 +170,7 @@ def test_mast3r_adapter_writes_pairs_and_normalizes_reconstruction(
 
 def test_mast3r_default_command_uses_glomap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SPLATBOT_MAST3R_USE_GLOMAP", raising=False)
+    monkeypatch.delenv("SPLATBOT_MAST3R_WEIGHTS", raising=False)
 
     argv = pose_adapters.render_argv_template(
         pose_adapters.mast3r_default_command(
@@ -182,6 +183,56 @@ def test_mast3r_default_command_uses_glomap(tmp_path: Path, monkeypatch: pytest.
     )
 
     assert "--use_glomap_mapper" in argv
+    assert "--weights" in argv
+    assert "/workspace/models/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth" in argv
+    assert "--model_name" not in argv
+
+
+def test_mast3r_main_ensures_weights_for_default_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    images = tmp_path / "images"
+    processed = tmp_path / "processed"
+    weights = tmp_path / "mast3r.pth"
+    images.mkdir()
+    for idx in range(2):
+        (images / f"frame_{idx + 1:05d}.jpg").write_bytes(b"fake")
+
+    def fake_ensure() -> Path:
+        return weights
+
+    def fake_run(argv: list[str]) -> None:
+        assert "--weights" in argv
+        assert str(weights) in argv
+        out = tmp_path / "mast3r_out" / "reconstruction" / "0"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "cameras.bin").write_bytes(b"camera")
+        (out / "points3D.bin").write_bytes(struct.pack("<Q", 1) + b"point-data")
+        (out / "images.bin").write_text("images=2", encoding="utf-8")
+
+    monkeypatch.delenv("SPLATBOT_MAST3R_RUN_COMMAND", raising=False)
+    monkeypatch.setenv("SPLATBOT_MAST3R_MAX_IMAGES", "2")
+    monkeypatch.setattr(pose_adapters, "ensure_mast3r_weights", fake_ensure)
+    monkeypatch.setattr(pose_adapters, "run", fake_run)
+    monkeypatch.setattr(pose_adapters, "generate_transforms", fake_generate_transforms)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "splatbot-mast3r",
+            "--images",
+            str(images),
+            "--processed",
+            str(processed),
+            "--work-dir",
+            str(tmp_path / "mast3r_out"),
+        ],
+    )
+
+    pose_adapters.mast3r_main()
+
+    assert (processed / "colmap" / "sparse" / "0" / "images.bin").read_text(encoding="utf-8") == "images=2"
 
 
 def test_glomap_wrapper_injects_mapper_args(monkeypatch: pytest.MonkeyPatch) -> None:

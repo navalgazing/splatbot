@@ -76,6 +76,9 @@ export U2NET_HOME="${{U2NET_HOME:-/opt/splatbot/models/rembg}}"
 {shell_export("SPLATBOT_MAST3R_USE_GLOMAP", str(settings.mast3r_use_glomap).lower())}
 {shell_export("SPLATBOT_GLOMAP_BIN", settings.glomap_bin)}
 {shell_export("SPLATBOT_GLOMAP_MAPPER_ARGS", settings.glomap_mapper_args)}
+{shell_export("SPLATBOT_MAST3R_WEIGHTS", settings.mast3r_weights)}
+{shell_export("SPLATBOT_MAST3R_WEIGHTS_URL", settings.mast3r_weights_url)}
+{shell_export("SPLATBOT_MAST3R_ALLOW_WEIGHT_DOWNLOAD", str(settings.mast3r_allow_weight_download).lower())}
 
 echo "warming runtime cache version: $CACHE_VERSION"
 echo "venv: $VENV_DIR"
@@ -125,6 +128,22 @@ if not model.exists() or model.stat().st_size < 1_000_000:
             model,
         )
 print(f"rembg model bytes={{model.stat().st_size}}")
+
+mast3r_weights = Path(os.environ["SPLATBOT_MAST3R_WEIGHTS"])
+mast3r_weights.parent.mkdir(parents=True, exist_ok=True)
+if mast3r_weights.exists() and mast3r_weights.stat().st_size >= 1_000_000_000:
+    print(f"mast3r weights bytes={{mast3r_weights.stat().st_size}}")
+elif os.environ.get("SPLATBOT_MAST3R_ALLOW_WEIGHT_DOWNLOAD", "true").lower() in {"1", "true", "yes", "on"}:
+    partial = mast3r_weights.with_suffix(mast3r_weights.suffix + ".part")
+    if partial.exists():
+        partial.unlink()
+    urllib.request.urlretrieve(os.environ["SPLATBOT_MAST3R_WEIGHTS_URL"], partial)
+    if partial.stat().st_size < 1_000_000_000:
+        raise SystemExit(f"downloaded MASt3R weights are too small: {{partial}}")
+    partial.replace(mast3r_weights)
+    print(f"mast3r weights bytes={{mast3r_weights.stat().st_size}}")
+else:
+    raise SystemExit(f"MASt3R weights are missing at {{mast3r_weights}} and downloads are disabled")
 PY
 
 command -v ffmpeg
@@ -207,7 +226,7 @@ if [ -n "$CACHE_VERSION" ]; then
   printf '%s\\n' "$CACHE_VERSION" > "$CACHE_MARKER"
 fi
 
-du -sh "$VENV_DIR" "$TORCH_EXTENSIONS_DIR" "$U2NET_HOME" || true
+du -sh "$VENV_DIR" "$TORCH_EXTENSIONS_DIR" "$U2NET_HOME" "$(dirname "$SPLATBOT_MAST3R_WEIGHTS")" || true
 echo "runtime cache verified"
 """
 
