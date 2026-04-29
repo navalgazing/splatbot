@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import shutil
 import uuid
 from dataclasses import dataclass
@@ -105,6 +106,20 @@ MATRIX_ROWS: tuple[MatrixRow, ...] = (
         },
     ),
 )
+
+
+def load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        os.environ[key] = value.strip().strip("'\"")
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -257,6 +272,7 @@ def summarize_job(settings: Settings, job: ScanJob, row: MatrixRow) -> dict[str,
 
 
 async def run_matrix(args: argparse.Namespace) -> None:
+    load_env_file(args.env_file)
     settings = Settings()
     store = Store(settings.database_path)
     await store.init()
@@ -318,6 +334,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--include-unconfigured", action="store_true")
     parser.add_argument("--continue-on-failure", action="store_true")
+    parser.add_argument("--env-file", type=Path, default=Path("/etc/splatbot/splatbot.env"))
     args = parser.parse_args()
     asyncio.run(run_matrix(args))
 

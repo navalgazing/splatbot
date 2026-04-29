@@ -58,6 +58,7 @@ def test_publish_viewer_writes_static_result_page(tmp_path) -> None:
     assert 'import * as GaussianSplats3D from "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d' in html
     assert 'await import("../_viewer_assets/' not in html
     assert 'name="robots"' in html
+    assert 'http-equiv="cache-control"' in html
 
 
 def test_publish_viewer_allows_missing_preview(tmp_path) -> None:
