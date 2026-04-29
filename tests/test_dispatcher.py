@@ -3,7 +3,7 @@ from pathlib import Path
 
 from splatbot.artifacts import ArtifactRef
 from splatbot.config import ScanMode, Settings
-from splatbot.dispatcher import Dispatcher
+from splatbot.dispatcher import Dispatcher, recover_interrupted_jobs
 from splatbot.models import (
     ArtifactKind,
     JobArtifact,
@@ -187,3 +187,31 @@ async def test_dispatcher_does_not_notify_done_if_terminal_state_wins_race(tmp_p
     assert updated is not None
     assert updated.status == JobStatus.FAILED
     assert notifier.done == []
+
+
+async def test_recover_interrupted_jobs_fails_fresh_claimed_jobs_on_startup(tmp_path) -> None:
+    store = Store(tmp_path / "splatbot.sqlite3")
+    await store.init()
+    session = await store.create_session(telegram_user_id=1, mode=ScanMode.SCENE)
+    job = await store.create_job(session)
+    claimed = await store.claim_next_queued_job()
+    assert claimed is not None
+    assert claimed.id == job.id
+
+    notifier = FakeNotifier()
+    interrupted = await recover_interrupted_jobs(
+        Settings(
+            data_dir=tmp_path,
+            database_path=tmp_path / "splatbot.sqlite3",
+            interrupted_job_grace_seconds=600,
+        ),
+        store,
+        notifier,
+    )
+
+    assert interrupted == 1
+    updated = await store.get_job(job.id)
+    assert updated is not None
+    assert updated.status == JobStatus.FAILED
+    assert "interrupted by bot restart" in (updated.error or "")
+    assert len(notifier.failed) == 1
