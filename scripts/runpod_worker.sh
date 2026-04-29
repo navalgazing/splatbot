@@ -45,7 +45,7 @@ export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-/workspace/torch_indu
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/workspace/triton_cache}"
 export CUDA_CACHE_PATH="${CUDA_CACHE_PATH:-/workspace/cuda_cache}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/workspace/.cache}"
-export TORCH_HOME="${TORCH_HOME:-$XDG_CACHE_HOME/torch}"
+export TORCH_HOME="${TORCH_HOME:-/opt/splatbot/models/torch}"
 export U2NET_HOME="${U2NET_HOME:-/opt/splatbot/models/rembg}"
 export SPLATBOT_LOG_COMMAND_OUTPUT="${SPLATBOT_LOG_COMMAND_OUTPUT:-1}"
 KNOWN_HOSTS="${SPLATBOT_VPS_KNOWN_HOSTS_FILE:-/root/.ssh/known_hosts}"
@@ -254,6 +254,21 @@ check_da3_model_config() {
   exit 2
 }
 
+check_torchvision_weights_config() {
+  local torch_home="${TORCH_HOME:-/opt/splatbot/models/torch}"
+  local checkpoint="$torch_home/hub/checkpoints/alexnet-owt-7be5be79.pth"
+  if [ -s "$checkpoint" ]; then
+    echo "  torch_home=$torch_home alexnet_checkpoint=$checkpoint bytes=$(stat -c%s "$checkpoint")"
+    return 0
+  fi
+  if truthy "${SPLATBOT_TORCHVISION_ALLOW_WEIGHT_DOWNLOAD:-false}"; then
+    echo "  alexnet_checkpoint=$checkpoint missing; LPIPS/torchvision may download it during training"
+    return 0
+  fi
+  echo "LPIPS AlexNet checkpoint is missing at $checkpoint and downloads are disabled" >&2
+  exit 2
+}
+
 print_runtime_diagnostics() {
   echo "runtime diagnostics:"
   echo "  job=$SPLATBOT_JOB_ID mode=$SPLATBOT_SCAN_MODE preset=$SPLATBOT_SCAN_PRESET"
@@ -374,6 +389,7 @@ check_rembg_cuda
 check_required_glomap
 check_mast3r_weights_config
 check_da3_model_config
+check_torchvision_weights_config
 "$VENV_DIR/bin/python" - <<'PY'
 import torch
 

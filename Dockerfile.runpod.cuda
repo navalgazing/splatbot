@@ -99,6 +99,8 @@ ENV SPLATBOT_DA3_MODEL=depth-anything/DA3-LARGE-1.1
 ENV SPLATBOT_DA3_MODEL_CACHE_DIR=/opt/splatbot/models/da3
 ENV SPLATBOT_DA3_ALLOW_MODEL_DOWNLOAD=true
 ENV SPLATBOT_DA3_MODEL_DOWNLOAD_ATTEMPTS=5
+ENV TORCH_HOME=/opt/splatbot/models/torch
+ENV SPLATBOT_TORCHVISION_ALLOW_WEIGHT_DOWNLOAD=false
 ENV TORCH_CUDA_ARCH_LIST=8.0;8.6;8.9;9.0
 ENV U2NET_HOME=/opt/splatbot/models/rembg
 
@@ -145,6 +147,26 @@ RUN mkdir -p "$U2NET_HOME" \
 
 RUN /opt/splatbot/venv/bin/pip install --no-cache-dir --upgrade --force-reinstall --no-deps \
       "git+https://github.com/nerfstudio-project/nerfstudio.git@${NERFSTUDIO_COMMIT}"
+
+RUN mkdir -p "$TORCH_HOME/hub/checkpoints" \
+    && /opt/splatbot/venv/bin/python - <<'PY'
+import os
+from pathlib import Path
+from torch.hub import download_url_to_file
+
+url = "https://download.pytorch.org/models/alexnet-owt-7be5be79.pth"
+checkpoint = Path(os.environ["TORCH_HOME"]) / "hub" / "checkpoints" / Path(url).name
+checkpoint.parent.mkdir(parents=True, exist_ok=True)
+if not checkpoint.exists() or checkpoint.stat().st_size < 100_000_000:
+    partial = checkpoint.with_suffix(checkpoint.suffix + ".part")
+    if partial.exists():
+        partial.unlink()
+    download_url_to_file(url, str(partial), hash_prefix="7be5be79", progress=True)
+    partial.replace(checkpoint)
+if checkpoint.stat().st_size < 100_000_000:
+    raise SystemExit(f"AlexNet LPIPS checkpoint is too small: {checkpoint}")
+print(f"AlexNet LPIPS checkpoint cached at {checkpoint} bytes={checkpoint.stat().st_size}")
+PY
 
 RUN /opt/splatbot/venv/bin/pip install --no-cache-dir \
       git+https://github.com/facebookresearch/sam2.git \

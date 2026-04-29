@@ -435,6 +435,10 @@ def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str) 
             "SPLATBOT_DA3_USE_RAY_POSE": str(settings.da3_use_ray_pose).lower(),
             "SPLATBOT_DA3_REF_VIEW_STRATEGY": settings.da3_ref_view_strategy,
             "SPLATBOT_DA3_POSE_COMMAND": settings.da3_pose_command,
+            "TORCH_HOME": settings.torch_home,
+            "SPLATBOT_TORCHVISION_ALLOW_WEIGHT_DOWNLOAD": str(
+                settings.torchvision_allow_weight_download
+            ).lower(),
             "SPLATBOT_VGGT_POSE_COMMAND": settings.vggt_pose_command,
             "SPLATBOT_POSE_PYTHON": settings.pose_python,
             "SPLATBOT_VGGT_REPO": settings.vggt_repo,

@@ -64,7 +64,8 @@ export TORCHINDUCTOR_CACHE_DIR="${{TORCHINDUCTOR_CACHE_DIR:-/workspace/torch_ind
 export TRITON_CACHE_DIR="${{TRITON_CACHE_DIR:-/workspace/triton_cache}}"
 export CUDA_CACHE_PATH="${{CUDA_CACHE_PATH:-/workspace/cuda_cache}}"
 export XDG_CACHE_HOME="${{XDG_CACHE_HOME:-/workspace/.cache}}"
-export TORCH_HOME="${{TORCH_HOME:-$XDG_CACHE_HOME/torch}}"
+{shell_export("DEFAULT_TORCH_HOME", settings.torch_home)}
+export TORCH_HOME="${{TORCH_HOME:-$DEFAULT_TORCH_HOME}}"
 export U2NET_HOME="${{U2NET_HOME:-/opt/splatbot/models/rembg}}"
 {shell_export("VENV_DIR", venv_dir)}
 {shell_export("CACHE_MARKER", cache_marker)}
@@ -83,6 +84,7 @@ export U2NET_HOME="${{U2NET_HOME:-/opt/splatbot/models/rembg}}"
 {shell_export("SPLATBOT_DA3_MODEL_CACHE_DIR", settings.da3_model_cache_dir)}
 {shell_export("SPLATBOT_DA3_ALLOW_MODEL_DOWNLOAD", str(settings.da3_allow_model_download).lower())}
 {shell_export("SPLATBOT_DA3_MODEL_DOWNLOAD_ATTEMPTS", str(settings.da3_model_download_attempts))}
+{shell_export("SPLATBOT_TORCHVISION_ALLOW_WEIGHT_DOWNLOAD", str(settings.torchvision_allow_weight_download).lower())}
 
 echo "warming runtime cache version: $CACHE_VERSION"
 echo "venv: $VENV_DIR"
@@ -92,7 +94,7 @@ if [ -n "$BOOTSTRAP_COMMAND" ]; then
   bash -lc "$BOOTSTRAP_COMMAND"
 fi
 
-mkdir -p "$TORCH_EXTENSIONS_DIR" "$U2NET_HOME"
+mkdir -p "$TORCH_EXTENSIONS_DIR" "$TORCH_HOME" "$U2NET_HOME"
 if [ ! -x "$VENV_DIR/bin/python" ]; then
   python3 -m venv --system-site-packages "$VENV_DIR"
   "$VENV_DIR/bin/pip" install --upgrade pip
@@ -148,6 +150,28 @@ elif os.environ.get("SPLATBOT_MAST3R_ALLOW_WEIGHT_DOWNLOAD", "true").lower() in 
     print(f"mast3r weights bytes={{mast3r_weights.stat().st_size}}")
 else:
     raise SystemExit(f"MASt3R weights are missing at {{mast3r_weights}} and downloads are disabled")
+
+torch_home = Path(os.environ["TORCH_HOME"])
+alexnet = torch_home / "hub" / "checkpoints" / "alexnet-owt-7be5be79.pth"
+if alexnet.exists() and alexnet.stat().st_size >= 100_000_000:
+    print(f"alexnet checkpoint bytes={{alexnet.stat().st_size}}")
+elif os.environ.get("SPLATBOT_TORCHVISION_ALLOW_WEIGHT_DOWNLOAD", "false").lower() in {"1", "true", "yes", "on"}:
+    from torch.hub import download_url_to_file
+
+    alexnet.parent.mkdir(parents=True, exist_ok=True)
+    partial = alexnet.with_suffix(alexnet.suffix + ".part")
+    if partial.exists():
+        partial.unlink()
+    download_url_to_file(
+        "https://download.pytorch.org/models/alexnet-owt-7be5be79.pth",
+        str(partial),
+        hash_prefix="7be5be79",
+        progress=True,
+    )
+    partial.replace(alexnet)
+    print(f"alexnet checkpoint bytes={{alexnet.stat().st_size}}")
+else:
+    raise SystemExit(f"AlexNet LPIPS checkpoint is missing at {{alexnet}} and downloads are disabled")
 PY
 
 python - <<'PY'
@@ -254,7 +278,7 @@ if [ -n "$CACHE_VERSION" ]; then
   printf '%s\\n' "$CACHE_VERSION" > "$CACHE_MARKER"
 fi
 
-du -sh "$VENV_DIR" "$TORCH_EXTENSIONS_DIR" "$U2NET_HOME" "$(dirname "$SPLATBOT_MAST3R_WEIGHTS")" "$SPLATBOT_DA3_MODEL_CACHE_DIR" || true
+du -sh "$VENV_DIR" "$TORCH_EXTENSIONS_DIR" "$TORCH_HOME" "$U2NET_HOME" "$(dirname "$SPLATBOT_MAST3R_WEIGHTS")" "$SPLATBOT_DA3_MODEL_CACHE_DIR" || true
 echo "runtime cache verified"
 """
 

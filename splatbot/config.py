@@ -140,6 +140,8 @@ class Settings(BaseSettings):
     da3_use_ray_pose: bool = True
     da3_ref_view_strategy: str = "middle"
     da3_pose_command: str = "splatbot-da3 --images {images_dir} --processed {processed_dir}"
+    torch_home: str = "/opt/splatbot/models/torch"
+    torchvision_allow_weight_download: bool = False
     vggt_pose_command: str = (
         "splatbot-vggt --images {images_dir} --processed {processed_dir} "
         "--matching-method {matching_method}"
