@@ -447,6 +447,7 @@ def render_remote_worker_command(settings: Settings, job: ScanJob, pod_id: str) 
             "SPLATBOT_VGGT_ARGS": settings.vggt_args,
             "SPLATBOT_VGGT_MAX_IMAGES": settings.vggt_max_images,
             "SPLATBOT_VGGT_WEIGHTS": settings.vggt_weights,
+            "SPLATBOT_VGGSFM_TRACKER_WEIGHTS": settings.vggsfm_tracker_weights,
             "SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD": str(settings.vggt_allow_weight_download).lower(),
             "SPLATBOT_MAST3R_POSE_COMMAND": settings.mast3r_pose_command,
             "SPLATBOT_MAST3R_REPO": settings.mast3r_repo,

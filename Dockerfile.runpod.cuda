@@ -88,6 +88,7 @@ ARG MAST3R_COMMIT
 ARG DOWNLOAD_VGGT_WEIGHTS=0
 ARG DOWNLOAD_MAST3R_WEIGHTS=0
 ARG VGGT_WEIGHTS_URL=https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt
+ARG VGGSFM_TRACKER_WEIGHTS_URL=https://huggingface.co/facebook/VGGSfM/resolve/main/vggsfm_v2_tracker.pt
 ARG MAST3R_WEIGHTS_URL=https://download.europe.naverlabs.com/ComputerVision/MASt3R/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
 ARG DOWNLOAD_DA3_MODEL=0
 
@@ -95,6 +96,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV SPLATBOT_VGGT_REPO=/opt/vggt
 ENV SPLATBOT_VGGT_WEIGHTS=/opt/splatbot/models/torch/hub/checkpoints/model.pt
 ENV SPLATBOT_VGGT_WEIGHTS_URL=${VGGT_WEIGHTS_URL}
+ENV SPLATBOT_VGGSFM_TRACKER_WEIGHTS=/opt/splatbot/models/torch/hub/checkpoints/vggsfm_v2_tracker.pt
+ENV SPLATBOT_VGGSFM_TRACKER_WEIGHTS_URL=${VGGSFM_TRACKER_WEIGHTS_URL}
 ENV SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD=false
 ENV SPLATBOT_MAST3R_REPO=/opt/mast3r
 ENV SPLATBOT_MAST3R_WEIGHTS=/opt/splatbot/models/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
@@ -240,7 +243,10 @@ RUN if [ "$DOWNLOAD_VGGT_WEIGHTS" = "1" ]; then \
       mkdir -p "$(dirname "$SPLATBOT_VGGT_WEIGHTS")" \
       && curl -fL --retry 5 --retry-delay 5 --retry-all-errors \
         -o "$SPLATBOT_VGGT_WEIGHTS" "$SPLATBOT_VGGT_WEIGHTS_URL" \
-      && test "$(stat -c%s "$SPLATBOT_VGGT_WEIGHTS")" -gt 4000000000; \
+      && test "$(stat -c%s "$SPLATBOT_VGGT_WEIGHTS")" -gt 4000000000 \
+      && curl -fL --retry 5 --retry-delay 5 --retry-all-errors \
+        -o "$SPLATBOT_VGGSFM_TRACKER_WEIGHTS" "$SPLATBOT_VGGSFM_TRACKER_WEIGHTS_URL" \
+      && test "$(stat -c%s "$SPLATBOT_VGGSFM_TRACKER_WEIGHTS")" -gt 100000000; \
     fi
 
 RUN if [ "$DOWNLOAD_DA3_MODEL" = "1" ]; then \

@@ -153,6 +153,7 @@ class Settings(BaseSettings):
     vggt_args: str = "--use_ba --max_query_pts 2048 --query_frame_num 5"
     vggt_max_images: int = 64
     vggt_weights: str = "/opt/splatbot/models/torch/hub/checkpoints/model.pt"
+    vggsfm_tracker_weights: str = "/opt/splatbot/models/torch/hub/checkpoints/vggsfm_v2_tracker.pt"
     vggt_allow_weight_download: bool = False
     mast3r_pose_command: str = (
         "splatbot-mast3r --images {images_dir} --processed {processed_dir} "

@@ -78,6 +78,7 @@ export U2NET_HOME="${{U2NET_HOME:-/opt/splatbot/models/rembg}}"
 {shell_export("SPLATBOT_GLOMAP_BIN", settings.glomap_bin)}
 {shell_export("SPLATBOT_GLOMAP_MAPPER_ARGS", settings.glomap_mapper_args)}
 {shell_export("SPLATBOT_VGGT_WEIGHTS", settings.vggt_weights)}
+{shell_export("SPLATBOT_VGGSFM_TRACKER_WEIGHTS", settings.vggsfm_tracker_weights)}
 {shell_export("SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD", str(settings.vggt_allow_weight_download).lower())}
 {shell_export("SPLATBOT_MAST3R_WEIGHTS", settings.mast3r_weights)}
 {shell_export("SPLATBOT_MAST3R_WEIGHTS_URL", settings.mast3r_weights_url)}
@@ -194,6 +195,26 @@ elif os.environ.get("SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD", "false").lower() in {
     print(f"vggt weights bytes={{vggt_weights.stat().st_size}}")
 else:
     raise SystemExit(f"VGGT weights are missing at {{vggt_weights}} and downloads are disabled")
+
+vggsfm_tracker = Path(os.environ["SPLATBOT_VGGSFM_TRACKER_WEIGHTS"])
+if vggsfm_tracker.exists() and vggsfm_tracker.stat().st_size >= 100_000_000:
+    print(f"vggsfm tracker bytes={{vggsfm_tracker.stat().st_size}}")
+elif os.environ.get("SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD", "false").lower() in {"1", "true", "yes", "on"}:
+    from torch.hub import download_url_to_file
+
+    vggsfm_tracker.parent.mkdir(parents=True, exist_ok=True)
+    partial = vggsfm_tracker.with_suffix(vggsfm_tracker.suffix + ".part")
+    if partial.exists():
+        partial.unlink()
+    download_url_to_file(
+        "https://huggingface.co/facebook/VGGSfM/resolve/main/vggsfm_v2_tracker.pt",
+        str(partial),
+        progress=True,
+    )
+    partial.replace(vggsfm_tracker)
+    print(f"vggsfm tracker bytes={{vggsfm_tracker.stat().st_size}}")
+else:
+    raise SystemExit(f"VGGSfM tracker weights are missing at {{vggsfm_tracker}} and downloads are disabled")
 PY
 
 python - <<'PY'

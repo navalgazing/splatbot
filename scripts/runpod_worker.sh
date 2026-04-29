@@ -226,17 +226,33 @@ check_vggt_weights_config() {
     bytes="$(stat -c%s "$weights")"
     if [ "$bytes" -gt 4000000000 ]; then
       echo "  vggt_weights=$weights bytes=$bytes"
-      return 0
+    else
+      echo "VGGT pose backend is configured but weights at $weights are too small: $bytes bytes" >&2
+      exit 2
     fi
-    echo "VGGT pose backend is configured but weights at $weights are too small: $bytes bytes" >&2
+  elif truthy "${SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD:-false}"; then
+    echo "  vggt_weights=$weights missing; VGGT may download facebook/VGGT-1B during pose estimation"
+  else
+    echo "VGGT pose backend is configured but weights are missing at $weights and downloads are disabled" >&2
     exit 2
   fi
-  if truthy "${SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD:-false}"; then
-    echo "  vggt_weights=$weights missing; VGGT may download facebook/VGGT-1B during pose estimation"
-    return 0
+
+  local tracker="${SPLATBOT_VGGSFM_TRACKER_WEIGHTS:-${TORCH_HOME:-/opt/splatbot/models/torch}/hub/checkpoints/vggsfm_v2_tracker.pt}"
+  if [ -s "$tracker" ]; then
+    local tracker_bytes
+    tracker_bytes="$(stat -c%s "$tracker")"
+    if [ "$tracker_bytes" -gt 100000000 ]; then
+      echo "  vggsfm_tracker_weights=$tracker bytes=$tracker_bytes"
+    else
+      echo "VGGT pose backend is configured but VGGSfM tracker weights at $tracker are too small: $tracker_bytes bytes" >&2
+      exit 2
+    fi
+  elif truthy "${SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD:-false}"; then
+    echo "  vggsfm_tracker_weights=$tracker missing; VGGT may download facebook/VGGSfM during pose estimation"
+  else
+    echo "VGGT pose backend is configured but VGGSfM tracker weights are missing at $tracker and downloads are disabled" >&2
+    exit 2
   fi
-  echo "VGGT pose backend is configured but weights are missing at $weights and downloads are disabled" >&2
-  exit 2
 }
 
 check_mast3r_weights_config() {
