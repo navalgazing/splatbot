@@ -19,6 +19,17 @@ def _real_colmap() -> str:
     return "colmap"
 
 
+def _glomap_bin() -> str | None:
+    configured = os.environ.get("SPLATBOT_GLOMAP_BIN", "").strip()
+    candidates = [configured] if configured else ["splatbot-glomap", "glomap"]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if Path(candidate).exists() or shutil.which(candidate):
+            return candidate
+    return None
+
+
 def _option_value(argv: list[str], name: str) -> str | None:
     prefix = f"{name}="
     for idx, item in enumerate(argv):
@@ -77,16 +88,30 @@ def _truthy_env(name: str) -> bool:
 
 
 def _mapped_argv(argv: list[str]) -> list[str]:
+    _command, mapped = _mapped_command(argv)
+    return mapped
+
+
+def _mapped_command(argv: list[str]) -> tuple[str, list[str]]:
+    real_colmap = _real_colmap()
     mapper = os.environ.get("SPLATBOT_COLMAP_MAPPER", "").strip().lower()
     if argv[:1] == ["mapper"] and mapper in {"global", "glomap", "global_mapper"}:
         if _has_colmap_command("global_mapper"):
-            return ["global_mapper", *argv[1:]]
+            return real_colmap, ["global_mapper", *argv[1:]]
+        glomap = _glomap_bin()
+        if glomap:
+            print(
+                "splatbot-colmap-wrapper: requested global mapper but this COLMAP build has no global_mapper; "
+                f"using {glomap} mapper",
+                file=sys.stderr,
+            )
+            return glomap, argv
         print(
             "splatbot-colmap-wrapper: requested global mapper but this COLMAP build has no global_mapper; "
-            "falling back to mapper",
+            "GLOMAP is unavailable; falling back to mapper",
             file=sys.stderr,
         )
-    return argv
+    return real_colmap, argv
 
 
 def _maybe_calibrate_global_mapper(argv: list[str]) -> None:
@@ -115,10 +140,9 @@ def _maybe_calibrate_global_mapper(argv: list[str]) -> None:
 
 def main() -> None:
     argv = sys.argv[1:]
-    argv = _mapped_argv(argv)
+    command, argv = _mapped_command(argv)
     _maybe_calibrate_global_mapper(argv)
-    real_colmap = _real_colmap()
-    result = subprocess.run([real_colmap, *argv], check=False)
+    result = subprocess.run([command, *argv], check=False)
     if result.returncode == 0 and argv[:1] in (["mapper"], ["global_mapper"]):
         output_path = _option_value(argv, "--output_path")
         if output_path:
