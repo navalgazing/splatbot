@@ -44,7 +44,7 @@ ALL_VIEWER_ASSETS = tuple(VIEWER_ASSET_INTEGRITY)
 VIEWER_ASSET_VERSION = hashlib.sha256(
     "\n".join(f"{path}:{VIEWER_ASSET_INTEGRITY[path]}" for path in sorted(ALL_VIEWER_ASSETS)).encode("ascii")
 ).hexdigest()[:16]
-VIEWER_HTML_VERSION = "filters-on-demand-20260429"
+VIEWER_HTML_VERSION = "auto-filter-sliders-20260429"
 VIEWER_PAGE_VERSION = f"viewer-{VIEWER_ASSET_VERSION}-{VIEWER_HTML_VERSION}"
 
 
@@ -344,7 +344,7 @@ def render_viewer_html(
           <strong>Filters</strong>
           <span id="filter-counts">0 kept / 0 hidden</span>
         </div>
-        <button id="filter-load" type="button">Load filter sliders</button>
+        <button id="filter-load" type="button">Enable manual filters</button>
         <label class="filter-control" for="filter-opacity">
           <span class="filter-label-row">
             <span>Min opacity</span>
@@ -418,7 +418,7 @@ def render_viewer_html(
     let splatViewerGeneration = 0;
     let splatArray = null;
     let splatMetrics = null;
-    let filterDataLoading = false;
+    let filterDataLoadPromise = null;
     let filterApplyRunning = false;
     let filterApplyQueued = false;
     let filterDebounce = null;
@@ -653,10 +653,13 @@ def render_viewer_html(
     function scheduleFilterApply() {{
       if (!splatArray || !splatMetrics) return;
       updateFilterOutputs();
+      const filters = currentFilters();
+      const kept = countFilterMatches(filters);
+      updateFilterCounts(kept, splatMetrics.count - kept);
       window.clearTimeout(filterDebounce);
       filterDebounce = window.setTimeout(() => {{
         void applyCurrentSplatFilters(false);
-      }}, 180);
+      }}, 300);
     }}
 
     async function loadFilterableSplatData() {{
@@ -672,24 +675,43 @@ def render_viewer_html(
       configureFilterControls();
     }}
 
-    async function prepareFilterableSplatData() {{
-      if (splatArray && splatMetrics) return true;
-      if (filterDataLoading) return false;
-      filterDataLoading = true;
-      setFilterLoadState("Loading filters...", true);
-      try {{
-        if (activeView === "splat") status.textContent = "Preparing splat filters...";
-        await loadFilterableSplatData();
-        if (activeView === "splat") status.textContent = "Drag to orbit. Scroll or pinch to zoom. Right-drag to pan.";
-        return true;
-      }} catch (error) {{
-        console.error(error);
-        filterCounts.textContent = "filters unavailable";
-        setFilterLoadState("Retry filter sliders", false);
-        if (activeView === "splat") status.textContent = "Could not prepare splat filters.";
-        return false;
-      }} finally {{
-        filterDataLoading = false;
+    async function prepareFilterableSplatData(applyInitial = false) {{
+      if (!splatArray || !splatMetrics) {{
+        if (!filterDataLoadPromise) {{
+          setFilterLoadState("Loading filters...", true);
+          filterDataLoadPromise = loadFilterableSplatData()
+            .catch(error => {{
+              console.error(error);
+              filterCounts.textContent = "filters unavailable";
+              setFilterLoadState("Retry filter sliders", false);
+              if (activeView === "splat") status.textContent = "Could not prepare splat filters.";
+              throw error;
+            }})
+            .finally(() => {{
+              filterDataLoadPromise = null;
+            }});
+        }}
+        try {{
+          if (activeView === "splat") status.textContent = "Preparing splat filters...";
+          await filterDataLoadPromise;
+        }} catch (error) {{
+          return false;
+        }}
+      }}
+      if (activeView === "splat") status.textContent = "Drag to orbit. Scroll or pinch to zoom. Right-drag to pan.";
+      if (applyInitial) await applyCurrentSplatFilters(true);
+      return true;
+    }}
+
+    function prepareFilterableSplatDataOnIdle() {{
+      if ("requestIdleCallback" in window) {{
+        window.requestIdleCallback(() => {{
+          void prepareFilterableSplatData(false);
+        }}, {{ timeout: 1200 }});
+      }} else {{
+        window.setTimeout(() => {{
+          void prepareFilterableSplatData(false);
+        }}, 350);
       }}
     }}
 
@@ -710,6 +732,8 @@ def render_viewer_html(
       meshContainer.style.display = "none";
       if (splatViewer) {{
         status.textContent = "Drag to orbit. Scroll or pinch to zoom. Right-drag to pan.";
+        if (splatArray && splatMetrics) setFilterControlsEnabled(true);
+        else prepareFilterableSplatDataOnIdle();
         return;
       }}
       status.textContent = "Loading full Gaussian splat scene...";
@@ -731,6 +755,7 @@ def render_viewer_html(
         if (splatArray && splatMetrics) setFilterControlsEnabled(true);
         splatViewer.start();
         status.textContent = "Drag to orbit. Scroll or pinch to zoom. Right-drag to pan.";
+        void prepareFilterableSplatDataOnIdle();
       }} catch (error) {{
         console.error(error);
         disposeSplatViewer();
@@ -897,7 +922,7 @@ def render_viewer_html(
     fallbackButton.addEventListener("click", startPointPreview);
     filterLoad.addEventListener("click", async () => {{
       if (activeView !== "splat") await startSplatViewer();
-      await prepareFilterableSplatData();
+      await prepareFilterableSplatData(true);
     }});
     for (const input of [opacityInput, scaleInput, anisotropyInput]) {{
       input.addEventListener("input", scheduleFilterApply);

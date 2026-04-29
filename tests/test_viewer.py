@@ -64,7 +64,7 @@ def test_publish_viewer_writes_static_result_page(tmp_path) -> None:
     assert "Min opacity" in html
     assert "Max scale" in html
     assert "Max anisotropy" in html
-    assert "Load filter sliders" in html
+    assert "Enable manual filters" in html
     assert "Reset filters" in html
     assert "0 kept / 0 hidden" in html
     assert 'splatViewer.addSplatScene("cleaned_splat.ply"' in html
@@ -72,6 +72,8 @@ def test_publish_viewer_writes_static_result_page(tmp_path) -> None:
     assert "PlyParser.parseToUncompressedSplatArray" in html
     assert "SplatBuffer.generateFromUncompressedSplatArrays" in html
     assert "viewer.addSplatBuffers" in html
+    assert "prepareFilterableSplatDataOnIdle" in html
+    assert "updateFilterCounts(kept, splatMetrics.count - kept)" in html
     assert "DEFAULT_MIN_OPACITY_ALPHA = 5" in html
     assert "startSplatViewer();" in html
     assert 'import * as GaussianSplats3D from "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d' in html
