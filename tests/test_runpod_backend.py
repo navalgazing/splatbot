@@ -105,6 +105,8 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     assert "export SPLATBOT_VGGT_POSE_COMMAND='splatbot-vggt --images {images_dir} --processed {processed_dir} --matching-method {matching_method}'" in command
     assert "export SPLATBOT_VGGT_REPO=/opt/vggt" in command
     assert "export SPLATBOT_VGGT_MAX_IMAGES=64" in command
+    assert "export SPLATBOT_VGGT_WEIGHTS=/opt/splatbot/models/torch/hub/checkpoints/model.pt" in command
+    assert "export SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD=false" in command
     assert "export SPLATBOT_MAST3R_POSE_COMMAND='splatbot-mast3r --images {images_dir} --processed {processed_dir} --matching-method {matching_method}'" in command
     assert "export SPLATBOT_MAST3R_REPO=/opt/mast3r" in command
     assert "export SPLATBOT_MAST3R_WEIGHTS=/opt/splatbot/models/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth" in command
@@ -388,7 +390,15 @@ def test_runpod_worker_requires_glomap_for_best_mast3r() -> None:
 
     assert 'check_required_glomap' in worker
     assert "best preset requires MASt3R+GLOMAP" in worker
-    assert "check_rembg_cuda\ncheck_required_glomap\ncheck_mast3r_weights_config\ncheck_da3_model_config\ncheck_torchvision_weights_config\n\"$VENV_DIR/bin/python\" - <<'PY'" in worker
+    assert "check_rembg_cuda\ncheck_required_glomap\ncheck_vggt_weights_config\ncheck_mast3r_weights_config\ncheck_da3_model_config\ncheck_torchvision_weights_config\n\"$VENV_DIR/bin/python\" - <<'PY'" in worker
+
+
+def test_runpod_worker_validates_vggt_weight_configuration() -> None:
+    worker = (Path(__file__).parents[1] / "scripts" / "runpod_worker.sh").read_text(encoding="utf-8")
+
+    assert "check_vggt_weights_config" in worker
+    assert "VGGT pose backend is configured but weights are missing" in worker
+    assert "VGGT may download facebook/VGGT-1B during pose estimation" in worker
 
 
 def test_runpod_worker_validates_mast3r_weight_configuration() -> None:

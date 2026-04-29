@@ -77,6 +77,8 @@ export U2NET_HOME="${{U2NET_HOME:-/opt/splatbot/models/rembg}}"
 {shell_export("SPLATBOT_MAST3R_USE_GLOMAP", str(settings.mast3r_use_glomap).lower())}
 {shell_export("SPLATBOT_GLOMAP_BIN", settings.glomap_bin)}
 {shell_export("SPLATBOT_GLOMAP_MAPPER_ARGS", settings.glomap_mapper_args)}
+{shell_export("SPLATBOT_VGGT_WEIGHTS", settings.vggt_weights)}
+{shell_export("SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD", str(settings.vggt_allow_weight_download).lower())}
 {shell_export("SPLATBOT_MAST3R_WEIGHTS", settings.mast3r_weights)}
 {shell_export("SPLATBOT_MAST3R_WEIGHTS_URL", settings.mast3r_weights_url)}
 {shell_export("SPLATBOT_MAST3R_ALLOW_WEIGHT_DOWNLOAD", str(settings.mast3r_allow_weight_download).lower())}
@@ -172,6 +174,26 @@ elif os.environ.get("SPLATBOT_TORCHVISION_ALLOW_WEIGHT_DOWNLOAD", "false").lower
     print(f"alexnet checkpoint bytes={{alexnet.stat().st_size}}")
 else:
     raise SystemExit(f"AlexNet LPIPS checkpoint is missing at {{alexnet}} and downloads are disabled")
+
+vggt_weights = Path(os.environ["SPLATBOT_VGGT_WEIGHTS"])
+if vggt_weights.exists() and vggt_weights.stat().st_size >= 4_000_000_000:
+    print(f"vggt weights bytes={{vggt_weights.stat().st_size}}")
+elif os.environ.get("SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD", "false").lower() in {"1", "true", "yes", "on"}:
+    from torch.hub import download_url_to_file
+
+    vggt_weights.parent.mkdir(parents=True, exist_ok=True)
+    partial = vggt_weights.with_suffix(vggt_weights.suffix + ".part")
+    if partial.exists():
+        partial.unlink()
+    download_url_to_file(
+        "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt",
+        str(partial),
+        progress=True,
+    )
+    partial.replace(vggt_weights)
+    print(f"vggt weights bytes={{vggt_weights.stat().st_size}}")
+else:
+    raise SystemExit(f"VGGT weights are missing at {{vggt_weights}} and downloads are disabled")
 PY
 
 python - <<'PY'

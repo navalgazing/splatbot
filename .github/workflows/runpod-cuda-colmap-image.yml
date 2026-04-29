@@ -39,6 +39,7 @@ jobs:
             --platform linux/amd64 \
             --provenance=false \
             --sbom=false \
+            --build-arg DOWNLOAD_VGGT_WEIGHTS=1 \
             --build-arg DOWNLOAD_MAST3R_WEIGHTS=1 \
             --build-arg DOWNLOAD_DA3_MODEL=1 \
             --cache-from type=gha,scope=runpod-cuda-colmap \

@@ -201,6 +201,44 @@ pose_backends_include_mast3r() {
   return 1
 }
 
+pose_backends_include_vggt() {
+  local configured="${SPLATBOT_BEST_POSE_BACKENDS:-${SPLATBOT_POSE_BACKENDS:-}}"
+  if [ "${SPLATBOT_SCAN_PRESET:-balanced}" != "best" ]; then
+    configured="${SPLATBOT_POSE_BACKENDS:-$configured}"
+  fi
+  IFS=',' read -ra POSE_BACKENDS_FOR_CHECK <<< "$configured"
+  for backend in "${POSE_BACKENDS_FOR_CHECK[@]}"; do
+    backend="$(printf '%s' "$backend" | xargs)"
+    if [ "$backend" = "vggt-colmap" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+check_vggt_weights_config() {
+  if ! pose_backends_include_vggt; then
+    return 0
+  fi
+  local weights="${SPLATBOT_VGGT_WEIGHTS:-${TORCH_HOME:-/opt/splatbot/models/torch}/hub/checkpoints/model.pt}"
+  if [ -s "$weights" ]; then
+    local bytes
+    bytes="$(stat -c%s "$weights")"
+    if [ "$bytes" -gt 4000000000 ]; then
+      echo "  vggt_weights=$weights bytes=$bytes"
+      return 0
+    fi
+    echo "VGGT pose backend is configured but weights at $weights are too small: $bytes bytes" >&2
+    exit 2
+  fi
+  if truthy "${SPLATBOT_VGGT_ALLOW_WEIGHT_DOWNLOAD:-false}"; then
+    echo "  vggt_weights=$weights missing; VGGT may download facebook/VGGT-1B during pose estimation"
+    return 0
+  fi
+  echo "VGGT pose backend is configured but weights are missing at $weights and downloads are disabled" >&2
+  exit 2
+}
+
 check_mast3r_weights_config() {
   if ! pose_backends_include_mast3r; then
     return 0
@@ -387,6 +425,7 @@ command -v nvcc >/dev/null
 check_colmap_cuda
 check_rembg_cuda
 check_required_glomap
+check_vggt_weights_config
 check_mast3r_weights_config
 check_da3_model_config
 check_torchvision_weights_config
