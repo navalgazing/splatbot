@@ -156,6 +156,31 @@ def test_publish_viewer_rejects_unsupported_mesh_extension(tmp_path) -> None:
         )
 
 
+def test_publish_viewer_does_not_expose_private_debug_artifacts(tmp_path) -> None:
+    ply = tmp_path / "cleaned_splat.ply"
+    raw = tmp_path / "raw_splat.ply"
+    manifest = tmp_path / "artifact_manifest.json"
+    ply.write_text("ply\nformat ascii 1.0\nend_header\n", encoding="utf-8")
+    raw.write_text("ply\nformat ascii 1.0\nend_header\n", encoding="utf-8")
+    manifest.write_text('{"artifacts": []}\n', encoding="utf-8")
+
+    publish_viewer(
+        Settings(public_results_dir=tmp_path / "public"),
+        "job1",
+        PipelineOutputs(
+            cleaned_ply=ply,
+            preview_mp4=None,
+            raw_ply=raw,
+            artifact_manifest_path=manifest,
+        ),
+    )
+
+    result_dir = tmp_path / "public" / "job1"
+    assert (result_dir / "cleaned_splat.ply").exists()
+    assert not (result_dir / "raw_splat.ply").exists()
+    assert not (result_dir / "artifact_manifest.json").exists()
+
+
 def test_write_viewer_point_cloud_converts_gaussian_dc_color(tmp_path) -> None:
     src = tmp_path / "gaussian.ply"
     dest = tmp_path / "viewer_points.ply"

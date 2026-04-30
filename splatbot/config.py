@@ -89,6 +89,8 @@ class Settings(BaseSettings):
     default_scan_mode: ScanMode = ScanMode.SCENE
     default_scan_preset: ScanPreset = ScanPreset.BALANCED
     job_retention_days: int = 14
+    heavy_artifact_retention_days: int = 14
+    debug_artifact_retention_days: int = 30
 
     ffmpeg_bin: str = "ffmpeg"
     ffprobe_bin: str = "ffprobe"

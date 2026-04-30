@@ -7,6 +7,7 @@ import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .artifact_manifest import copy_artifact_bundle, write_artifact_manifest
 from .config import ScanMode, ScanPreset, Settings
 from .media import classify_path
 from .models import JobStatus, MediaItem, MediaKind
@@ -45,19 +46,34 @@ async def run(job_id: str, mode: ScanMode, preset: ScanPreset, media_dir: Path, 
         copy_failure_artifacts(settings.job_dir(job_id), output_dir)
         raise
     shutil.copy2(outputs.cleaned_ply, output_dir / "cleaned_splat.ply")
+    export_output = output_dir / "export"
+    export_output.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(outputs.cleaned_ply, export_output / "cleaned_splat.ply")
+    if outputs.raw_ply is not None and outputs.raw_ply.exists():
+        shutil.copy2(outputs.raw_ply, output_dir / "raw_splat.ply")
+        shutil.copy2(outputs.raw_ply, export_output / "raw_splat.ply")
     if outputs.mesh_path is not None and outputs.mesh_path.exists():
         shutil.copy2(outputs.mesh_path, output_dir / outputs.mesh_path.name)
+        shutil.copy2(outputs.mesh_path, export_output / outputs.mesh_path.name)
     if outputs.preview_mp4 is not None and outputs.preview_mp4.exists():
         shutil.copy2(outputs.preview_mp4, output_dir / "turntable.mp4")
+        renders_output = output_dir / "renders"
+        renders_output.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(outputs.preview_mp4, renders_output / "turntable.mp4")
     if outputs.metrics_path is not None and outputs.metrics_path.exists():
         shutil.copy2(outputs.metrics_path, output_dir / "metrics.json")
+    settings_path = settings.job_dir(job_id) / "settings.json"
+    if settings_path.exists():
+        shutil.copy2(settings_path, output_dir / "settings.json")
     if outputs.quality_report_path is not None and outputs.quality_report_path.exists():
         shutil.copy2(outputs.quality_report_path, output_dir / "quality_report.json")
     if outputs.candidate_report_path is not None and outputs.candidate_report_path.exists():
         shutil.copy2(outputs.candidate_report_path, output_dir / "candidate_report.json")
+    copy_success_artifacts(settings.job_dir(job_id), output_dir)
 
 
 def copy_failure_artifacts(job_dir: Path, output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
     for name in ("metrics.json", "settings.json", "quality_report.json", "candidate_report.json"):
         src = job_dir / name
         if src.exists():
@@ -65,6 +81,13 @@ def copy_failure_artifacts(job_dir: Path, output_dir: Path) -> None:
     diagnostics = job_dir / "diagnostics"
     if diagnostics.exists():
         shutil.copytree(diagnostics, output_dir / "diagnostics", dirs_exist_ok=True)
+    copy_artifact_bundle(job_dir, output_dir)
+    write_artifact_manifest(output_dir, job_id=job_dir.name)
+
+
+def copy_success_artifacts(job_dir: Path, output_dir: Path) -> None:
+    copy_artifact_bundle(job_dir, output_dir)
+    write_artifact_manifest(output_dir, job_id=job_dir.name)
 
 
 async def report_status(job_id: str, status: JobStatus) -> None:

@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 from statistics import median
 from typing import Awaitable, Callable
 
+from .artifact_manifest import write_artifact_manifest
 from .commands import CommandRunner, render_argv_template
 from .config import ScanMode, ScanPreset, ScanPresetConfig, Settings
 from .models import JobStatus, MediaItem, MediaKind
@@ -30,9 +31,11 @@ class PipelineOutputs:
     cleaned_ply: Path
     preview_mp4: Path | None
     metrics_path: Path | None = None
+    raw_ply: Path | None = None
     mesh_path: Path | None = None
     quality_report_path: Path | None = None
     candidate_report_path: Path | None = None
+    artifact_manifest_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -180,6 +183,24 @@ class SilhouetteEvaluator:
         return not remove
 
 
+def copy_source_media(media: list[MediaItem], dest_dir: Path) -> None:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    for idx, item in enumerate(media, start=1):
+        src = Path(item.local_path)
+        if not src.exists() or not src.is_file():
+            continue
+        filename = safe_artifact_filename(src.name or item.id)
+        dest = dest_dir / f"{idx:05d}_{filename}"
+        if src.resolve() == dest.resolve():
+            continue
+        shutil.copy2(src, dest)
+
+
+def safe_artifact_filename(name: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._")
+    return cleaned or "media"
+
+
 class ScanPipeline:
     def __init__(self, settings: Settings, runner: CommandRunner | None = None) -> None:
         self.settings = settings
@@ -204,6 +225,7 @@ class ScanPipeline:
         ns_dir = job_dir / "nerfstudio"
         export_dir = job_dir / "export"
         render_dir = job_dir / "renders"
+        source_media_dir = job_dir / "source_media"
         metrics_path = job_dir / "metrics.json"
         settings_path = job_dir / "settings.json"
         metrics: dict = {
@@ -276,8 +298,9 @@ class ScanPipeline:
                 },
             },
         )
-        for path in (images_dir, candidate_dir, processed_dir, ns_dir, export_dir, render_dir):
+        for path in (images_dir, candidate_dir, processed_dir, ns_dir, export_dir, render_dir, source_media_dir):
             path.mkdir(parents=True, exist_ok=True)
+        copy_source_media(media, source_media_dir)
 
         is_video = len(media) == 1 and media[0].kind == MediaKind.VIDEO
         try:
@@ -429,13 +452,16 @@ class ScanPipeline:
             candidate_report_path = job_dir / "candidate_report.json"
             write_json(quality_report_path, build_quality_report(metrics, self.settings))
             write_json(candidate_report_path, build_candidate_report(metrics, self.settings))
+        artifact_manifest_path = write_artifact_manifest(job_dir, job_id=job_id)
         return PipelineOutputs(
             cleaned_ply=reconstruction.cleaned_ply,
             preview_mp4=preview_mp4,
             metrics_path=metrics_path,
+            raw_ply=reconstruction.raw_ply,
             mesh_path=mesh_path,
             quality_report_path=quality_report_path,
             candidate_report_path=candidate_report_path,
+            artifact_manifest_path=artifact_manifest_path,
         )
 
     async def extract_video_frames(

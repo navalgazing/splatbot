@@ -627,10 +627,26 @@ print(f"worker result ply: size={path.stat().st_size} format={fmt} vertices={ver
 PY
   fi
   ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
-    "mkdir -p $VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/export $VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/renders"
-  rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
-    /workspace/results/cleaned_splat.ply \
-    "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/export/cleaned_splat.ply"
+    "mkdir -p $VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/export $VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/renders $VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/artifacts"
+  if [ -d /workspace/results/export ]; then
+    rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
+      /workspace/results/export/ \
+      "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/export/"
+  elif [ -f /workspace/results/cleaned_splat.ply ]; then
+    rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
+      /workspace/results/cleaned_splat.ply \
+      "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/export/cleaned_splat.ply"
+  fi
+  if [ -f /workspace/results/cleaned_splat.ply ]; then
+    rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
+      /workspace/results/cleaned_splat.ply \
+      "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/cleaned_splat.ply"
+  fi
+  if [ -f /workspace/results/raw_splat.ply ]; then
+    rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
+      /workspace/results/raw_splat.ply \
+      "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/raw_splat.ply"
+  fi
   for mesh in /workspace/results/mesh.glb /workspace/results/mesh.gltf /workspace/results/mesh.obj; do
     if [ -f "$mesh" ]; then
       rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
@@ -643,31 +659,55 @@ PY
       /workspace/results/turntable.mp4 \
       "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/renders/turntable.mp4"
   fi
+  if [ -d /workspace/results/renders ]; then
+    rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
+      /workspace/results/renders/ \
+      "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/renders/"
+  fi
   if [ -f /workspace/results/metrics.json ]; then
     rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
       /workspace/results/metrics.json \
       "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/metrics.json"
   fi
-  for report in quality_report.json candidate_report.json; do
+  for report in settings.json quality_report.json candidate_report.json artifact_manifest.json; do
     if [ -f "/workspace/results/$report" ]; then
       rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
         "/workspace/results/$report" \
         "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/$report"
     fi
   done
+  if [ -d /workspace/results/artifacts ]; then
+    rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
+      /workspace/results/artifacts/ \
+      "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/artifacts/"
+  fi
   ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
     "$VPS_JOBCTL complete $SPLATBOT_JOB_ID --notify"
 else
   rc="$?"
   ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
     "mkdir -p $VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID"
-  for artifact in metrics.json settings.json quality_report.json candidate_report.json; do
+  for artifact in metrics.json settings.json quality_report.json candidate_report.json artifact_manifest.json; do
     if [ -f "/workspace/results/$artifact" ]; then
       rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
         "/workspace/results/$artifact" \
         "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/$artifact" || true
     fi
   done
+  if [ -d /workspace/results/export ]; then
+    ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
+      "mkdir -p $VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/export"
+    rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
+      /workspace/results/export/ \
+      "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/export/" || true
+  fi
+  if [ -d /workspace/results/artifacts ]; then
+    ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
+      "mkdir -p $VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/artifacts"
+    rsync -r --no-perms --no-owner --no-group --omit-dir-times -e "ssh $SSH_OPTS" \
+      /workspace/results/artifacts/ \
+      "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST:$VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/artifacts/" || true
+  fi
   if [ -d /workspace/results/diagnostics ]; then
     ssh $SSH_OPTS "$SPLATBOT_VPS_USER@$SPLATBOT_VPS_HOST" \
       "mkdir -p $VPS_DATA_DIR/jobs/$SPLATBOT_JOB_ID/diagnostics"
