@@ -22,10 +22,12 @@ from splatbot.pipeline import (
     clean_ply,
     clean_spatial_outliers,
     clear_colmap_sparse_points,
+    combine_conservative_object_masks,
     format_fps,
     build_quality_report,
     inspect_processed_dataset,
     latest_nerfstudio_config,
+    load_alpha_mask,
     object_mask_command_for_backend,
     parse_export_metrics,
     parse_ffprobe_duration,
@@ -43,6 +45,7 @@ from splatbot.pipeline import (
     validate_postprocess_against_masks,
     validate_ply_quality,
     write_processed_training_masks,
+    required_segmentation_backends,
 )
 
 
@@ -202,6 +205,30 @@ class SegmentationFallbackRunner:
             valid_alpha[pixel] = 255
         for idx in range(count):
             write_rgba_png(output_dir / f"frame_{idx + 1:05d}.png", 10, 10, valid_alpha)
+        return CommandResult(argv=argv, returncode=0, stdout="", stderr="")
+
+
+class ConservativeSegmentationRunner:
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    async def run(self, argv: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> CommandResult:
+        self.calls.append(argv)
+        if "--output" in argv:
+            output_dir = Path(argv[argv.index("--output") + 1])
+        else:
+            output_dir = Path(argv[-1])
+        if "--input" in argv:
+            input_dir = Path(argv[argv.index("--input") + 1])
+        else:
+            input_dir = Path(argv[-2])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        alpha = [0] * 100
+        for pixel in (44, 45, 54, 55):
+            alpha[pixel] = 255
+        for image_path in sorted(input_dir.iterdir()):
+            if image_path.is_file():
+                write_rgba_png(output_dir / f"{image_path.stem}.png", 10, 10, alpha)
         return CommandResult(argv=argv, returncode=0, stdout="", stderr="")
 
 
@@ -607,7 +634,7 @@ def test_best_preset_enables_sota_backend_chain_by_default(tmp_path) -> None:
     settings = Settings(data_dir=tmp_path)
     best = settings.preset_config("best")
 
-    assert configured_segmentation_backends(settings, best) == ["sam2", "rembg"]
+    assert configured_segmentation_backends(settings, best) == ["conservative", "rembg"]
     assert configured_depth_backends(settings, best) == ["da3", "depth-anything-v2-large"]
     assert configured_pose_backends(settings, best) == ["colmap-global", "vggt-colmap", "mast3r-sfm"]
     assert configured_train_backends(settings, best) == ["splatfacto-big", "3dgs-mcmc"]
@@ -621,7 +648,7 @@ def test_experimental_backends_are_explicit_opt_in(tmp_path) -> None:
     )
     best = settings.preset_config("best")
 
-    assert configured_segmentation_backends(settings, best) == ["sam2", "rembg"]
+    assert configured_segmentation_backends(settings, best) == ["conservative", "rembg"]
     assert configured_train_backends(settings, best) == ["dn-splatter-big", "splatfacto-big", "3dgs-mcmc"]
 
 
@@ -650,7 +677,7 @@ async def test_segmentation_backend_falls_back_when_outputs_are_sparse(tmp_path)
     object_dir = tmp_path / "object"
     images.mkdir()
     for idx in range(3):
-        (images / f"frame_{idx + 1:05d}.jpg").write_bytes(b"image")
+        write_rgba_png(images / f"frame_{idx + 1:05d}.png", 10, 10, [255] * 100)
     settings = Settings(data_dir=tmp_path, segmentation_backend="sam2,rembg", segmentation_min_output_ratio=0.8)
     runner = SegmentationFallbackRunner()
     metrics = {"pipeline_events": []}
@@ -671,6 +698,44 @@ async def test_segmentation_backend_falls_back_when_outputs_are_sparse(tmp_path)
     assert metrics["pipeline_events"][0]["stage"] == "segmentation"
 
 
+async def test_conservative_segmentation_runs_rembg_and_sam2_then_combines(tmp_path) -> None:
+    images = tmp_path / "images"
+    object_dir = tmp_path / "object"
+    images.mkdir()
+    for idx in range(3):
+        (images / f"frame_{idx + 1:05d}.jpg").write_bytes(b"image")
+    settings = Settings(
+        data_dir=tmp_path,
+        object_mask_strategy="conservative",
+        segmentation_min_output_ratio=1.0,
+        min_selected_video_frames=1,
+        object_mask_min_keep_frames=1,
+        object_mask_min_keep_ratio=1.0,
+        object_mask_close_px=0,
+        object_mask_erode_px=0,
+    )
+    runner = ConservativeSegmentationRunner()
+
+    result = await ScanPipeline(settings, runner=runner).remove_backgrounds(
+        images,
+        object_dir,
+        tmp_path,
+        settings.preset_config("best"),
+        {"pipeline_events": []},
+        tmp_path / "metrics.json",
+    )
+
+    assert result["selected"] == "conservative"
+    assert result["attempts"][0]["sub_attempts"][0]["backend"] == "rembg"
+    assert result["attempts"][0]["sub_attempts"][1]["backend"] == "sam2"
+    assert result["attempts"][0]["combine"]["accepted_masks"] == 3
+    assert sorted(path.name for path in object_dir.iterdir()) == [
+        "frame_00001.png",
+        "frame_00002.png",
+        "frame_00003.png",
+    ]
+
+
 def test_balanced_preset_keeps_stable_default_backend_chain(tmp_path) -> None:
     settings = Settings(data_dir=tmp_path)
     balanced = settings.preset_config("balanced")
@@ -678,6 +743,22 @@ def test_balanced_preset_keeps_stable_default_backend_chain(tmp_path) -> None:
     assert configured_segmentation_backends(settings, balanced) == ["rembg"]
     assert configured_pose_backends(settings, balanced) == ["colmap"]
     assert configured_train_backends(settings, balanced) == ["splatfacto"]
+
+
+def test_explicit_object_mask_strategy_is_not_overridden_by_best_preset(tmp_path) -> None:
+    settings = Settings(data_dir=tmp_path, object_mask_strategy="simple")
+    best = settings.preset_config("best")
+
+    assert configured_segmentation_backends(settings, best) == ["rembg"]
+    assert required_segmentation_backends(settings, best) == ["rembg"]
+
+
+def test_explicit_segmentation_backend_controls_best_required_backend(tmp_path) -> None:
+    settings = Settings(data_dir=tmp_path, segmentation_backend="sam2,rembg")
+    best = settings.preset_config("best")
+
+    assert configured_segmentation_backends(settings, best) == ["sam2", "rembg"]
+    assert required_segmentation_backends(settings, best) == ["sam2"]
 
 
 def test_object_mask_qa_filters_bad_masks(tmp_path) -> None:
@@ -719,6 +800,44 @@ def test_object_mask_qa_filters_bad_masks(tmp_path) -> None:
         "frame_00001.jpg",
         "frame_00003.jpg",
     ]
+
+
+def test_conservative_mask_combines_only_agreed_foreground(tmp_path) -> None:
+    images = tmp_path / "images"
+    rembg = tmp_path / "rembg"
+    sam2 = tmp_path / "sam2"
+    output = tmp_path / "object"
+    for directory in (images, rembg, sam2, output):
+        directory.mkdir()
+    write_rgba_png(images / "frame_00001.png", 5, 5, [255] * 25)
+    first = [0] * 25
+    second = [0] * 25
+    for idx in (6, 7, 8, 11, 12, 13, 16, 17, 18):
+        first[idx] = 255
+    for idx in (7, 8, 12, 13, 17, 18, 23):
+        second[idx] = 255
+    write_rgba_png(rembg / "frame_00001.png", 5, 5, first)
+    write_rgba_png(sam2 / "frame_00001.png", 5, 5, second)
+
+    result = combine_conservative_object_masks(
+        images,
+        rembg,
+        sam2,
+        output,
+        Settings(
+            data_dir=tmp_path,
+            object_mask_agreement_min_iou=0.4,
+            object_mask_close_px=0,
+            object_mask_erode_px=0,
+        ),
+    )
+
+    assert result["accepted_masks"] == 1
+    written_mask = load_alpha_mask(output / "frame_00001.png")
+    assert written_mask is not None
+    written = written_mask.alpha
+    assert sum(1 for value in written if value) == 6
+    assert written[23] == 0
 
 
 def test_write_processed_training_masks_adds_mask_paths(tmp_path) -> None:

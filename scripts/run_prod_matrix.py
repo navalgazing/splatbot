@@ -44,6 +44,32 @@ class MatrixRow:
 MATRIX_ROWS: tuple[MatrixRow, ...] = (
     MatrixRow("baseline", "Locked current production baseline.", {}),
     MatrixRow(
+        "mask-rembg",
+        "Original rembg-only object mask with baseline pose, depth, and train.",
+        {
+            "object_mask_strategy": "rembg",
+            "best_segmentation_required_backends": "rembg",
+        },
+    ),
+    MatrixRow(
+        "mask-sam2",
+        "SAM2-only object mask with baseline pose, depth, and train.",
+        {
+            "object_mask_strategy": "sam2",
+            "best_segmentation_required_backends": "sam2",
+        },
+    ),
+    MatrixRow(
+        "mask-conservative-tight",
+        "Conservative rembg/SAM2 agreement mask with stricter alpha and erosion.",
+        {
+            "object_mask_strategy": "conservative",
+            "best_segmentation_required_backends": "conservative",
+            "object_mask_agreement_min_iou": 0.55,
+            "object_mask_erode_px": 2,
+        },
+    ),
+    MatrixRow(
         "pose-vggt-colmap",
         "VGGT pose adapter with baseline depth, train, and postprocess.",
         {
@@ -334,6 +360,8 @@ def summarize_job(settings: Settings, job: ScanJob, row: MatrixRow) -> dict[str,
         "pose_backend": metrics.get("pose_backend"),
         "depth_backend": metrics.get("depth_backend"),
         "train_backend": metrics.get("train_backend"),
+        "object_mask_strategy": (metrics.get("masks", {}).get("backend") or {}).get("strategy"),
+        "segmentation_backend": (metrics.get("masks", {}).get("backend") or {}).get("selected"),
         "vertices": cleaned.get("vertices"),
         "export_retention": export_metrics.get("retention_ratio"),
         "issues": quality.get("issues"),

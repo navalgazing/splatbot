@@ -51,6 +51,7 @@ def summarize_job(job_dir: Path) -> dict[str, Any]:
         "duration_seconds": round(duration, 3),
         "vertices": vertices,
         "pose_backend": metrics.get("pose_backend"),
+        "object_mask_strategy": (metrics.get("masks", {}).get("backend") or {}).get("strategy"),
         "segmentation_backend": (metrics.get("masks", {}).get("backend") or {}).get("selected"),
         "validation": validation,
         "viewer_ready": (job_dir / "export" / "cleaned_splat.ply").exists()

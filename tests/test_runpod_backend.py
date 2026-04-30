@@ -91,7 +91,8 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     assert "export SPLATBOT_BEST_FRAME_SELECTION_STRATEGY=quality-diversity" in command
     assert "export SPLATBOT_FRAME_QUALITY_REJECT_THRESHOLD=35.0" in command
     assert "export SPLATBOT_OBJECT_COLMAP_ORIGINAL_POSE_FALLBACK=true" in command
-    assert "export SPLATBOT_BEST_SEGMENTATION_BACKENDS=sam2,rembg" in command
+    assert "export SPLATBOT_BEST_SEGMENTATION_BACKENDS=conservative,rembg" in command
+    assert "export SPLATBOT_BEST_SEGMENTATION_REQUIRED_BACKENDS=conservative" in command
     assert "export SPLATBOT_EXPERIMENTAL_SAM3_ENABLED=false" in command
     assert "export SPLATBOT_BEST_POSE_BACKENDS=colmap-global,vggt-colmap,mast3r-sfm" in command
     assert "export SPLATBOT_DA3_MODEL=depth-anything/DA3-LARGE-1.1" in command
@@ -125,6 +126,9 @@ def test_remote_worker_command_exports_pipeline_settings(tmp_path) -> None:
     assert "export SPLATBOT_SILHOUETTE_CLEANUP_ENABLED=true" in command
     assert "export SPLATBOT_SILHOUETTE_CLEANUP_MAX_REMOVE_FRACTION=0.6" in command
     assert "export SPLATBOT_OBJECT_MASK_QA_ENABLED=true" in command
+    assert "export SPLATBOT_OBJECT_MASK_STRATEGY=''" in command
+    assert "export SPLATBOT_OBJECT_MASK_TRAINING_ALPHA_THRESHOLD=64" in command
+    assert "export SPLATBOT_OBJECT_MASK_AGREEMENT_MIN_IOU=0.45" in command
     assert "export SPLATBOT_GAUSSIAN_CLEANUP_ENABLED=true" in command
     assert "export SPLATBOT_SPATIAL_CLEANUP_ENABLED=true" in command
     assert "export SPLATBOT_POSTPROCESS_VALIDATION_ENABLED=true" in command

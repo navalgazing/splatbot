@@ -470,13 +470,44 @@ for cmd in splatbot-segment splatbot-pose splatbot-colmap-pose-adapter splatbot-
 done
 IFS=',' read -ra SEGMENT_BACKENDS <<< "${SPLATBOT_BEST_SEGMENTATION_BACKENDS:-${SPLATBOT_SEGMENTATION_BACKEND:-rembg}}"
 IFS=',' read -ra REQUIRED_SEGMENT_BACKENDS <<< "${SPLATBOT_BEST_SEGMENTATION_REQUIRED_BACKENDS:-}"
+if [ -n "${SPLATBOT_OBJECT_MASK_STRATEGY:-}" ] && [ -z "${SPLATBOT_SEGMENTATION_BACKEND:-}" ]; then
+  IFS=',' read -ra SEGMENT_BACKENDS <<< "$SPLATBOT_OBJECT_MASK_STRATEGY"
+  if [ "${SPLATBOT_SCAN_PRESET:-balanced}" = "best" ]; then
+    IFS=',' read -ra REQUIRED_SEGMENT_BACKENDS <<< "$SPLATBOT_OBJECT_MASK_STRATEGY"
+  fi
+fi
 if [ "${SPLATBOT_SCAN_PRESET:-balanced}" != "best" ] && [ -n "${SPLATBOT_SEGMENTATION_BACKEND:-}" ]; then
   IFS=',' read -ra SEGMENT_BACKENDS <<< "$SPLATBOT_SEGMENTATION_BACKEND"
 fi
 if [ "${SPLATBOT_SCAN_MODE:-scene}" = "object" ]; then
   for backend in "${SEGMENT_BACKENDS[@]}"; do
     backend="$(printf '%s' "$backend" | xargs)"
-    if [ -n "$backend" ] && [ "$backend" != "rembg" ]; then
+    if [ "$backend" = "conservative" ]; then
+      conservative_ok=true
+      for conservative_backend in rembg sam2; do
+        if ! splatbot-segment --backend "$conservative_backend" --self-test; then
+          conservative_ok=false
+        fi
+      done
+      if [ "$conservative_ok" = true ]; then
+        continue
+      fi
+      required=false
+      if [ "${SPLATBOT_SCAN_PRESET:-balanced}" = "best" ]; then
+        for required_backend in "${REQUIRED_SEGMENT_BACKENDS[@]}"; do
+          required_backend="$(printf '%s' "$required_backend" | xargs)"
+          if [ "$backend" = "$required_backend" ]; then
+            required=true
+            break
+          fi
+        done
+      fi
+      if [ "$required" = true ]; then
+        echo "best preset requires conservative segmentation, but rembg or SAM2 self-test failed" >&2
+        exit 2
+      fi
+      echo "optional conservative segmentation self-test failed; fallback remains available" >&2
+    elif [ -n "$backend" ] && [ "$backend" != "rembg" ]; then
       if splatbot-segment --backend "$backend" --self-test; then
         continue
       fi

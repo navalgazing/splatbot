@@ -91,12 +91,16 @@ from `SPLATBOT_COLMAP_RETRY_FRAME_COUNTS` with methods from
 `best` pose chain starts with the dense COLMAP-global baseline, then tries
 learned pose adapters when the baseline cannot pass quality gates.
 
-Object exports also run conservative silhouette cleanup. The exported Gaussian
-centers are projected back into up to `SPLATBOT_SILHOUETTE_CLEANUP_MAX_VIEWS`
-training masks, and points that repeatedly land outside the alpha silhouette are
-culled before publishing. The pass is bounded by
-`SPLATBOT_SILHOUETTE_CLEANUP_MAX_REMOVE_FRACTION` so bad masks or unusual camera
-poses cannot delete too much of a result.
+Object exports also run conservative mask and silhouette cleanup. Best-mode
+object scans default to `conservative` masking, which runs both the original
+`rembg` cutout and SAM2 video propagation, then trains only on foreground pixels
+where both masks agree. The combined masks keep the largest connected component,
+close tiny holes, erode the edge halo, and reject frames with poor mask
+agreement. The exported Gaussian centers are then projected back into up to
+`SPLATBOT_SILHOUETTE_CLEANUP_MAX_VIEWS` training masks, and points that
+repeatedly land outside the alpha silhouette are culled before publishing. The
+pass is bounded by `SPLATBOT_SILHOUETTE_CLEANUP_MAX_REMOVE_FRACTION` so bad
+masks or unusual camera poses cannot delete too much of a result.
 
 Maximum-quality runs require the strongest non-gated stages to be installed and
 configured. `best` does not silently degrade to legacy backends; if a required
@@ -104,8 +108,13 @@ stage is unavailable, the job fails with a Telegram summary naming the missing
 stage. Approval-gated models are not part of the default chain.
 
 ```bash
-SPLATBOT_BEST_SEGMENTATION_BACKENDS=sam2,rembg
-SPLATBOT_BEST_SEGMENTATION_REQUIRED_BACKENDS=sam2
+SPLATBOT_BEST_SEGMENTATION_BACKENDS=conservative,rembg
+SPLATBOT_BEST_SEGMENTATION_REQUIRED_BACKENDS=conservative
+SPLATBOT_OBJECT_MASK_STRATEGY=
+SPLATBOT_OBJECT_MASK_TRAINING_ALPHA_THRESHOLD=64
+SPLATBOT_OBJECT_MASK_AGREEMENT_MIN_IOU=0.45
+SPLATBOT_OBJECT_MASK_CLOSE_PX=1
+SPLATBOT_OBJECT_MASK_ERODE_PX=1
 SPLATBOT_OBJECT_MASK_PROMPT='main object'
 SPLATBOT_SAM2_MASK_COMMAND='splatbot-segment --backend sam2 --input {images_dir} --output {object_dir}'
 SPLATBOT_SAM2_CHECKPOINT=/opt/splatbot/models/sam2.1_hiera_large.pt

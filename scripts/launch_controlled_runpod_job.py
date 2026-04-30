@@ -35,6 +35,12 @@ POSE_ROW_DESCRIPTIONS = {
     "da3-colmap": "Depth Anything 3 pose adapter with DA3 sparse initialization.",
 }
 
+MASK_ROW_DESCRIPTIONS = {
+    "rembg": "Original rembg-only object mask with baseline pose, depth, and train.",
+    "sam2": "SAM2-only object mask with baseline pose, depth, and train.",
+    "conservative": "Conservative rembg and SAM2 agreement mask with baseline pose, depth, and train.",
+}
+
 
 def load_env_file(path: Path) -> None:
     if not path.exists():
@@ -83,6 +89,15 @@ def pose_matrix_settings(pose_backend: str) -> tuple[str, str, dict[str, Any]]:
             "best_pose_required_backends": pose_backend,
         }
     return row, POSE_ROW_DESCRIPTIONS[pose_backend], {**BASELINE_MATRIX_SETTINGS, **changed}
+
+
+def mask_matrix_settings(mask_strategy: str) -> tuple[str, str, dict[str, Any]]:
+    row = "baseline" if mask_strategy == "conservative" else f"mask-{mask_strategy}"
+    changed = {
+        "object_mask_strategy": mask_strategy,
+        "best_segmentation_required_backends": mask_strategy,
+    }
+    return row, MASK_ROW_DESCRIPTIONS[mask_strategy], {**BASELINE_MATRIX_SETTINGS, **changed}
 
 
 def apply_settings_overrides(settings: Settings, overrides: dict[str, Any]) -> None:
@@ -178,6 +193,7 @@ def main() -> None:
     parser.add_argument("--mode", choices=[mode.value for mode in ScanMode], default=ScanMode.OBJECT.value)
     parser.add_argument("--preset", choices=[preset.value for preset in ScanPreset], default=ScanPreset.BALANCED.value)
     parser.add_argument("--pose-backend", choices=sorted(POSE_ROW_DESCRIPTIONS))
+    parser.add_argument("--mask-strategy", choices=sorted(MASK_ROW_DESCRIPTIONS))
     parser.add_argument("--matrix-run-id")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--env-file", type=Path, default=Path("/etc/splatbot/splatbot.env"))
@@ -210,6 +226,17 @@ def main() -> None:
             if BASELINE_MATRIX_SETTINGS.get(key) != value
         }
         apply_settings_overrides(settings, settings_overrides)
+    if args.mask_strategy:
+        if matrix_run_id is None:
+            matrix_run_id = datetime.now(UTC).strftime("controlled-mask-%Y%m%dT%H%M%SZ")
+        matrix_row, matrix_description, mask_overrides = mask_matrix_settings(args.mask_strategy)
+        settings_overrides = {**settings_overrides, **mask_overrides}
+        matrix_changed = {
+            key: value
+            for key, value in settings_overrides.items()
+            if BASELINE_MATRIX_SETTINGS.get(key) != value
+        }
+        apply_settings_overrides(settings, mask_overrides)
 
     store = Store(settings.database_path)
     asyncio.run(store.init())
@@ -241,6 +268,7 @@ def main() -> None:
         "matrix_run_id": matrix_run_id,
         "matrix_row": matrix_row,
         "pose_backend": args.pose_backend,
+        "mask_strategy": args.mask_strategy,
         "started_at": utcnow().isoformat(),
     }
     launcher = RunPodLauncher(settings, client=RunPodClient(settings.runpod_api_key_value))

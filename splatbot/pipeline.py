@@ -244,8 +244,13 @@ class ScanPipeline:
                 "experimental_sam3_enabled": self.settings.experimental_sam3_enabled,
                 "segmentation_min_output_ratio": self.settings.segmentation_min_output_ratio,
                 "object_mask_backend": self.settings.object_mask_backend,
+                "object_mask_strategy": self.settings.object_mask_strategy,
                 "object_mask_qa_enabled": self.settings.object_mask_qa_enabled,
                 "object_mask_refine_enabled": self.settings.object_mask_refine_enabled,
+                "object_mask_training_alpha_threshold": self.settings.object_mask_training_alpha_threshold,
+                "object_mask_close_px": self.settings.object_mask_close_px,
+                "object_mask_erode_px": self.settings.object_mask_erode_px,
+                "object_mask_agreement_min_iou": self.settings.object_mask_agreement_min_iou,
                 "pose_backends": parse_csv_list(self.settings.pose_backends),
                 "best_pose_backends": parse_csv_list(self.settings.best_pose_backends),
                 "train_method": preset_config.train_method,
@@ -264,6 +269,7 @@ class ScanPipeline:
                 "colmap_bin": self.settings.colmap_bin,
                 "silhouette_cleanup": {
                     "max_views": self.settings.silhouette_cleanup_max_views,
+                    "alpha_threshold": self.settings.silhouette_cleanup_alpha_threshold,
                     "outside_ratio": self.settings.silhouette_cleanup_outside_ratio,
                     "max_inside_views": self.settings.silhouette_cleanup_max_inside_views,
                     "max_inside_ratio": self.settings.silhouette_cleanup_max_inside_ratio,
@@ -307,6 +313,7 @@ class ScanPipeline:
             )
             refinement = refine_object_masks(object_dir, self.settings)
             record_stage(metrics, "rembg", stage_start)
+            metrics.setdefault("stages", {})["object_mask"] = metrics["stages"]["rembg"]
             input_images_dir = object_dir
             metrics["frames"]["object"] = count_files(object_dir)
             metrics.setdefault("masks", {})["backend"] = mask_backend
@@ -605,36 +612,47 @@ class ScanPipeline:
                 shutil.rmtree(object_dir)
             object_dir.mkdir(parents=True, exist_ok=True)
             try:
-                command = object_mask_command_for_backend(self.settings, backend, images_dir, object_dir)
-                if command is None:
-                    attempts.append({"backend": backend, "applied": False, "reason": "missing_command"})
-                    failures_before_success += 1
-                    recovered = backend not in required_backends
-                    if metrics is not None:
-                        record_pipeline_event(
-                            metrics,
-                            stage="segmentation",
-                            backend=backend,
-                            status="skip" if recovered else "failure",
-                            reason="missing_command",
-                            recovered=recovered,
-                        )
-                        if metrics_path is not None:
-                            write_json(metrics_path, metrics)
-                    if backend in required_backends:
-                        raise ValueError(f"required best segmentation backend {backend!r} is missing a command")
-                    continue
-                await self.runner.run(command)
-                output_count = count_files(object_dir)
-                accepted = output_count >= required_outputs
-                attempt = {
-                    "backend": backend,
-                    "applied": accepted,
-                    "output_files": output_count,
-                    "required_output_files": required_outputs,
-                    "input_files": input_count,
-                }
-                if not accepted:
+                if backend == "conservative":
+                    attempt = await self.run_conservative_object_mask(
+                        images_dir,
+                        object_dir,
+                        job_dir,
+                        required_outputs,
+                    )
+                    output_count = int(attempt.get("output_files") or 0)
+                    accepted = output_count >= required_outputs
+                    attempt["applied"] = accepted
+                else:
+                    command = object_mask_command_for_backend(self.settings, backend, images_dir, object_dir)
+                    if command is None:
+                        attempts.append({"backend": backend, "applied": False, "reason": "missing_command"})
+                        failures_before_success += 1
+                        recovered = backend not in required_backends
+                        if metrics is not None:
+                            record_pipeline_event(
+                                metrics,
+                                stage="segmentation",
+                                backend=backend,
+                                status="skip" if recovered else "failure",
+                                reason="missing_command",
+                                recovered=recovered,
+                            )
+                            if metrics_path is not None:
+                                write_json(metrics_path, metrics)
+                        if backend in required_backends:
+                            raise ValueError(f"required best segmentation backend {backend!r} is missing a command")
+                        continue
+                    await self.runner.run(command)
+                    output_count = count_files(object_dir)
+                    accepted = output_count >= required_outputs
+                    attempt = {
+                        "backend": backend,
+                        "applied": accepted,
+                        "output_files": output_count,
+                        "required_output_files": required_outputs,
+                        "input_files": input_count,
+                    }
+                if not accepted and "reason" not in attempt:
                     attempt["reason"] = "too_few_outputs"
                 attempts.append(attempt)
                 if accepted:
@@ -679,7 +697,7 @@ class ScanPipeline:
                         )
                         if metrics_path is not None:
                             write_json(metrics_path, metrics)
-                    return {"selected": backend, "attempts": attempts, "qa": qa}
+                    return {"selected": backend, "strategy": backend, "attempts": attempts, "qa": qa}
                 failures_before_success += 1
                 recovered = backend not in required_backends
                 if metrics is not None:
@@ -730,6 +748,62 @@ class ScanPipeline:
             if metrics_path is not None:
                 write_json(metrics_path, metrics)
         raise ValueError(f"all object segmentation backends failed ({detail})")
+
+    async def run_conservative_object_mask(
+        self,
+        images_dir: Path,
+        object_dir: Path,
+        job_dir: Path,
+        required_outputs: int,
+    ) -> dict:
+        artifact_dir = job_dir / "mask_artifacts"
+        rembg_dir = artifact_dir / "rembg_raw"
+        sam2_dir = artifact_dir / "sam2_raw"
+        for directory in (rembg_dir, sam2_dir):
+            if directory.exists():
+                shutil.rmtree(directory)
+            directory.mkdir(parents=True, exist_ok=True)
+
+        sub_attempts: list[dict] = []
+        for backend, output_dir in (("rembg", rembg_dir), ("sam2", sam2_dir)):
+            command = object_mask_command_for_backend(self.settings, backend, images_dir, output_dir)
+            if command is None:
+                return {
+                    "backend": "conservative",
+                    "applied": False,
+                    "reason": f"{backend}_missing_command",
+                    "input_files": count_files(images_dir),
+                    "required_output_files": required_outputs,
+                    "sub_attempts": sub_attempts,
+                }
+            await self.runner.run(command)
+            sub_attempts.append(
+                {
+                    "backend": backend,
+                    "output_files": count_files(output_dir),
+                    "directory": str(output_dir),
+                }
+            )
+
+        combine = combine_conservative_object_masks(images_dir, rembg_dir, sam2_dir, object_dir, self.settings)
+        output_count = count_files(object_dir)
+        attempt = {
+            "backend": "conservative",
+            "applied": output_count >= required_outputs,
+            "output_files": output_count,
+            "required_output_files": required_outputs,
+            "input_files": count_files(images_dir),
+            "sub_attempts": sub_attempts,
+            "artifacts": {
+                "rembg": str(rembg_dir),
+                "sam2": str(sam2_dir),
+                "combined": str(object_dir),
+            },
+            "combine": combine,
+        }
+        if output_count < required_outputs:
+            attempt["reason"] = "too_few_agreed_masks"
+        return attempt
 
     async def process_data(
         self,
@@ -1565,6 +1639,7 @@ def build_quality_report(metrics: dict, settings: Settings) -> dict:
     frames = metrics.get("frames", {})
     video = metrics.get("video", {})
     masks = metrics.get("masks", {})
+    mask_backend = masks.get("backend", {})
     colmap = metrics.get("colmap", {})
     cleanup = metrics.get("ply", {}).get("cleanup", {})
     cleaned_ply = metrics.get("ply", {}).get("cleaned", {})
@@ -1578,6 +1653,8 @@ def build_quality_report(metrics: dict, settings: Settings) -> dict:
         warnings.append("low_selected_frame_count")
     if masks.get("qa", {}).get("reason") == "too_few_accepted_masks":
         issues.append("too_few_accepted_object_masks")
+    if mask_backend.get("reason") == "too_few_agreed_masks":
+        issues.append("too_few_agreed_object_masks")
     if pipeline_events_by_status(events, {"fallback", "recovered", "skip"}):
         warnings.append("pipeline_fallbacks_or_skips")
     if pipeline_events_by_status(events, {"warning"}):
@@ -1637,7 +1714,8 @@ def build_quality_report(metrics: dict, settings: Settings) -> dict:
         "depth_backend": metrics.get("depth_backend"),
         "pose_backend": metrics.get("pose_backend"),
         "train_backend": metrics.get("train_backend"),
-        "segmentation_backend": masks.get("backend", {}).get("selected"),
+        "segmentation_backend": mask_backend.get("selected"),
+        "object_mask_strategy": mask_backend.get("strategy") or mask_backend.get("selected"),
         "ply": metrics.get("ply", {}),
         "mesh": mesh,
     }
@@ -1741,10 +1819,20 @@ def minimum_segmentation_outputs(settings: Settings, input_count: int) -> int:
 
 
 def configured_segmentation_backends(settings: Settings, preset: ScanPresetConfig | None = None) -> list[str]:
-    configured = settings.segmentation_backend.strip() or settings.object_mask_backend.strip() or "rembg"
-    backends = parse_csv_list(configured)
-    if preset is not None and preset.preset == ScanPreset.BEST and backends == ["rembg"]:
-        backends = parse_csv_list(settings.best_segmentation_backends) or ["sam2", "rembg"]
+    explicit_strategy = settings.object_mask_strategy.strip()
+    configured = settings.segmentation_backend.strip() or explicit_strategy or settings.object_mask_backend.strip() or "rembg"
+    backends = [normalize_segmentation_backend_name(backend) for backend in parse_csv_list(configured)]
+    if (
+        preset is not None
+        and preset.preset == ScanPreset.BEST
+        and not settings.segmentation_backend.strip()
+        and not explicit_strategy
+        and backends == ["rembg"]
+    ):
+        backends = [
+            normalize_segmentation_backend_name(backend)
+            for backend in parse_csv_list(settings.best_segmentation_backends)
+        ] or ["conservative", "rembg"]
     if not settings.experimental_sam3_enabled:
         backends = [backend for backend in backends if backend not in {"sam3", "sam3-video"}]
     if not backends:
@@ -1762,7 +1850,30 @@ def ensure_required_segmentation_backends_configured(settings: Settings, preset:
 
 
 def required_segmentation_backends(settings: Settings, preset: ScanPresetConfig) -> list[str]:
-    return parse_csv_list(settings.best_segmentation_required_backends) if preset.preset == ScanPreset.BEST else []
+    if preset.preset != ScanPreset.BEST:
+        return []
+    if settings.segmentation_backend.strip():
+        configured = parse_csv_list(settings.segmentation_backend)
+        required = [
+            normalize_segmentation_backend_name(backend)
+            for backend in parse_csv_list(settings.best_segmentation_required_backends)
+            if normalize_segmentation_backend_name(backend) in {
+                normalize_segmentation_backend_name(configured_backend)
+                for configured_backend in configured
+            }
+        ]
+        return required or [normalize_segmentation_backend_name(configured[0])]
+    if settings.object_mask_strategy.strip() and not settings.segmentation_backend.strip():
+        return [normalize_segmentation_backend_name(backend) for backend in parse_csv_list(settings.object_mask_strategy)]
+    return [
+        normalize_segmentation_backend_name(backend)
+        for backend in parse_csv_list(settings.best_segmentation_required_backends)
+    ]
+
+
+def normalize_segmentation_backend_name(backend: str) -> str:
+    normalized = backend.strip().lower()
+    return "rembg" if normalized == "simple" else normalized
 
 
 def object_mask_command_for_backend(
@@ -1771,7 +1882,7 @@ def object_mask_command_for_backend(
     images_dir: Path,
     object_dir: Path,
 ) -> list[str] | None:
-    backend = backend.strip().lower()
+    backend = normalize_segmentation_backend_name(backend)
     if backend in {"", "rembg"}:
         return [settings.rembg_bin, "p", str(images_dir), str(object_dir)]
     command = {
@@ -2039,7 +2150,8 @@ def refine_object_masks(object_dir: Path, settings: Settings) -> dict:
 
     changed = 0
     skipped = 0
-    kernel = np.ones((3, 3), np.uint8)
+    close_kernel = np.ones((max(1, settings.object_mask_close_px * 2 + 1), max(1, settings.object_mask_close_px * 2 + 1)), np.uint8)
+    erode_kernel = np.ones((max(1, settings.object_mask_erode_px * 2 + 1), max(1, settings.object_mask_erode_px * 2 + 1)), np.uint8)
     for image_path in sorted(object_dir.iterdir()):
         if not image_path.is_file() or image_path.suffix.lower() != ".png":
             continue
@@ -2055,12 +2167,242 @@ def refine_object_masks(object_dir: Path, settings: Settings) -> dict:
             continue
         largest = 1 + max(range(components - 1), key=lambda idx: stats[idx + 1, cv2.CC_STAT_AREA])
         refined = np.where(labels == largest, alpha, 0).astype(np.uint8)
-        refined = cv2.morphologyEx(refined, cv2.MORPH_CLOSE, kernel, iterations=1)
+        if settings.object_mask_close_px > 0:
+            refined = cv2.morphologyEx(refined, cv2.MORPH_CLOSE, close_kernel, iterations=1)
+        if settings.object_mask_erode_px > 0:
+            refined = cv2.erode(refined, erode_kernel, iterations=1)
         if not np.array_equal(alpha, refined):
             image[:, :, 3] = refined
             cv2.imwrite(str(image_path), image)
             changed += 1
     return {"applied": True, "changed": changed, "skipped": skipped}
+
+
+def combine_conservative_object_masks(
+    original_images_dir: Path,
+    rembg_dir: Path,
+    sam2_dir: Path,
+    output_dir: Path,
+    settings: Settings,
+) -> dict:
+    image_paths = sorted(
+        path
+        for path in original_images_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    accepted = 0
+    rejected: dict[str, int] = {}
+    ious: list[float] = []
+    foreground_ratios: list[float] = []
+    threshold = settings.object_mask_training_alpha_threshold
+    min_iou = clamp(settings.object_mask_agreement_min_iou, 0.0, 1.0)
+
+    for image_path in image_paths:
+        rembg_path = find_mask_for_stem(rembg_dir, image_path.stem)
+        sam2_path = find_mask_for_stem(sam2_dir, image_path.stem)
+        if rembg_path is None:
+            rejected["missing_rembg"] = rejected.get("missing_rembg", 0) + 1
+            continue
+        if sam2_path is None:
+            rejected["missing_sam2"] = rejected.get("missing_sam2", 0) + 1
+            continue
+        rembg = load_alpha_mask(rembg_path)
+        sam2 = load_alpha_mask(sam2_path)
+        if rembg is None:
+            rejected["invalid_rembg"] = rejected.get("invalid_rembg", 0) + 1
+            continue
+        if sam2 is None:
+            rejected["invalid_sam2"] = rejected.get("invalid_sam2", 0) + 1
+            continue
+        if rembg.width != sam2.width or rembg.height != sam2.height:
+            rejected["size_mismatch"] = rejected.get("size_mismatch", 0) + 1
+            continue
+
+        alpha, iou, foreground_pixels = conservative_intersection_alpha(rembg, sam2, threshold)
+        ious.append(iou)
+        if iou < min_iou:
+            rejected["low_agreement"] = rejected.get("low_agreement", 0) + 1
+            continue
+        alpha = refine_binary_alpha(
+            alpha,
+            rembg.width,
+            rembg.height,
+            close_px=settings.object_mask_close_px,
+            erode_px=settings.object_mask_erode_px,
+        )
+        foreground_pixels = sum(1 for value in alpha if value)
+        if foreground_pixels == 0:
+            rejected["empty_after_refine"] = rejected.get("empty_after_refine", 0) + 1
+            continue
+
+        foreground_ratios.append(foreground_pixels / max(1, rembg.width * rembg.height))
+        write_rgba_with_alpha(image_path, output_dir / f"{image_path.stem}.png", alpha, rembg.width, rembg.height)
+        accepted += 1
+
+    return {
+        "strategy": "conservative",
+        "total_images": len(image_paths),
+        "accepted_masks": accepted,
+        "rejected_masks": len(image_paths) - accepted,
+        "rejected_by_reason": rejected,
+        "agreement_iou": summarize_numbers(ious),
+        "foreground_ratio": summarize_numbers(foreground_ratios),
+        "alpha_threshold": threshold,
+        "min_iou": min_iou,
+        "close_px": settings.object_mask_close_px,
+        "erode_px": settings.object_mask_erode_px,
+    }
+
+
+def find_mask_for_stem(mask_dir: Path, stem: str) -> Path | None:
+    for suffix in (".png", ".jpg", ".jpeg", ".webp"):
+        candidate = mask_dir / f"{stem}{suffix}"
+        if candidate.exists():
+            return candidate
+    matches = sorted(path for path in mask_dir.glob(f"{stem}.*") if path.is_file())
+    return matches[0] if matches else None
+
+
+def conservative_intersection_alpha(
+    first: AlphaMask,
+    second: AlphaMask,
+    threshold: int,
+) -> tuple[bytes, float, int]:
+    intersection = bytearray(first.width * first.height)
+    intersect_count = 0
+    union_count = 0
+    for idx, (left, right) in enumerate(zip(first.alpha, second.alpha, strict=True)):
+        left_on = left >= threshold
+        right_on = right >= threshold
+        if left_on or right_on:
+            union_count += 1
+        if left_on and right_on:
+            intersection[idx] = 255
+            intersect_count += 1
+    iou = intersect_count / union_count if union_count else 0.0
+    return bytes(intersection), iou, intersect_count
+
+
+def refine_binary_alpha(alpha: bytes, width: int, height: int, *, close_px: int, erode_px: int) -> bytes:
+    try:
+        import cv2  # type: ignore[import-not-found]
+        import numpy as np  # type: ignore[import-not-found]
+    except Exception:  # noqa: BLE001
+        return refine_binary_alpha_with_pillow(alpha, width, height, close_px=close_px, erode_px=erode_px)
+
+    image = np.frombuffer(alpha, dtype=np.uint8).reshape((height, width))
+    image = largest_component_cv2(image, cv2, np)
+    if close_px > 0:
+        kernel = np.ones((max(1, close_px * 2 + 1), max(1, close_px * 2 + 1)), np.uint8)
+        image = cv2.morphologyEx(image, cv2.MORPH_CLOSE, kernel, iterations=1)
+    if erode_px > 0:
+        kernel = np.ones((max(1, erode_px * 2 + 1), max(1, erode_px * 2 + 1)), np.uint8)
+        image = cv2.erode(image, kernel, iterations=1)
+    image = largest_component_cv2(image, cv2, np)
+    return image.astype(np.uint8).tobytes()
+
+
+def largest_component_cv2(image, cv2, np):
+    components, labels, stats, _ = cv2.connectedComponentsWithStats((image > 0).astype(np.uint8), 8)
+    if components <= 1:
+        return np.zeros_like(image, dtype=np.uint8)
+    largest = 1 + max(range(components - 1), key=lambda idx: stats[idx + 1, cv2.CC_STAT_AREA])
+    return np.where(labels == largest, 255, 0).astype(np.uint8)
+
+
+def refine_binary_alpha_with_pillow(alpha: bytes, width: int, height: int, *, close_px: int, erode_px: int) -> bytes:
+    try:
+        from PIL import Image, ImageFilter
+    except Exception:  # noqa: BLE001
+        return alpha
+
+    image = Image.frombytes("L", (width, height), alpha)
+    if close_px > 0:
+        size = max(3, close_px * 2 + 1)
+        image = image.filter(ImageFilter.MaxFilter(size)).filter(ImageFilter.MinFilter(size))
+    if erode_px > 0:
+        size = max(3, erode_px * 2 + 1)
+        image = image.filter(ImageFilter.MinFilter(size))
+    return keep_largest_component(image.tobytes(), width, height)
+
+
+def keep_largest_component(alpha: bytes, width: int, height: int) -> bytes:
+    total = width * height
+    if len(alpha) != total:
+        return alpha
+    visited = bytearray(total)
+    best: list[int] = []
+    for start, value in enumerate(alpha):
+        if value == 0 or visited[start]:
+            continue
+        component: list[int] = []
+        stack = [start]
+        visited[start] = 1
+        while stack:
+            idx = stack.pop()
+            component.append(idx)
+            x = idx % width
+            for neighbor in connected_neighbors(idx, x, width, height):
+                if alpha[neighbor] and not visited[neighbor]:
+                    visited[neighbor] = 1
+                    stack.append(neighbor)
+        if len(component) > len(best):
+            best = component
+    output = bytearray(total)
+    for idx in best:
+        output[idx] = 255
+    return bytes(output)
+
+
+def connected_neighbors(idx: int, x: int, width: int, height: int) -> tuple[int, ...]:
+    neighbors: list[int] = []
+    if x > 0:
+        neighbors.append(idx - 1)
+    if x < width - 1:
+        neighbors.append(idx + 1)
+    if idx >= width:
+        neighbors.append(idx - width)
+    if idx < width * (height - 1):
+        neighbors.append(idx + width)
+    return tuple(neighbors)
+
+
+def write_rgba_with_alpha(image_path: Path, output_path: Path, alpha: bytes, width: int, height: int) -> None:
+    try:
+        from PIL import Image
+    except Exception:  # noqa: BLE001
+        write_solid_rgba_png(output_path, width, height, alpha)
+        return
+
+    image = Image.open(image_path).convert("RGBA")
+    if len(alpha) != image.width * image.height:
+        raise ValueError(f"alpha size mismatch for {image_path}")
+    image.putalpha(Image.frombytes("L", image.size, alpha))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(output_path)
+
+
+def write_solid_rgba_png(path: Path, width: int, height: int, alpha: bytes) -> None:
+    if len(alpha) != width * height:
+        raise ValueError(f"alpha size mismatch for {path}")
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        checksum = zlib.crc32(kind + data) & 0xFFFFFFFF
+        return len(data).to_bytes(4, "big") + kind + data + checksum.to_bytes(4, "big")
+
+    rows = bytearray()
+    for y in range(height):
+        rows.append(0)
+        for x in range(width):
+            rows.extend((255, 255, 255, alpha[(y * width) + x]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", width.to_bytes(4, "big") + height.to_bytes(4, "big") + bytes([8, 6, 0, 0, 0]))
+        + chunk(b"IDAT", zlib.compress(bytes(rows)))
+        + chunk(b"IEND", b"")
+    )
 
 
 def apply_object_mask_qa(
