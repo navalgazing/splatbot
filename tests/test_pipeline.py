@@ -19,6 +19,7 @@ from splatbot.pipeline import (
     clean_depth_consistency_outliers,
     clean_gaussian_properties,
     clean_exported_ply,
+    clean_mask_support_outliers,
     clean_ply,
     clean_spatial_outliers,
     clear_colmap_sparse_points,
@@ -45,6 +46,7 @@ from splatbot.pipeline import (
     validate_postprocess_against_masks,
     validate_ply_quality,
     write_processed_training_masks,
+    write_rgba_with_alpha,
     required_segmentation_backends,
 )
 
@@ -255,6 +257,7 @@ class SuccessfulColmapRunner:
             sparse = output_dir / "colmap" / "sparse" / "0"
             sparse.mkdir(parents=True, exist_ok=True)
             (sparse / "images.bin").write_text(f"images={len(frames)}", encoding="utf-8")
+            (sparse / "points3D.bin").write_bytes(b"object-background-seeds")
         return CommandResult(argv=argv, returncode=0, stdout="", stderr="")
 
 
@@ -341,6 +344,30 @@ def write_binary_xyz_ply(path: Path, points: list[tuple[float, float, float]]) -
         ]
     ) + "\n"
     path.write_bytes(header.encode("ascii") + b"".join(struct.pack("<fff", *point) for point in points))
+
+
+def test_write_rgba_with_alpha_clears_background_rgb(tmp_path) -> None:
+    image_module = pytest.importorskip("PIL.Image")
+    image_path = tmp_path / "input.png"
+    output_path = tmp_path / "output.png"
+    image = image_module.new("RGB", (2, 1))
+    image.putpixel((0, 0), (10, 20, 30))
+    image.putpixel((1, 0), (200, 40, 50))
+    image.save(image_path)
+
+    write_rgba_with_alpha(
+        image_path,
+        output_path,
+        bytes([255, 0]),
+        2,
+        1,
+        clear_background_rgb=True,
+        background_rgb=(255, 255, 255),
+    )
+
+    result = image_module.open(output_path).convert("RGBA")
+    assert result.getpixel((0, 0)) == (10, 20, 30, 255)
+    assert result.getpixel((1, 0)) == (255, 255, 255, 0)
 
 
 def test_clean_ply_preserves_header_and_removes_invalid_rows(tmp_path) -> None:
@@ -902,6 +929,51 @@ def test_gaussian_cleanup_removes_low_quality_gaussians(tmp_path) -> None:
     assert "element vertex 3" in dest.read_text(encoding="utf-8")
 
 
+def test_mask_support_cleanup_requires_enough_inside_views_and_ratio(tmp_path) -> None:
+    src = tmp_path / "raw.ply"
+    dest = tmp_path / "clean.ply"
+    weak_pixel = (2 * 4) + 2
+    strong_pixel = (2 * 4) + 3
+    write_binary_xyz_ply(src, [(0.0, 0.0, -1.0), (1.0, 0.0, -1.0)])
+    frames = []
+    for idx in range(4):
+        alpha = [0] * 16
+        if idx == 0:
+            alpha[weak_pixel] = 255
+        alpha[strong_pixel] = 255
+        frames.append(
+            SilhouetteFrame(
+                mask=AlphaMask(width=4, height=4, alpha=bytes(alpha)),
+                world_to_camera=[
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                ],
+                fl_x=1.0,
+                fl_y=1.0,
+                cx=2.0,
+                cy=2.0,
+            )
+        )
+
+    cleanup = clean_mask_support_outliers(
+        src,
+        dest,
+        frames,
+        Settings(
+            data_dir=tmp_path,
+            mask_support_cleanup_min_views=4,
+            mask_support_cleanup_min_inside_views=2,
+            mask_support_cleanup_min_inside_ratio=0.1,
+            mask_support_cleanup_max_remove_fraction=0.6,
+        ),
+    )
+
+    assert cleanup["applied"] is True
+    assert cleanup["filtered_vertices_removed"] == 1
+    assert b"element vertex 1" in dest.read_bytes().split(b"end_header", 1)[0]
+
+
 def test_spatial_cleanup_removes_isolated_points(tmp_path) -> None:
     src = tmp_path / "raw.ply"
     dest = tmp_path / "clean.ply"
@@ -1152,6 +1224,39 @@ async def test_colmap_pose_backend_can_force_exhaustive_matching(tmp_path) -> No
 
     assert runner.calls[0][runner.calls[0].index("--matching-method") + 1] == "exhaustive"
     assert metrics["pose_backend"] == "colmap-exhaustive"
+
+
+async def test_successful_object_colmap_clears_sparse_seed_points(tmp_path) -> None:
+    settings = Settings(data_dir=tmp_path)
+    runner = SuccessfulColmapRunner()
+    pipeline = ScanPipeline(settings, runner=runner)
+    original = tmp_path / "images"
+    object_images = tmp_path / "object_images"
+    processed = tmp_path / "processed"
+    original.mkdir()
+    object_images.mkdir()
+    for idx in range(20):
+        (original / f"frame_{idx + 1:05d}.jpg").write_bytes(b"original")
+        (object_images / f"frame_{idx + 1:05d}.png").write_bytes(b"object")
+    metrics = {"frames": {"selected": 20}, "colmap": {}, "pipeline_events": []}
+
+    await pipeline.process_data_with_quality_gate(
+        input_images_dir=object_images,
+        processed_dir=processed,
+        matching_method="sequential",
+        metrics=metrics,
+        metrics_path=tmp_path / "metrics.json",
+        preset=settings.preset_config("balanced"),
+        mode=ScanMode.OBJECT,
+        original_images_dir=original,
+        object_images_dir=object_images,
+    )
+
+    assert metrics["colmap_object_sparse_points_removed"]["applied"] is True
+    assert (processed / "colmap" / "sparse" / "0" / "points3D.bin").read_bytes() == struct.pack("<Q", 0)
+    assert (processed / "colmap" / "sparse" / "0" / "points3D.bin.splatbot-original").read_bytes() == (
+        b"object-background-seeds"
+    )
 
 
 async def test_object_colmap_fallback_uses_original_poses_and_object_images(tmp_path) -> None:
@@ -1638,6 +1743,7 @@ def test_postprocess_validation_rejects_unobserved_points_with_clean_checked_sup
         data_dir=tmp_path,
         silhouette_cleanup_min_views=1,
         postprocess_validation_min_checked_points=1,
+        postprocess_validation_min_inside_views=1,
         postprocess_validation_max_unobserved_fraction=0.5,
     )
 

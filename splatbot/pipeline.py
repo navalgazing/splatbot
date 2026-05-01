@@ -273,6 +273,8 @@ class ScanPipeline:
                 "object_mask_close_px": self.settings.object_mask_close_px,
                 "object_mask_erode_px": self.settings.object_mask_erode_px,
                 "object_mask_agreement_min_iou": self.settings.object_mask_agreement_min_iou,
+                "object_mask_clear_background_rgb": self.settings.object_mask_clear_background_rgb,
+                "object_mask_background_rgb": self.settings.object_mask_background_rgb,
                 "pose_backends": parse_csv_list(self.settings.pose_backends),
                 "best_pose_backends": parse_csv_list(self.settings.best_pose_backends),
                 "train_method": preset_config.train_method,
@@ -289,6 +291,7 @@ class ScanPipeline:
                 "colmap_use_gpu": self.settings.colmap_use_gpu,
                 "colmap_global_calibrate": self.settings.colmap_global_calibrate,
                 "colmap_bin": self.settings.colmap_bin,
+                "object_clear_colmap_sparse_points": self.settings.object_clear_colmap_sparse_points,
                 "silhouette_cleanup": {
                     "max_views": self.settings.silhouette_cleanup_max_views,
                     "alpha_threshold": self.settings.silhouette_cleanup_alpha_threshold,
@@ -1018,6 +1021,14 @@ class ScanPipeline:
         masked_error_message = ""
         try:
             validate_colmap_quality(metrics, preset.max_video_frames, self.settings)
+            if (
+                mode == ScanMode.OBJECT
+                and input_images_dir == object_images_dir
+                and self.settings.object_clear_colmap_sparse_points
+            ):
+                sparse_cleanup = clear_colmap_sparse_points(processed_dir)
+                metrics["colmap_object_sparse_points_removed"] = sparse_cleanup
+                write_json(metrics_path, metrics)
             return
         except ValueError as masked_error:
             masked_error_message = str(masked_error)
@@ -1204,6 +1215,9 @@ class ScanPipeline:
                         "training_image_paths_rewritten": replaced,
                         "sparse_points_removed": sparse_cleanup,
                     }
+                elif source_label == "object" and self.settings.object_clear_colmap_sparse_points:
+                    sparse_cleanup = clear_colmap_sparse_points(processed_dir)
+                    metrics["colmap_object_sparse_points_removed"] = sparse_cleanup
                 write_json(metrics_path, metrics)
                 return True
         return False
@@ -2263,7 +2277,15 @@ def combine_conservative_object_masks(
             continue
 
         foreground_ratios.append(foreground_pixels / max(1, rembg.width * rembg.height))
-        write_rgba_with_alpha(image_path, output_dir / f"{image_path.stem}.png", alpha, rembg.width, rembg.height)
+        write_rgba_with_alpha(
+            image_path,
+            output_dir / f"{image_path.stem}.png",
+            alpha,
+            rembg.width,
+            rembg.height,
+            clear_background_rgb=settings.object_mask_clear_background_rgb,
+            background_rgb=parse_rgb_triplet(settings.object_mask_background_rgb),
+        )
         accepted += 1
 
     return {
@@ -2394,7 +2416,27 @@ def connected_neighbors(idx: int, x: int, width: int, height: int) -> tuple[int,
     return tuple(neighbors)
 
 
-def write_rgba_with_alpha(image_path: Path, output_path: Path, alpha: bytes, width: int, height: int) -> None:
+def parse_rgb_triplet(value: str) -> tuple[int, int, int]:
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) != 3:
+        return (255, 255, 255)
+    try:
+        red, green, blue = (max(0, min(255, int(part))) for part in parts)
+    except ValueError:
+        return (255, 255, 255)
+    return red, green, blue
+
+
+def write_rgba_with_alpha(
+    image_path: Path,
+    output_path: Path,
+    alpha: bytes,
+    width: int,
+    height: int,
+    *,
+    clear_background_rgb: bool = True,
+    background_rgb: tuple[int, int, int] = (255, 255, 255),
+) -> None:
     try:
         from PIL import Image
     except Exception:  # noqa: BLE001
@@ -2404,7 +2446,12 @@ def write_rgba_with_alpha(image_path: Path, output_path: Path, alpha: bytes, wid
     image = Image.open(image_path).convert("RGBA")
     if len(alpha) != image.width * image.height:
         raise ValueError(f"alpha size mismatch for {image_path}")
-    image.putalpha(Image.frombytes("L", image.size, alpha))
+    alpha_image = Image.frombytes("L", image.size, alpha)
+    if clear_background_rgb:
+        rgb = Image.new("RGB", image.size, background_rgb)
+        rgb.paste(image.convert("RGB"), mask=alpha_image)
+        image = rgb.convert("RGBA")
+    image.putalpha(alpha_image)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(output_path)
 
@@ -3685,7 +3732,7 @@ def clean_mask_support_outliers(
             return True
         supported = (
             support.inside >= settings.mask_support_cleanup_min_inside_views
-            or support.inside_fraction >= settings.mask_support_cleanup_min_inside_ratio
+            and support.inside_fraction >= settings.mask_support_cleanup_min_inside_ratio
         )
         if supported:
             return True
@@ -3985,7 +4032,7 @@ def validate_postprocess_against_masks(
             outside_candidate_points += 1
         if (
             support.inside < settings.postprocess_validation_min_inside_views
-            and support.inside_fraction < settings.postprocess_validation_min_inside_ratio
+            or support.inside_fraction < settings.postprocess_validation_min_inside_ratio
         ):
             low_support_points += 1
 
